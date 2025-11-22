@@ -1,0 +1,9 @@
+git+https://github.com/TelegramPlayground/pyrogram.git@dev
+python-dotenv
+tgcrypto
+colorama
+opencv-python
+numpy
+pytesseract
+watchfiles
+anyio

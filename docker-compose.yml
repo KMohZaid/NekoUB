@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  nekoub:
+    build: .
+    container_name: nekoub
+    restart: unless-stopped
+    tty: true  # Enable TTY for colored output
+
+    # Mount .env file for configuration
+    env_file:
+      - .env
+
+    # Force colored output
+    environment:
+      - PYTHONUNBUFFERED=1
+      - FORCE_COLOR=1
+      - COLORTERM=truecolor
+
+    # Mount private_plugins folder to persist custom plugins
+    volumes:
+      - ./private_plugins:/app/private_plugins
+      - ./logs:/app/logs  # Optional: for log persistence
+
+    # Network mode: Use host network for better connectivity
+    # Change to 'bridge' if you prefer isolated network
+    network_mode: host
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,43 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+env/
+ENV/
+
+# Session files (will be created in container)
+*.session
+*.session-journal
+
+# Environment file (mounted separately)
+.env
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Private plugins (mounted as volume)
+private_plugins/*
+!private_plugins/__init__.py
+!private_plugins/README.md
+
+# Documentation
+README.md
+CONFIGURATION.md
+
+# Scripts (not needed in container)
+run.sh
+generate_session_string.py
