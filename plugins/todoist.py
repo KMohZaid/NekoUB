@@ -146,6 +146,24 @@ def parse_todo_input(raw_content: str):
     return content, priority, due_string
 
 
+def _build_reply_sender_line(reply: Message) -> str:
+    sender = getattr(reply, "from_user", None)
+    if sender:
+        full_name = sender.first_name or ""
+        if sender.last_name:
+            full_name = f"{full_name} {sender.last_name}".strip()
+        line = f"Sender: {full_name} #{sender.id}"
+        if sender.username:
+            line += f" @{sender.username}"
+        return line
+
+    sender_chat = getattr(reply, "sender_chat", None)
+    if sender_chat:
+        return f"Sender: {sender_chat.title or 'Unknown'} #{sender_chat.id}"
+
+    return "Sender: Unknown"
+
+
 def build_description(message: Message) -> Optional[str]:
     reply = message.reply_to_message
     if not reply:
@@ -155,6 +173,7 @@ def build_description(message: Message) -> Optional[str]:
     chat_title = message.chat.title or message.chat.first_name or "Chat"
     message_link = _build_message_link(chat_id, message.id)
     replied_message_link = _build_message_link(chat_id, reply.id)
+    sender_line = _build_reply_sender_line(reply)
 
     replied_text = _extract_message_text(reply).strip()
     replied_content = replied_text if replied_text else "(non-text message)"
@@ -165,6 +184,7 @@ def build_description(message: Message) -> Optional[str]:
         f"Message [Task cmd message] : [Message #{message.id}]({message_link})\n\n"
         "=== Replied Message (If any) ===\n"
         f"[Message #{reply.id}]({replied_message_link})\n\n"
+        f"{sender_line}\n\n"
         "=========================================\n\n"
     )
     description_suffix = (
