@@ -25,6 +25,7 @@ TODOIST_LABEL_COLOR = "blue"
 
 PRIORITY_PATTERN = re.compile(r"(?i)(?:^|\s)#p([1-4])\b")
 DUE_PATTERN = re.compile(r"(?i)(?:^|\s)#due\s*\|([^|]+)\|")
+PRIORITY_MAP = {1: 4, 2: 3, 3: 2, 4: 1}
 MAX_TASK_CONTENT_LEN = 500
 MAX_TASK_DESCRIPTION_LEN = 16383
 
@@ -79,7 +80,9 @@ def create_section(name: str = TODOIST_SECTION_NAME):
     logger.info(f"[TODOIST] Created section: {SECTION}")
 
 
-def create_label(name: str = TODOIST_LABEL_NAME, color: str = TODOIST_LABEL_COLOR):
+def create_label(
+    name: str = TODOIST_LABEL_NAME, color: str = TODOIST_LABEL_COLOR
+):
     global LABEL
     labels = API.get_labels()
     for label in _iter_items(labels):
@@ -87,7 +90,9 @@ def create_label(name: str = TODOIST_LABEL_NAME, color: str = TODOIST_LABEL_COLO
             LABEL = label
             return
 
-    LABEL = API.add_label(name=name, color=color, item_order=0, is_favorite=True)
+    LABEL = API.add_label(
+        name=name, color=color, item_order=0, is_favorite=True
+    )
     logger.info(f"[TODOIST] Created label: {LABEL}")
 
 
@@ -126,7 +131,8 @@ def parse_todo_input(raw_content: str):
     priority = None
     priority_matches = PRIORITY_PATTERN.findall(raw_content)
     if priority_matches:
-        priority = int(priority_matches[-1])
+        parsed_priority = int(priority_matches[-1])
+        priority = PRIORITY_MAP.get(parsed_priority)
 
     content_without_priority = PRIORITY_PATTERN.sub(" ", raw_content)
 
@@ -168,7 +174,9 @@ def build_description(message: Message) -> Optional[str]:
     )
 
     max_replied_len = (
-        MAX_TASK_DESCRIPTION_LEN - len(description_prefix) - len(description_suffix)
+        MAX_TASK_DESCRIPTION_LEN
+        - len(description_prefix)
+        - len(description_suffix)
     )
     if max_replied_len < 0:
         max_replied_len = 0
@@ -217,7 +225,9 @@ async def log_error_to_saved_messages(client, context: str, error: Exception):
             ),
         )
     except Exception as log_error:
-        logger.error(f"[TODOIST] Failed to log error to Saved Messages: {log_error}")
+        logger.error(
+            f"[TODOIST] Failed to log error to Saved Messages: {log_error}"
+        )
 
 
 async def send_result_feedback(client, message: Message, success: bool):
@@ -256,7 +266,7 @@ async def todo_command(client, message: Message):
             "`.todo {content} + reply`\n\n"
             "Help :\n\n"
             "Reply : add context in description\n"
-            "`#pN` : specify task priority in content eg. #p4 for very urgent\n"
+            "`#pN` : priority, #p1->very urgent, urgent, normal, low\n"
             "`#due |...|` : specify due date ...."
         )
         return
@@ -268,7 +278,7 @@ async def todo_command(client, message: Message):
             "`.todo {content} + reply`\n\n"
             "Help :\n\n"
             "Reply : add context in description\n"
-            "`#pN` : specify task priority in content eg. #p4 for very urgent\n"
+            "`#pN` : priority, #p1->very urgent, urgent, normal, low\n"
             "`#due |...|` : specify due date ...."
         )
         return
@@ -280,6 +290,7 @@ async def todo_command(client, message: Message):
     try:
         ensure_initialized()
         description = build_description(message)
+        todo_message_link = _build_message_link(message.chat.id, message.id)
 
         create_task_kwargs = {
             "content": parsed_content,
@@ -292,6 +303,7 @@ async def todo_command(client, message: Message):
             create_task_kwargs["priority"] = priority
         if due_string:
             create_task_kwargs["due_string"] = due_string
+            create_task_kwargs["due_lang"] = "en"
 
         API.add_task(**create_task_kwargs)
         await send_result_feedback(client, message, success=True)
@@ -302,7 +314,10 @@ async def todo_command(client, message: Message):
         )
         await log_error_to_saved_messages(
             client,
-            context=f"chat={message.chat.id} message={message.id}",
+            context=(
+                f"chat={message.chat.id} message={message.id}\n"
+                f"todo_message={todo_message_link}"
+            ),
             error=RuntimeError(error_details),
         )
         await send_result_feedback(client, message, success=False)
