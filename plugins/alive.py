@@ -35,7 +35,9 @@ def get_uptime() -> str:
     return uptime_str.strip()
 
 
-@main.app.on_message(filters.me & filters.command("alive", prefixes=config.CMD_PREFIX))
+@main.app.on_message(
+    filters.me & filters.command("alive", prefixes=config.CMD_PREFIX)
+)
 @continue_propagation
 async def alive_command(client, message: Message):
     """Show userbot status with cute neko theme.

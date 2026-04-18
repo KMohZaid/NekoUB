@@ -10,10 +10,10 @@ from pyrogram import Client
 
 def print_banner():
     """Print cute banner."""
-    print("\n" + "="*50)
+    print("\n" + "=" * 50)
     print("   🐱 NekoUB Session String Generator")
     print("   Nya~ Let's get your session string!")
-    print("="*50 + "\n")
+    print("=" * 50 + "\n")
 
 
 async def generate_session():
@@ -32,21 +32,18 @@ async def generate_session():
 
         # Create temporary client
         async with Client(
-            "temp_session",
-            api_id=api_id,
-            api_hash=api_hash,
-            in_memory=True
+            "temp_session", api_id=api_id, api_hash=api_hash, in_memory=True
         ) as app:
             # Get session string
             session_string = await app.export_session_string()
 
-            print("\n" + "="*50)
+            print("\n" + "=" * 50)
             print("✅ Session string generated successfully!")
-            print("="*50 + "\n")
+            print("=" * 50 + "\n")
 
             print("📋 Your SESSION_STRING:\n")
             print(session_string)
-            print("\n" + "="*50)
+            print("\n" + "=" * 50)
 
             print("\n📝 Next steps:")
             print("1. Copy the session string above")

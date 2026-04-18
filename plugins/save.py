@@ -8,7 +8,9 @@ from userbot.utils import get_logger, continue_propagation
 logger = get_logger(__name__)
 
 
-@main.app.on_message(filters.me & filters.command("save", prefixes=config.CMD_PREFIX))
+@main.app.on_message(
+    filters.me & filters.command("save", prefixes=config.CMD_PREFIX)
+)
 @continue_propagation
 async def save_command(client, message: Message):
     """Save replied message to Saved Messages (as forward).
@@ -52,10 +54,13 @@ async def save_command(client, message: Message):
 
             # Auto-delete confirmation after 2 seconds
             import asyncio
+
             await asyncio.sleep(2)
             await message.delete()
         else:
-            await message.edit("❌ Something went wrong and save failed!\nTry manually copying the message.")
+            await message.edit(
+                "❌ Something went wrong and save failed!\nTry manually copying the message."
+            )
             logger.error("Both forward and copy failed for save command")
 
     except Exception as e:

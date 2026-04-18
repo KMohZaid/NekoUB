@@ -4,7 +4,12 @@ from pyrogram.types import Message
 
 import config
 import main
-from userbot.utils import get_logger, format_output, code_format, continue_propagation
+from userbot.utils import (
+    get_logger,
+    format_output,
+    code_format,
+    continue_propagation,
+)
 
 logger = get_logger(__name__)
 
@@ -16,7 +21,7 @@ async def run_exec_task(command, message):
         process = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
         )
 
         stdout, stderr = await process.communicate()
@@ -43,7 +48,9 @@ async def run_exec_task(command, message):
         logger.info(f"Executed command: {command}")
 
     except asyncio.CancelledError:
-        await message.edit(f"❌ **EXEC killed by user**\n\n**Command:**\n```bash\n{command}\n```")
+        await message.edit(
+            f"❌ **EXEC killed by user**\n\n**Command:**\n```bash\n{command}\n```"
+        )
         logger.info("Exec command was cancelled")
         raise
     except Exception as e:
@@ -52,7 +59,9 @@ async def run_exec_task(command, message):
         logger.error(f"Error in exec command: {e}")
 
 
-@main.app.on_message(filters.me & filters.command("exec", prefixes=config.CMD_PREFIX))
+@main.app.on_message(
+    filters.me & filters.command("exec", prefixes=config.CMD_PREFIX)
+)
 @continue_propagation
 async def exec_command(client, message: Message):
     """Execute shell commands.
@@ -78,9 +87,9 @@ async def exec_command(client, message: Message):
         task = asyncio.create_task(run_exec_task(command, message))
 
         main.running_tasks[task_id] = {
-            'task': task,
-            'type': 'exec',
-            'message': message
+            "task": task,
+            "type": "exec",
+            "message": message,
         }
 
         try:

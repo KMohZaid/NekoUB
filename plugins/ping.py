@@ -9,7 +9,9 @@ from userbot.utils import get_logger, continue_propagation
 logger = get_logger(__name__)
 
 
-@main.app.on_message(filters.me & filters.command("ping", prefixes=config.CMD_PREFIX))
+@main.app.on_message(
+    filters.me & filters.command("ping", prefixes=config.CMD_PREFIX)
+)
 @continue_propagation
 async def ping_command(client, message: Message):
     """Check bot latency.

@@ -52,7 +52,11 @@ def format_chat_info(chat: Chat) -> str:
         info += f"**Members:** {chat.members_count}\n"
 
     if chat.description:
-        desc = chat.description[:100] + "..." if len(chat.description) > 100 else chat.description
+        desc = (
+            chat.description[:100] + "..."
+            if len(chat.description) > 100
+            else chat.description
+        )
         info += f"**Description:** {desc}\n"
 
     if chat.dc_id:
@@ -61,7 +65,9 @@ def format_chat_info(chat: Chat) -> str:
     return info
 
 
-@main.app.on_message(filters.me & filters.command("info", prefixes=config.CMD_PREFIX))
+@main.app.on_message(
+    filters.me & filters.command("info", prefixes=config.CMD_PREFIX)
+)
 @continue_propagation
 async def info_command(client, message: Message):
     """Get information about user, chat, or replied message.
@@ -90,17 +96,25 @@ async def info_command(client, message: Message):
                 # Add forward from chat info if message is forwarded
                 if reply.forward_from_chat:
                     info_text += f"\n**🔄 Forwarded From Chat:**\n"
-                    info_text += f"**Chat ID:** `{reply.forward_from_chat.id}`\n"
+                    info_text += (
+                        f"**Chat ID:** `{reply.forward_from_chat.id}`\n"
+                    )
                     if reply.forward_from_chat.title:
-                        info_text += f"**Chat Title:** {reply.forward_from_chat.title}\n"
+                        info_text += (
+                            f"**Chat Title:** {reply.forward_from_chat.title}\n"
+                        )
                     if reply.forward_from_chat.username:
                         info_text += f"**Username:** @{reply.forward_from_chat.username}\n"
                     if reply.forward_from_chat.type:
-                        info_text += f"**Type:** {reply.forward_from_chat.type.name}\n"
+                        info_text += (
+                            f"**Type:** {reply.forward_from_chat.type.name}\n"
+                        )
 
                 await message.edit(info_text)
             else:
-                await message.edit("❌ Could not get user information from replied message")
+                await message.edit(
+                    "❌ Could not get user information from replied message"
+                )
         else:
             # Get current chat info
             chat = await client.get_chat(message.chat.id)

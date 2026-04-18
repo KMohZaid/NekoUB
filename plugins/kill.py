@@ -8,7 +8,9 @@ from userbot.utils import get_logger, continue_propagation
 logger = get_logger(__name__)
 
 
-@main.app.on_message(filters.me & filters.command("kill", prefixes=config.CMD_PREFIX))
+@main.app.on_message(
+    filters.me & filters.command("kill", prefixes=config.CMD_PREFIX)
+)
 @continue_propagation
 async def kill_command(client, message: Message):
     """Kill running exec/eval commands.
@@ -24,18 +26,24 @@ async def kill_command(client, message: Message):
 
         # Cancel all running tasks
         for task_id, task_info in list(main.running_tasks.items()):
-            task = task_info['task']
-            task_type = task_info['type']
-            task_msg = task_info['message']
+            task = task_info["task"]
+            task_type = task_info["type"]
+            task_msg = task_info["message"]
 
             if not task.done():
                 task.cancel()
-                killed_tasks.append(f"`{task_type}` in chat `{task_msg.chat.id}`")
-                logger.info(f"Killed {task_type} task in chat {task_msg.chat.id}")
+                killed_tasks.append(
+                    f"`{task_type}` in chat `{task_msg.chat.id}`"
+                )
+                logger.info(
+                    f"Killed {task_type} task in chat {task_msg.chat.id}"
+                )
 
                 # Update the original message
                 try:
-                    await task_msg.edit(f"❌ **{task_type.upper()} killed by user**")
+                    await task_msg.edit(
+                        f"❌ **{task_type.upper()} killed by user**"
+                    )
                 except Exception as e:
                     logger.warning(f"Could not update killed task message: {e}")
 

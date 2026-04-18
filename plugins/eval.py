@@ -7,7 +7,12 @@ from pyrogram.types import Message
 
 import config
 import main
-from userbot.utils import get_logger, format_output, code_format, continue_propagation
+from userbot.utils import (
+    get_logger,
+    format_output,
+    code_format,
+    continue_propagation,
+)
 
 logger = get_logger(__name__)
 
@@ -35,11 +40,14 @@ async def run_eval_task(code, client, message):
             # Check if code contains await - if so, wrap in async function
             if "await" in code:
                 # Wrap in async function - properly indent all lines
-                indented_code = '\n'.join('    ' + line if line.strip() else '' for line in code.splitlines())
+                indented_code = "\n".join(
+                    "    " + line if line.strip() else ""
+                    for line in code.splitlines()
+                )
                 async_code = f"async def __eval_async():\n{indented_code}"
                 exec(async_code, exec_globals)
                 # Call and await the function in the actual async context
-                result = await exec_globals['__eval_async']()
+                result = await exec_globals["__eval_async"]()
                 if result is not None:
                     print(result)
             else:
@@ -81,7 +89,9 @@ async def run_eval_task(code, client, message):
         logger.info(f"Evaluated code: {code[:50]}...")
 
     except asyncio.CancelledError:
-        await message.edit(f"❌ **EVAL killed by user**\n\n**Code:**\n```py\n{code[:500]}\n```")
+        await message.edit(
+            f"❌ **EVAL killed by user**\n\n**Code:**\n```py\n{code[:500]}\n```"
+        )
         logger.info("Eval command was cancelled")
         raise
     except Exception as e:
@@ -90,7 +100,9 @@ async def run_eval_task(code, client, message):
         logger.error(f"Error in eval command: {e}")
 
 
-@main.app.on_message(filters.me & filters.command("eval", prefixes=config.CMD_PREFIX))
+@main.app.on_message(
+    filters.me & filters.command("eval", prefixes=config.CMD_PREFIX)
+)
 @continue_propagation
 async def eval_command(client, message: Message):
     """Evaluate Python code.
@@ -116,9 +128,9 @@ async def eval_command(client, message: Message):
         task = asyncio.create_task(run_eval_task(code, client, message))
 
         main.running_tasks[task_id] = {
-            'task': task,
-            'type': 'eval',
-            'message': message
+            "task": task,
+            "type": "eval",
+            "message": message,
         }
 
         try:

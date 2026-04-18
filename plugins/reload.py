@@ -9,7 +9,9 @@ from userbot.utils import get_logger, continue_propagation
 logger = get_logger(__name__)
 
 
-@main.app.on_message(filters.me & filters.command("reload", prefixes=config.CMD_PREFIX))
+@main.app.on_message(
+    filters.me & filters.command("reload", prefixes=config.CMD_PREFIX)
+)
 @continue_propagation
 async def reload_command(client, message: Message):
     """Reload all plugins without restarting the bot.
@@ -42,9 +44,13 @@ async def reload_command(client, message: Message):
             await message.delete()
 
         except Exception as reload_error:
-            error_msg = f"❌ Error during reload:\n```\n{str(reload_error)}\n```"
+            error_msg = (
+                f"❌ Error during reload:\n```\n{str(reload_error)}\n```"
+            )
             await message.edit(error_msg)
-            logger.error(f"Error in reload_plugins: {reload_error}", exc_info=True)
+            logger.error(
+                f"Error in reload_plugins: {reload_error}", exc_info=True
+            )
             # Don't auto-delete on error so user can see it
 
     except Exception as e:

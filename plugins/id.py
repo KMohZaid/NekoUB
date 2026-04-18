@@ -8,7 +8,9 @@ from userbot.utils import get_logger, continue_propagation
 logger = get_logger(__name__)
 
 
-@main.app.on_message(filters.me & filters.command("id", prefixes=config.CMD_PREFIX))
+@main.app.on_message(
+    filters.me & filters.command("id", prefixes=config.CMD_PREFIX)
+)
 @continue_propagation
 async def id_command(client, message: Message):
     """Get IDs of chat, user, or media.
@@ -42,29 +44,65 @@ async def id_command(client, message: Message):
                 output.append(f"\n**Forwarded From Chat:**")
                 output.append(f"**Chat ID:** `{reply.forward_from_chat.id}`")
                 if reply.forward_from_chat.title:
-                    output.append(f"**Chat Title:** {reply.forward_from_chat.title}")
+                    output.append(
+                        f"**Chat Title:** {reply.forward_from_chat.title}"
+                    )
                 if reply.forward_from_chat.username:
-                    output.append(f"**Username:** @{reply.forward_from_chat.username}")
+                    output.append(
+                        f"**Username:** @{reply.forward_from_chat.username}"
+                    )
 
             # Check for media/document
             media_info = None
 
             if reply.photo:
-                media_info = ("Photo", reply.photo.file_id, reply.photo.file_unique_id)
+                media_info = (
+                    "Photo",
+                    reply.photo.file_id,
+                    reply.photo.file_unique_id,
+                )
             elif reply.video:
-                media_info = ("Video", reply.video.file_id, reply.video.file_unique_id)
+                media_info = (
+                    "Video",
+                    reply.video.file_id,
+                    reply.video.file_unique_id,
+                )
             elif reply.document:
-                media_info = ("Document", reply.document.file_id, reply.document.file_unique_id)
+                media_info = (
+                    "Document",
+                    reply.document.file_id,
+                    reply.document.file_unique_id,
+                )
             elif reply.audio:
-                media_info = ("Audio", reply.audio.file_id, reply.audio.file_unique_id)
+                media_info = (
+                    "Audio",
+                    reply.audio.file_id,
+                    reply.audio.file_unique_id,
+                )
             elif reply.voice:
-                media_info = ("Voice", reply.voice.file_id, reply.voice.file_unique_id)
+                media_info = (
+                    "Voice",
+                    reply.voice.file_id,
+                    reply.voice.file_unique_id,
+                )
             elif reply.video_note:
-                media_info = ("Video Note", reply.video_note.file_id, reply.video_note.file_unique_id)
+                media_info = (
+                    "Video Note",
+                    reply.video_note.file_id,
+                    reply.video_note.file_unique_id,
+                )
             elif reply.sticker:
-                media_info = ("Sticker", reply.sticker.file_id, reply.sticker.file_unique_id)
+                media_info = (
+                    "Sticker",
+                    reply.sticker.file_id,
+                    reply.sticker.file_unique_id,
+                )
             elif reply.animation:
-                media_info = ("Animation", reply.animation.file_id, reply.animation.file_unique_id)
+                media_info = (
+                    "Animation",
+                    reply.animation.file_id,
+                    reply.animation.file_unique_id,
+                )
 
             # Add media info if found
             if media_info:
