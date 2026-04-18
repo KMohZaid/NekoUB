@@ -1,8 +1,8 @@
-import html
 import re
 from datetime import datetime, timezone
 from typing import Optional
 
+import httpx
 from pyrogram import filters
 from pyrogram.types import Message
 from todoist_api_python.api import TodoistAPI
@@ -25,6 +25,8 @@ TODOIST_LABEL_COLOR = "blue"
 
 PRIORITY_PATTERN = re.compile(r"(?i)(?:^|\s)#p([1-4])\b")
 DUE_PATTERN = re.compile(r"(?i)(?:^|\s)#due\s*\|([^|]+)\|")
+MAX_TASK_CONTENT_LEN = 500
+MAX_TASK_DESCRIPTION_LEN = 16383
 
 
 def _iter_items(payload):
@@ -41,10 +43,6 @@ def _get_chat_link_id(chat_id: int) -> str:
     if chat_id_text.startswith("-100"):
         return chat_id_text[4:]
     return chat_id_text.lstrip("-")
-
-
-def _build_chat_link(chat_id: int) -> str:
-    return f"https://t.me/c/{_get_chat_link_id(chat_id)}"
 
 
 def _build_message_link(chat_id: int, message_id: int) -> str:
@@ -149,27 +147,63 @@ def build_description(message: Message) -> Optional[str]:
 
     chat_id = message.chat.id
     chat_title = message.chat.title or message.chat.first_name or "Chat"
-    chat_link = _build_chat_link(chat_id)
     message_link = _build_message_link(chat_id, message.id)
     replied_message_link = _build_message_link(chat_id, reply.id)
 
     replied_text = _extract_message_text(reply).strip()
-    replied_html = (
-        html.escape(replied_text) if replied_text else "<i>(non-text message)</i>"
-    )
+    replied_content = replied_text if replied_text else "(non-text message)"
     timestamp_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    return (
-        f'Chat [Task originates from] : <a href="{chat_link}">'
-        f"{html.escape(chat_title)} #{chat_id}</a>\n"
-        f"Message [Task cmd message] : #{message.id} - {message_link}\n\n"
+    description_prefix = (
+        f"Chat [Task originates from] : {chat_title} #{chat_id}\n"
+        f"Message [Task cmd message] : [Message #{message.id}]({message_link})\n\n"
         "=== Replied Message (If any) ===\n"
-        f'<a href="{replied_message_link}">Message #{reply.id}</a>\n\n'
+        f"[Message #{reply.id}]({replied_message_link})\n\n"
         "=========================================\n\n"
-        f"{replied_html}\n\n"
+    )
+    description_suffix = (
+        "\n\n"
         "=========================================\n\n\n"
         f"Task added on : {timestamp_utc}"
     )
+
+    max_replied_len = (
+        MAX_TASK_DESCRIPTION_LEN - len(description_prefix) - len(description_suffix)
+    )
+    if max_replied_len < 0:
+        max_replied_len = 0
+
+    if len(replied_content) > max_replied_len:
+        truncation_suffix = "\n... (truncated)"
+        keep_len = max_replied_len - len(truncation_suffix)
+        if keep_len > 0:
+            replied_content = (
+                replied_content[:keep_len].rstrip() + truncation_suffix
+            )
+        else:
+            replied_content = replied_content[:max_replied_len]
+
+    description = description_prefix + replied_content + description_suffix
+    return description
+
+
+def _format_todoist_error(error: Exception) -> str:
+    if not isinstance(error, httpx.HTTPStatusError):
+        return f"{type(error).__name__}: {error}"
+
+    status = "unknown"
+    body = ""
+    try:
+        status = str(error.response.status_code)
+        body = error.response.text or ""
+    except Exception:
+        pass
+
+    if len(body) > 1200:
+        body = body[:1200].rstrip() + "... (truncated)"
+    if body:
+        return f"HTTP {status}: {body}"
+    return f"HTTP {status}: {error}"
 
 
 async def log_error_to_saved_messages(client, context: str, error: Exception):
@@ -238,6 +272,10 @@ async def todo_command(client, message: Message):
             "`#due |...|` : specify due date ...."
         )
         return
+    if len(parsed_content) > MAX_TASK_CONTENT_LEN:
+        await message.reply_text("title is more than 500 char")
+        await send_result_feedback(client, message, success=False)
+        return
 
     try:
         ensure_initialized()
@@ -258,11 +296,14 @@ async def todo_command(client, message: Message):
         API.add_task(**create_task_kwargs)
         await send_result_feedback(client, message, success=True)
     except Exception as exc:
-        logger.error(f"[TODOIST] Failed to create task: {exc}", exc_info=True)
+        error_details = _format_todoist_error(exc)
+        logger.error(
+            f"[TODOIST] Failed to create task: {error_details}", exc_info=True
+        )
         await log_error_to_saved_messages(
             client,
             context=f"chat={message.chat.id} message={message.id}",
-            error=exc,
+            error=RuntimeError(error_details),
         )
         await send_result_feedback(client, message, success=False)
 
