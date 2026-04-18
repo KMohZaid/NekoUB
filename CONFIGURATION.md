@@ -90,6 +90,16 @@ The prefix character for bot commands.
 - `/` - Slash
 - Any single character
 
+## 🔌 Integrations
+
+### Todoist API Token
+```env
+TODOIST_API_TOKEN=your_todoist_token_here
+```
+
+Optional token used by the `.todo` command plugin to create tasks in Todoist.
+Generate or copy your API token from Todoist settings.
+
 ## 🛡️ Safety Settings
 
 ### Spam Limits

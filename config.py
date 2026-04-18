@@ -11,6 +11,7 @@ SESSION_STRING = os.getenv("SESSION_STRING", "")
 
 # Bot settings
 CMD_PREFIX = os.getenv("CMD_PREFIX", ".")
+TODOIST_API_TOKEN = os.getenv("TODOIST_API_TOKEN", "")
 
 # Spam settings
 MAX_SPAM_COUNT = int(os.getenv("MAX_SPAM_COUNT", "100"))
