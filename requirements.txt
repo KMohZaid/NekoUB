@@ -1,4 +1,4 @@
-git+https://github.com/TelegramPlayground/pyrogram.git@dev
+git+https://github.com/TelegramPlayground/PyroTGFork.git@dev
 python-dotenv
 tgcrypto
 colorama
