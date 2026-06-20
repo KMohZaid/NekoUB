@@ -48,5 +48,8 @@ ENV/
 *.log
 logs/
 
+# Sticker cache
+.sticker_cache.json
+
 # Docker
 docker-compose.override.yml

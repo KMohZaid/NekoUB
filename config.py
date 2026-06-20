@@ -23,6 +23,13 @@ APP_VERSION = os.getenv("APP_VERSION", "NekoUB 1.0.0")
 WORKERS = int(os.getenv("WORKERS", "8"))
 PARSE_MODE = os.getenv("PARSE_MODE", "markdown").lower()
 
+# Sticker set name/title format
+# Use {user_id}, {first_name}, {index} as placeholders
+# Default short_name: "a{user_id}_vol{index}"
+# Default title: "{first_name}'s Pack Vol{index}"
+STICKERSET_NAME_FORMAT = os.getenv("STICKERSET_NAME_FORMAT", "")
+STICKERSET_TITLE_FORMAT = os.getenv("STICKERSET_TITLE_FORMAT", "")
+
 # Validate required settings
 if API_ID == 0 or not API_HASH:
     raise ValueError(
