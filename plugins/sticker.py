@@ -2,6 +2,7 @@ import asyncio
 import json
 from pathlib import Path
 
+import emoji
 from pyrogram import filters
 from pyrogram.errors import (
     StickersetInvalid,
@@ -21,6 +22,7 @@ logger = get_logger(__name__)
 
 CACHE_PATH = Path(__file__).resolve().parent.parent / ".sticker_cache.json"
 MAX_STICKERS_PER_PACK = 120
+MAX_EMOJI_COUNT = 6
 ADD_COOLDOWN = 1  # seconds between sticker adds
 
 # --- Runtime state ---
@@ -360,10 +362,43 @@ async def kang_command(client, message: Message):
         await message.edit("Reply to a sticker to kang it.")
         return
 
-    parts = (message.text or "").split(maxsplit=1)
-    emoji = parts[1].strip() if len(parts) > 1 else None
+    raw = (message.text or "").split(maxsplit=1)
+    if len(raw) < 2:
+        await enqueue_sticker(client, reply.sticker, None, message)
+        return
 
-    await enqueue_sticker(client, reply.sticker, emoji, message)
+    args = raw[1]
+    append_mode = " -a" in args
+    if append_mode:
+        args = args.replace(" -a", "").strip()
+
+    if not args:
+        await enqueue_sticker(client, reply.sticker, None, message)
+        return
+
+    user_emojis = [c for c in args if emoji.is_emoji(c)]
+    emoji_count = len(user_emojis)
+
+    if emoji_count == 0:
+        await message.reply_text("no emoji huh, its fine but not recommended. try again")
+        return
+
+    if append_mode:
+        sticker_emoji = reply.sticker.emoji or ""
+        sticker_emojis = [c for c in sticker_emoji if emoji.is_emoji(c)]
+        combined = sticker_emojis + user_emojis
+        if len(combined) > MAX_EMOJI_COUNT:
+            await message.reply_text(
+                f"Too many emojis ({len(combined)}/6). "
+                f"Sticker has {len(sticker_emojis)}, you added {emoji_count}."
+            )
+            return
+        await enqueue_sticker(client, reply.sticker, "".join(combined), message)
+    else:
+        if emoji_count > MAX_EMOJI_COUNT:
+            await message.reply_text(f"Too many emojis ({emoji_count}/6).")
+            return
+        await enqueue_sticker(client, reply.sticker, "".join(user_emojis), message)
 
 
 # ============================================================
@@ -401,9 +436,13 @@ async def help_sticker(client, message: Message):
         f"`{prefix}stop_sticker_monitor`\n"
         "  Stop monitoring stickers in ALL chats.\n\n"
         f"`{prefix}kang` (reply to sticker)\n"
-        "  Copy the replied sticker into your pack. "
-        "Specify emojis after the command to override the sticker's emoji.\n"
-        f"  Example: `{prefix}kang 🐱🦊`\n\n"
+        "  Copy the replied sticker into your pack.\n"
+        "  Specify emojis to override sticker's emoji.\n"
+        f"  `-a` : append to sticker's existing emoji instead of replacing.\n"
+        f"  Examples:\n"
+        f"    `{prefix}kang 🐱` — use 🐱 as emoji\n"
+        f"    `{prefix}kang -a 🐱` — append 🐱 to sticker's existing emoji\n"
+        f"    `{prefix}kang 🐱🦊 -a` — same, flag position flexible\n\n"
         f"`{prefix}help_sticker`\n"
         "  Show this help message.\n\n"
         "---\n"
