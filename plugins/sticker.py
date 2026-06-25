@@ -100,7 +100,9 @@ async def add_sticker_to_pack(
     input_doc = decode_sticker_file_id(sticker)
     await client.invoke(
         functions.stickers.AddStickerToSet(
-            stickerset=types.InputStickerSetShortName(short_name=pack_short_name),
+            stickerset=types.InputStickerSetShortName(
+                short_name=pack_short_name
+            ),
             sticker=types.InputStickerSetItem(
                 document=input_doc,
                 emoji=emoji or sticker.emoji or "🌟",
@@ -199,7 +201,10 @@ async def resolve_current_pack(client) -> dict:
 
 async def ensure_pack(client) -> dict:
     cache = load_cache()
-    if not cache.get("current_pack_short_name") and cache.get("current_pack_count", 0) == 0:
+    if (
+        not cache.get("current_pack_short_name")
+        and cache.get("current_pack_count", 0) == 0
+    ):
         cache = await resolve_current_pack(client)
     return cache
 
@@ -226,7 +231,9 @@ async def add_sticker_with_pack_management(
         if short_name is None:
             short_name = build_pack_short_name(user_id, pack_number)
             title = build_pack_title(first_name, pack_number)
-            await create_pack_with_sticker(client, title, short_name, sticker, emoji)
+            await create_pack_with_sticker(
+                client, title, short_name, sticker, emoji
+            )
             cache["current_pack_short_name"] = short_name
             cache["current_pack_count"] = 1
             save_cache(cache)
@@ -259,7 +266,9 @@ async def add_sticker_with_pack_management(
         cache["current_pack_count"] = 0
         save_cache(cache)
         try:
-            return await add_sticker_with_pack_management(client, sticker, emoji)
+            return await add_sticker_with_pack_management(
+                client, sticker, emoji
+            )
         except Exception:
             return False
     except Exception as exc:
@@ -289,7 +298,9 @@ async def _queue_worker(client):
     while True:
         sticker, emoji, message = await queue.get()
         try:
-            success = await add_sticker_with_pack_management(client, sticker, emoji)
+            success = await add_sticker_with_pack_management(
+                client, sticker, emoji
+            )
             await send_result_feedback(client, message, success)
         except Exception as exc:
             logger.error(f"[STICKER] Queue worker error: {exc}")
@@ -335,16 +346,20 @@ async def send_result_feedback(client, message: Message, success: bool) -> None:
 
 
 @main.app.on_message(
-    filters.me & filters.command("start_sticker_monitor", prefixes=config.CMD_PREFIX)
+    filters.me
+    & filters.command("start_sticker_monitor", prefixes=config.CMD_PREFIX)
 )
 @continue_propagation
 async def start_sticker_monitor(client, message: Message):
     monitoring_chats.add(message.chat.id)
-    await message.edit(f"Started sticker monitor in this chat ({message.chat.id})")
+    await message.edit(
+        f"Started sticker monitor in this chat ({message.chat.id})"
+    )
 
 
 @main.app.on_message(
-    filters.me & filters.command("stop_sticker_monitor", prefixes=config.CMD_PREFIX)
+    filters.me
+    & filters.command("stop_sticker_monitor", prefixes=config.CMD_PREFIX)
 )
 @continue_propagation
 async def stop_sticker_monitor(client, message: Message):
@@ -384,12 +399,14 @@ async def kang_command(client, message: Message):
     emoji_count = len(user_emojis)
 
     if emoji_count == 0:
-        await message.reply_text("no emoji huh, its fine but not recommended. try again")
+        await message.reply_text(
+            "no emoji huh, its fine but not recommended. try again"
+        )
         return
 
     if append_mode:
         sticker_emoji = reply.sticker.emoji or ""
-        # sent sticker only have one emoji appear on it unlike pack having 6. 
+        # sent sticker only have one emoji appear on it unlike pack having 6.
         # so just to be safe, we will consider it as possible multiple emojis
         sticker_emojis = list(
             dict.fromkeys(x["emoji"] for x in emoji.emoji_list(args))
@@ -406,7 +423,9 @@ async def kang_command(client, message: Message):
         if emoji_count > MAX_EMOJI_COUNT:
             await message.reply_text(f"Too many emojis ({emoji_count}/6).")
             return
-        await enqueue_sticker(client, reply.sticker, "".join(user_emojis), message)
+        await enqueue_sticker(
+            client, reply.sticker, "".join(user_emojis), message
+        )
 
 
 # ============================================================
