@@ -376,7 +376,11 @@ async def kang_command(client, message: Message):
         await enqueue_sticker(client, reply.sticker, None, message)
         return
 
-    user_emojis = [c for c in args if emoji.is_emoji(c)]
+    # uniue emoji, emoji.unique_emoji_list() doesn't preserve order so we are using emoji list with dict to make it unique
+    user_emojis = list(
+        dict.fromkeys(x["emoji"] for x in emoji.emoji_list(args))
+    )
+
     emoji_count = len(user_emojis)
 
     if emoji_count == 0:
@@ -385,7 +389,11 @@ async def kang_command(client, message: Message):
 
     if append_mode:
         sticker_emoji = reply.sticker.emoji or ""
-        sticker_emojis = [c for c in sticker_emoji if emoji.is_emoji(c)]
+        # sent sticker only have one emoji appear on it unlike pack having 6. 
+        # so just to be safe, we will consider it as possible multiple emojis
+        sticker_emojis = list(
+            dict.fromkeys(x["emoji"] for x in emoji.emoji_list(args))
+        )
         combined = sticker_emojis + user_emojis
         if len(combined) > MAX_EMOJI_COUNT:
             await message.reply_text(
