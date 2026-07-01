@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from typing import Optional
 
 import httpx
+from cachetools import TTLCache
 from pyrogram import filters
 from pyrogram.enums import ParseMode
 from pyrogram.types import Message
@@ -26,6 +27,8 @@ INIT_ERROR = None
 TODOIST_SECTION_NAME = "📩 From Telegram [UserBot]"
 TODOIST_LABEL_NAME = "📩 From Telegram [UserBot]"
 TODOIST_LABEL_COLOR = "blue"
+
+_labels_cache = TTLCache(maxsize=1, ttl=300)
 
 PRIORITY_PATTERN = re.compile(r"(?i)(?:^|\s)#p([1-4])\b")
 DUE_PATTERN = re.compile(r"(?i)(?:^|\s)#due\s*\|([^|]+)\|")
@@ -128,20 +131,35 @@ def create_section(name: str = TODOIST_SECTION_NAME):
     logger.info(f"[TODOIST] Created section: {SECTION}")
 
 
+def _get_labels_cached():
+    cache_key = "labels"
+    cached = _labels_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    result = API.get_labels()
+    _labels_cache[cache_key] = result
+    return result
+
+
 def create_label(
     name: str = TODOIST_LABEL_NAME, color: str = TODOIST_LABEL_COLOR
 ):
     global LABEL
-    labels = API.get_labels()
+    labels = _get_labels_cached()
     for label in _iter_items(labels):
         if getattr(label, "name", "") == name:
-            LABEL = label
-            return
+            if name == TODOIST_LABEL_NAME:
+                LABEL = label
+            return label
 
-    LABEL = API.add_label(
+    label = API.add_label(
         name=name, color=color, item_order=0, is_favorite=True
     )
-    logger.info(f"[TODOIST] Created label: {LABEL}")
+    _labels_cache.clear()
+    logger.info(f"[TODOIST] Created label: {label}")
+    if name == TODOIST_LABEL_NAME:
+        LABEL = label
+    return label
 
 
 def resolve_labels(names: list) -> list:
@@ -681,10 +699,16 @@ async def todo_command(client, message: Message):
             if label.casefold() != LABEL.name.casefold():
                 labels.append(label)
 
+        chat_title = message.chat.title or message.chat.first_name or "Chat"
+        chat_label_name = f"TG 📩 {chat_title} {message.chat.id}"
+        chat_label = create_label(
+            name=chat_label_name, color=TODOIST_LABEL_COLOR
+        )
+
         create_task_kwargs = {
             "content": parsed.title,
             "section_id": SECTION.id,
-            "labels": labels,
+            "labels": labels + [chat_label.name],
         }
         if description:
             create_task_kwargs["description"] = description

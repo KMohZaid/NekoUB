@@ -8,6 +8,7 @@ pytesseract
 watchfiles
 anyio
 todoist-api-python
+cachetools
 emoji
 edge-tts
 imageio-ffmpeg
