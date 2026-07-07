@@ -1,7 +1,8 @@
 import html
 import re
+import time
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time as datetime_time, timezone
 from zoneinfo import ZoneInfo
 from typing import Optional
 
@@ -27,8 +28,10 @@ INIT_ERROR = None
 TODOIST_SECTION_NAME = "📩 From Telegram [UserBot]"
 TODOIST_LABEL_NAME = "📩 From Telegram [UserBot]"
 TODOIST_LABEL_COLOR = "blue"
+TODOIST_LABEL_CACHE_TTL = 3600
 
-_labels_cache = TTLCache(maxsize=1, ttl=300)
+_labels_cache = TTLCache(maxsize=1, ttl=TODOIST_LABEL_CACHE_TTL)
+_label_by_name_cache = TTLCache(maxsize=256, ttl=TODOIST_LABEL_CACHE_TTL)
 
 PRIORITY_PATTERN = re.compile(r"(?i)(?:^|\s)#p([1-4])\b")
 DUE_PATTERN = re.compile(r"(?i)(?:^|\s)#due\s*\|([^|]+)\|")
@@ -138,25 +141,104 @@ def _get_labels_cached():
         return cached
     result = API.get_labels()
     _labels_cache[cache_key] = result
+    _remember_labels(result)
     return result
+
+
+def _get_labels_uncached():
+    _labels_cache.clear()
+    result = API.get_labels()
+    _labels_cache["labels"] = result
+    _remember_labels(result)
+    return result
+
+
+def _find_label_by_name(labels, name: str):
+    for label in _iter_items(labels):
+        if getattr(label, "name", "") == name:
+            return label
+    return None
+
+
+def _remember_label(label):
+    label_name = getattr(label, "name", None)
+    if label_name:
+        _label_by_name_cache[label_name] = label
+
+
+def _remember_labels(labels):
+    for label in _iter_items(labels):
+        _remember_label(label)
+
+
+def _is_duplicate_label_error(error: Exception) -> bool:
+    if not isinstance(error, httpx.HTTPStatusError):
+        return False
+
+    try:
+        response = error.response
+        if response.status_code != 400:
+            return False
+        body = response.json()
+    except Exception:
+        return False
+
+    return (
+        body.get("error_tag") == "LABEL_ALREADY_EXISTS"
+        or body.get("error_code") == 54
+    )
+
+
+def _retry_after_seconds(error: Exception) -> float:
+    try:
+        retry_after = error.response.json().get("error_extra", {}).get(
+            "retry_after"
+        )
+        return min(max(float(retry_after), 0), 3)
+    except Exception:
+        return 0
 
 
 def create_label(
     name: str = TODOIST_LABEL_NAME, color: str = TODOIST_LABEL_COLOR
 ):
     global LABEL
-    labels = _get_labels_cached()
-    for label in _iter_items(labels):
-        if getattr(label, "name", "") == name:
-            if name == TODOIST_LABEL_NAME:
-                LABEL = label
-            return label
+    cached_label = _label_by_name_cache.get(name)
+    if cached_label is not None:
+        if name == TODOIST_LABEL_NAME:
+            LABEL = cached_label
+        return cached_label
 
-    label = API.add_label(
-        name=name, color=color, item_order=0, is_favorite=True
-    )
-    _labels_cache.clear()
-    logger.info(f"[TODOIST] Created label: {label}")
+    labels = _get_labels_cached()
+    label = _find_label_by_name(labels, name)
+    if label is not None:
+        _remember_label(label)
+        if name == TODOIST_LABEL_NAME:
+            LABEL = label
+        return label
+
+    try:
+        label = API.add_label(
+            name=name, color=color, item_order=0, is_favorite=True
+        )
+    except Exception as exc:
+        if not _is_duplicate_label_error(exc):
+            raise
+
+        label = _label_by_name_cache.get(name)
+        if label is None:
+            retry_after = _retry_after_seconds(exc)
+            if retry_after:
+                time.sleep(retry_after)
+            label = _find_label_by_name(_get_labels_uncached(), name)
+        if label is None:
+            raise
+        logger.info(f"[TODOIST] Reused existing label after conflict: {label}")
+    else:
+        _labels_cache.clear()
+        logger.info(f"[TODOIST] Created label: {label}")
+
+    _remember_label(label)
     if name == TODOIST_LABEL_NAME:
         LABEL = label
     return label
@@ -476,7 +558,7 @@ def _format_due_line(task) -> Optional[str]:
             if isinstance(due_date, date)
             else date.fromisoformat(str(due_date)[:10])
         )
-        due_at = datetime.combine(due_day, time.max, tzinfo=zone)
+        due_at = datetime.combine(due_day, datetime_time.max, tzinfo=zone)
         due_unix = int(due_at.timestamp())
         display_date = due_day.strftime("%b %d, %Y")
         due_text = (
