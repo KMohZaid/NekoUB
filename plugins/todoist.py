@@ -736,7 +736,9 @@ def _reserve_todo_message(message: Message) -> bool:
 
 
 @main.app.on_message(
-    filters.me & filters.command("todo", prefixes=config.CMD_PREFIX)
+    filters.me
+    & filters.command("todo", prefixes=config.CMD_PREFIX)
+    & ~filters.scheduled
 )
 @continue_propagation
 async def todo_command(client, message: Message):
