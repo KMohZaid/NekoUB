@@ -51,5 +51,8 @@ logs/
 # Sticker cache
 .sticker_cache.json
 
+# Automated messages state (.am)
+.automessages.json
+
 # Docker
 docker-compose.override.yml

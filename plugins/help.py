@@ -205,6 +205,69 @@ CATEGORIES: dict[str, dict] = {
             },
         ],
     },
+    "automations": {
+        "emoji": "⏰",
+        "title": "Automations",
+        "desc": "Automated messages: keyword, reply, tag and time triggers.",
+        "commands": [
+            {
+                "cmd": "am",
+                "args": "<match> on <output>",
+                "desc": "Keyword trigger: send <output> when someone says "
+                "<match> in this chat. Flags: `-tag`/`-notag`, `-reply`, "
+                "`-exact`.",
+                "ex": [
+                    "{p}am hello on Hi there!",
+                    "{p}am hi on Hello! -tag",
+                ],
+            },
+            {
+                "cmd": "am",
+                "args": "<match> reply <output>",
+                "desc": "Reply trigger: send <output> when someone replies to "
+                "you (optionally only if their message contains <match>). "
+                "Alias trigger: `tag`/`mention` also fires when you are "
+                "tagged.",
+                "ex": [
+                    "{p}am reply On it!",
+                    "{p}am boss reply Yes sir?",
+                    "{p}am /ft tag /plant hdsfshfg -notag",
+                ],
+            },
+            {
+                "cmd": "am",
+                "args": "every <time> <output>",
+                "desc": "Repeat <output> every <time> (`30s`, `15m`, `1h`, "
+                "`1d`, or `30 minutes`).",
+                "ex": ["{p}am every 1h Stand up!", "{p}am every 30m Drink water"],
+            },
+            {
+                "cmd": "am",
+                "args": "at <HH:MM> <output>",
+                "desc": "Send <output> every day at <HH:MM> (24h) or "
+                "`9:00 am`. Uses the server's local timezone.",
+                "ex": ["{p}am at 09:00 Good morning", "{p}am at 22:30 Sleep!"],
+            },
+            {
+                "cmd": "am",
+                "args": "in <time> <output>",
+                "desc": "Send <output> once, after <time>.",
+                "ex": ["{p}am in 10m On my way", "{p}am in 2h Ping me"],
+            },
+            {
+                "cmd": "am",
+                "args": "list | del <id> | on <id> | off <id> | clear",
+                "desc": "Manage this chat's automations. Automations are per "
+                "chat and survive restarts.",
+                "ex": [
+                    "{p}am list",
+                    "{p}am off 2",
+                    "{p}am del 2",
+                    "{p}am clear",
+                ],
+            },
+        ],
+    },
     "fun": {
         "emoji": "🎉",
         "title": "Fun / Spam",

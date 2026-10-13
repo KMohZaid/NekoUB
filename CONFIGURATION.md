@@ -177,11 +177,18 @@ TRANSCRIBE_MODEL=whisper-large-v3
 ## 🕵️ SangMata (.sg)
 
 ```env
-SANGMATA_BOT=SangMataInfo_bot
+SANGMATA_BOT=SangMata_BOT
 ```
 
-The bot used for name-history lookups. You may need to `/start` it from the
-userbot account once.
+The bot used for name-history lookups. The userbot sends the target's numeric
+id as a plain message. You may need to `/start` it from the userbot account once.
+
+## ⏰ Automations (.am)
+
+No configuration required. Automations are created per chat and stored in
+`.automessages.json` at the project root (like `.sticker_cache.json`). Time
+triggers (`every` / `at` / `in`) use the server's local timezone and keep
+running across restarts.
 
 ## ✅ Todoist (.todo)
 

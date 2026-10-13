@@ -50,9 +50,12 @@ def _is_final(text: str) -> bool:
 
 
 async def query_sangmata(client, user_id: int) -> str:
-    """Ask SangMataInfo for a user's history and return its reply text."""
+    """Ask SangMata for a user's history and return its reply text.
+
+    SangMata expects just the numeric id (no /search_id prefix).
+    """
     bot = config.SANGMATA_BOT
-    sent = await client.send_message(bot, f"/search_id {user_id}")
+    sent = await client.send_message(bot, str(user_id))
     text = ""
     seen: list[int] = []
 

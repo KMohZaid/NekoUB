@@ -19,6 +19,7 @@ A cute and powerful Telegram Userbot based on pyrotgfork with a modular plugin s
 - 🌍 **Translate** - `.tr` text, replies and voice notes
 - 🗣️ **Text to speech** - `.tts` natural voice notes (Microsoft Edge voices)
 - 🕵️ **SangMata** - `.sg` look up a user's past names and usernames
+- ⏰ **Automations** - `.am` keyword, reply, tag and scheduled auto-messages
 - ✅ **Todoist** - `.todo` create tasks from chat
 
 ## 📦 Installation
@@ -142,6 +143,27 @@ Uses a configurable search endpoint (defaults to a You.com-compatible API).
 - **`.tts <text>`** - Convert text or a replied message into a voice note (alias: `.say`)
   - Voice is set by `TTS_VOICE`; Example: `.tts Hello there`, `.tts` (reply)
 
+### ⏰ Automations
+
+- **`.am <match> on <output>`** - Keyword trigger: send `<output>` when someone says `<match>` in this chat
+  - Flags: `-tag`/`-notag` (mention the sender or not, default off), `-reply` (send as a reply), `-exact` (whole-word match)
+  - Example: `.am hello on Hi there!`, `.am hi on Hello! -tag`
+- **`.am <match> reply <output>`** - Reply trigger: send `<output>` when someone replies to you (optionally only if their message contains `<match>`)
+  - Use the `tag`/`mention` trigger instead to also fire when you are tagged: `.am /ft tag /plant hdsfshfg -notag`
+  - Example: `.am reply On it!`, `.am boss reply Yes sir?`
+- **`.am every <time> <output>`** - Repeat `<output>` every `<time>` (`30s`, `15m`, `1h`, `1d`, or `30 minutes`)
+  - Example: `.am every 1h Stand up!`
+- **`.am at <HH:MM> <output>`** - Send `<output>` every day at `<HH:MM>` (24h) or `9:00 am`, in the server's local timezone
+  - Example: `.am at 09:00 Good morning`
+- **`.am in <time> <output>`** - Send `<output>` once, after `<time>`
+  - Example: `.am in 10m On my way`
+- **`.am list`** - List this chat's automations
+- **`.am del <id>`** - Delete one automation
+- **`.am on <id>` / `.am off <id>`** - Enable / disable one automation
+- **`.am clear`** - Delete all automations in this chat
+
+Automations are **per chat**, stored in `.automessages.json`, and reloaded on restart so schedules survive. Run `.am` with no arguments for full help.
+
 ### 🎉 Fun / Spam
 
 - **`.spam <count> <text>`** - Send a message repeatedly, or copy the replied message
@@ -219,7 +241,7 @@ GROQ_API_KEY=                    # Optional; falls back to synckey keys
 TRANSCRIBE_MODEL=whisper-large-v3
 
 # SangMata (.sg)
-SANGMATA_BOT=SangMataInfo_bot
+SANGMATA_BOT=SangMata_BOT
 
 # Todoist (.todo)
 TODOIST_API_TOKEN=
@@ -243,6 +265,7 @@ NekoUB/
 ├── plugins/                   # Public plugins (tracked in git)
 │   ├── ai.py                  # .ai chat/search
 │   ├── alive.py               # .alive
+│   ├── automessages.py        # .am automations
 │   ├── eval.py                # .eval
 │   ├── exec.py                # .exec
 │   ├── help.py                # .help menu

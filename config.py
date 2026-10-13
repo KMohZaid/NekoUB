@@ -32,7 +32,7 @@ AI_SYSTEM_PROMPT = os.getenv(
 FFMPEG_BINARY = os.getenv("FFMPEG_BINARY", "")
 
 # SangMata name-history lookup (.sg)
-SANGMATA_BOT = os.getenv("SANGMATA_BOT", "SangMataInfo_bot")
+SANGMATA_BOT = os.getenv("SANGMATA_BOT", "SangMata_BOT")
 
 # Quotly quote stickers (.q)
 QUOTE_API_URL = os.getenv(
