@@ -49,6 +49,21 @@ TRANSLATE_TARGET = os.getenv("TRANSLATE_TARGET", "en")
 # Text to speech (.tts) - Microsoft Edge neural voices via edge-tts
 TTS_VOICE = os.getenv("TTS_VOICE", "en-US-AriaNeural")
 
+# Voice-note transcription for .tr (Groq Whisper).
+# GROQ_API_URL -> Groq OpenAI-compatible transcriptions endpoint.
+# TRANSCRIBE_MODEL -> whisper-large-v3 (multilingual) or
+#   whisper-large-v3-turbo (faster/cheaper).
+GROQ_API_URL = os.getenv(
+    "GROQ_API_URL", "https://api.groq.com/openai/v1/audio/transcriptions"
+)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_API_KEYS = [
+    key.strip()
+    for key in os.getenv("GROQ_API_KEYS", "").split(",")
+    if key.strip()
+]
+TRANSCRIBE_MODEL = os.getenv("TRANSCRIBE_MODEL", "whisper-large-v3")
+
 # Spam settings
 MAX_SPAM_COUNT = int(os.getenv("MAX_SPAM_COUNT", "100"))
 SPAM_DELAY = float(os.getenv("SPAM_DELAY", "0.5"))
