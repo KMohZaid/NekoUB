@@ -76,6 +76,9 @@ python main.py
 
 ### Core Commands
 
+- **`.help`** - Text-based help menu with all commands (aliases: `.commands`, `.cmds`, `.menu`)
+  - Usage: `.help`, `.help <n>`, `.help <category>`, `.help <category> <n>`, `.help <command>`, `.help all`
+  - Note: inline buttons are a bot-only Telegram feature; a userbot cannot show them, so this menu is navigated with text commands
 - **`.alive`** - Check if userbot is running and view system info
 - **`.ping`** - Check bot latency (response time in milliseconds)
 - **`.reload`** - Hot reload all plugins without restarting (auto-deletes after 10s)
@@ -107,6 +110,38 @@ python main.py
   - Safety: Max 100 messages, 0.5s delay between messages
   - Copy mode preserves stickers, media, etc.
 
+### Web Commands
+
+- **`.web <query>`** - Search the web and list results (alias: `.search`)
+  - Example: `.web latest ai news`
+  - Results are numbered; navigate with `.open <n>`, `.web next`, `.web prev`
+  - Or reply to the results message with just a number to open that result
+
+- **`.open <n>`** - Read result number `<n>` from the last search as plain text
+  - Example: `.open 3`
+
+- **`.read <url>`** - Fetch any URL and show it as plain text (aliases: `.browse`, `.url`)
+  - Example: `.read https://example.com`
+
+Uses a configurable search endpoint (defaults to a You.com-compatible API).
+
+### AI Commands
+
+- **`.ai <prompt>`** - Chat with the configured AI model (alias: `.ask`)
+  - Example: `.ai explain quantum tunneling simply`
+  - Keeps a short per-chat conversation, so follow-ups have context
+  - Reply to any message with `.ai` to send it as the prompt (`AI` summarises/answers it)
+
+- **`.ai reset`** - Clear the conversation for this chat
+- **`.ai search <query>`** - Search the web and have the AI summarize the
+  results with inline `[n]` citations and a source list
+  - Example: `.ai search latest ai news`
+- **`.ai model [name]`** - Show or set the model for this chat
+- **`.ai sys [text]`** - Show or set the system prompt for this chat
+
+Talks to any OpenAI-compatible `chat/completions` endpoint. Defaults to a local
+synckey gateway (`http://127.0.0.1:8787/v1`) with model `groq/openai/gpt-oss-120b`.
+
 ## 🔧 Configuration
 
 Edit `.env` file:
@@ -118,6 +153,13 @@ SESSION_STRING=                 # Optional: session string (leave empty for phon
 CMD_PREFIX=.                    # Command prefix (default: .)
 MAX_SPAM_COUNT=100              # Maximum spam messages
 SPAM_DELAY=0.5                  # Delay between spam messages (seconds)
+TODOIST_API_TOKEN=              # Optional: Todoist integration (.todo)
+BROWSER_API_URL=https://ydc-index.io/v1/search   # Optional: web search endpoint (.web)
+BROWSER_API_KEY=                # Optional: web search API key
+BROWSER_API_KEY_HEADER=X-API-Key # Optional: header that carries the key
+AI_API_URL=http://127.0.0.1:8787/v1  # Optional: AI chat endpoint (.ai)
+AI_API_KEY=                     # Optional: AI chat API key
+AI_MODEL=groq/openai/gpt-oss-120b  # Optional: default AI model
 ```
 
 ## 📁 Project Structure

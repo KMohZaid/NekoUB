@@ -13,6 +13,21 @@ SESSION_STRING = os.getenv("SESSION_STRING", "")
 CMD_PREFIX = os.getenv("CMD_PREFIX", ".")
 TODOIST_API_TOKEN = os.getenv("TODOIST_API_TOKEN", "")
 
+# Web search / page reader (.web, .open, .read)
+BROWSER_API_URL = os.getenv(
+    "BROWSER_API_URL", "https://ydc-index.io/v1/search"
+)
+BROWSER_API_KEY = os.getenv("BROWSER_API_KEY", "")
+BROWSER_API_KEY_HEADER = os.getenv("BROWSER_API_KEY_HEADER", "X-API-Key")
+
+# AI chat (.ai) - any OpenAI-compatible /chat/completions endpoint
+AI_API_URL = os.getenv("AI_API_URL", "http://127.0.0.1:8787/v1")
+AI_API_KEY = os.getenv("AI_API_KEY", "")
+AI_MODEL = os.getenv("AI_MODEL", "groq/openai/gpt-oss-120b")
+AI_SYSTEM_PROMPT = os.getenv(
+    "AI_SYSTEM_PROMPT", "You are a helpful, concise assistant."
+)
+
 # Spam settings
 MAX_SPAM_COUNT = int(os.getenv("MAX_SPAM_COUNT", "100"))
 SPAM_DELAY = float(os.getenv("SPAM_DELAY", "0.5"))
