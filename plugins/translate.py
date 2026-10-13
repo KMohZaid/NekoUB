@@ -26,6 +26,10 @@ def groq_keys() -> list[str]:
     keys = [key.strip() for key in getattr(config, "GROQ_API_KEYS", []) if key.strip()]
     if getattr(config, "GROQ_API_KEY", ""):
         keys.insert(0, config.GROQ_API_KEY)
+    if not keys:
+        from userbot.synckeys import load_keys
+
+        keys = load_keys("groq")
     return keys
 
 

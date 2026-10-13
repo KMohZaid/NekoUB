@@ -10,3 +10,4 @@ anyio
 todoist-api-python
 emoji
 edge-tts
+cryptography
