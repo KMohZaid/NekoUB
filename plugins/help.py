@@ -179,6 +179,14 @@ CATEGORIES: dict[str, dict] = {
                 "(forward, falls back to copy).",
                 "ex": ["{p}save (reply to a message)"],
             },
+            {
+                "cmd": "sg",
+                "args": "",
+                "desc": "Look up a user's past names and usernames via "
+                "SangMata. Reply to their message or pass an id/username. "
+                "Alias: sangmata.",
+                "ex": ["{p}sg (reply to a user)", "{p}sg @username", "{p}sg 12345678"],
+            },
         ],
     },
     "fun": {

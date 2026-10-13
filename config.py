@@ -31,6 +31,9 @@ AI_SYSTEM_PROMPT = os.getenv(
 # .kang media conversion (image/GIF/video -> sticker). Empty = auto-detect.
 FFMPEG_BINARY = os.getenv("FFMPEG_BINARY", "")
 
+# SangMata name-history lookup (.sg)
+SANGMATA_BOT = os.getenv("SANGMATA_BOT", "SangMataInfo_bot")
+
 # Spam settings
 MAX_SPAM_COUNT = int(os.getenv("MAX_SPAM_COUNT", "100"))
 SPAM_DELAY = float(os.getenv("SPAM_DELAY", "0.5"))
