@@ -29,12 +29,24 @@ NAMED_COLORS = {
 }
 
 
+def entity_type_name(entity) -> str:
+    """Return the lowercase Quotly entity name for a Pyrogram entity.
+
+    pyrotgfork stores raw TL classes as MessageEntityType *values*, so the
+    enum's ``name`` is the only reliable lowercase identifier.
+    """
+    etype = getattr(entity, "type", None)
+    name = getattr(etype, "name", None)
+    if name:
+        return str(name).lower()
+    return str(etype).lower()
+
+
 def convert_entities(entities) -> list[dict]:
     result = []
     for entity in entities or []:
-        etype = getattr(entity.type, "value", None) or str(entity.type)
         item = {
-            "type": etype,
+            "type": entity_type_name(entity),
             "offset": entity.offset,
             "length": entity.length,
         }
@@ -207,7 +219,7 @@ async def quote_command(client, message: Message):
             color=color,
         )
     except Exception as exc:
-        logger.error(f"[QUOTE] Generation failed: {exc}")
+        logger.exception("[QUOTE] Generation failed")
         await message.edit(f"Quote failed: {type(exc).__name__}")
         return
 
