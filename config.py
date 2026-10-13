@@ -24,11 +24,13 @@ WORKERS = int(os.getenv("WORKERS", "8"))
 PARSE_MODE = os.getenv("PARSE_MODE", "markdown").lower()
 
 # Sticker set name/title format
-# Use {user_id}, {first_name}, {index} as placeholders
-# Default short_name: "a{user_id}_vol{index}"
-# Default title: "{first_name}'s Pack Vol{index}"
+# Placeholders: {user_id}, {first_name}, {username}, {base}, {suffix}, {index}
+# Base defaults to "@<username>" (or first name); per-command suffixes give
+# titles like "@username fun".
 STICKERSET_NAME_FORMAT = os.getenv("STICKERSET_NAME_FORMAT", "")
 STICKERSET_TITLE_FORMAT = os.getenv("STICKERSET_TITLE_FORMAT", "")
+# Optional override for the base pack name/prefix (empty => @username).
+STICKERSET_BASE = os.getenv("STICKERSET_BASE", "")
 
 # Validate required settings
 if API_ID == 0 or not API_HASH:
