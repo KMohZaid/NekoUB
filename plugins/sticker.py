@@ -1,8 +1,10 @@
 import asyncio
 import json
+import os
 import random
 import re
 import string
+import tempfile
 from pathlib import Path
 
 import emoji
@@ -19,6 +21,7 @@ from pyrogram.types import Message
 
 import config
 import main
+from userbot.media import image_to_sticker, video_to_sticker
 from userbot.utils import continue_propagation, get_logger
 
 logger = get_logger(__name__)
@@ -202,6 +205,53 @@ def decode_sticker_file_id(sticker) -> types.InputDocument:
     )
 
 
+def message_media(message: Message) -> tuple[str | None, object]:
+    """Classify a message's media as sticker/image/video (None if unsupported)."""
+    if message.sticker:
+        return "sticker", message.sticker
+    if message.photo:
+        return "image", message.photo
+    if message.animation:
+        return "video", message.animation
+    if message.video:
+        return "video", message.video
+    if message.document:
+        mime = (message.document.mime_type or "").lower()
+        name = (message.document.file_name or "").lower()
+        if mime.startswith("image/gif") or name.endswith(".gif"):
+            return "video", message.document
+        if mime.startswith("image/"):
+            return "image", message.document
+        if mime.startswith("video/"):
+            return "video", message.document
+    return None, None
+
+
+async def convert_and_upload(client, message: Message, kind: str):
+    """Convert a photo/GIF/video to a sticker and upload it as a document.
+
+    Returns (document, uploaded_message); the caller removes the message once
+    the sticker has been stored in a pack.
+    """
+    with tempfile.TemporaryDirectory() as folder:
+        source = await client.download_media(
+            message, file_name=os.path.join(folder, "source")
+        )
+        if not source:
+            return None, None
+        output = os.path.join(
+            folder, "sticker.webm" if kind == "video" else "sticker.webp"
+        )
+        if kind == "video":
+            await video_to_sticker(source, output)
+        else:
+            await image_to_sticker(source, output)
+        uploaded = await client.send_document(
+            "me", output, disable_notification=True
+        )
+    return getattr(uploaded, "document", None), uploaded
+
+
 async def add_sticker_to_pack(
     client, pack_short_name: str, sticker, emoji: str | None = None
 ) -> None:
@@ -213,7 +263,7 @@ async def add_sticker_to_pack(
             ),
             sticker=types.InputStickerSetItem(
                 document=input_doc,
-                emoji=emoji or sticker.emoji or "🌟",
+                emoji=emoji or getattr(sticker, "emoji", None) or "🌟",
                 keywords="",
             ),
         )
@@ -232,7 +282,7 @@ async def create_pack_with_sticker(
             stickers=[
                 types.InputStickerSetItem(
                     document=input_doc,
-                    emoji=emoji or sticker.emoji or "🌟",
+                    emoji=emoji or getattr(sticker, "emoji", None) or "🌟",
                     keywords="",
                 )
             ],
@@ -588,31 +638,51 @@ async def _queue_worker(client):
     queue = await _get_queue()
 
     while True:
-        sticker, emoji_str, message, target = await queue.get()
+        media_message, emoji_str, message, target = await queue.get()
+        uploaded = None
         try:
+            kind, media = message_media(media_message)
+            source = media if kind == "sticker" else None
+            if kind in ("image", "video"):
+                source, uploaded = await convert_and_upload(
+                    client, media_message, kind
+                )
+            if source is None:
+                logger.error("[STICKER] Unsupported or empty media")
+                await send_result_feedback(client, message, False)
+                continue
             if target is None:
                 success = await add_sticker_with_pack_management(
-                    client, sticker, emoji_str
+                    client, source, emoji_str
                 )
             else:
                 success = await add_sticker_to_target(
-                    client, target, sticker, emoji_str
+                    client, target, source, emoji_str
                 )
             await send_result_feedback(client, message, success)
         except Exception as exc:
             logger.error(f"[STICKER] Queue worker error: {exc}")
             await send_result_feedback(client, message, False)
         finally:
+            if uploaded is not None:
+                try:
+                    await uploaded.delete()
+                except Exception:
+                    pass
             queue.task_done()
             await asyncio.sleep(ADD_COOLDOWN)
 
 
 async def enqueue_sticker(
-    client, sticker, emoji_str: str | None, message: Message, target: dict | None = None
+    client,
+    media_message: Message,
+    emoji_str: str | None,
+    message: Message,
+    target: dict | None = None,
 ):
     queue = await _get_queue()
     asyncio.ensure_future(_queue_worker(client))
-    await queue.put((sticker, emoji_str, message, target))
+    await queue.put((media_message, emoji_str, message, target))
 
 
 # ============================================================
@@ -759,8 +829,17 @@ async def packs_command(client, message: Message):
 @continue_propagation
 async def kang_command(client, message: Message):
     reply = message.reply_to_message
-    if not reply or not reply.sticker:
-        await message.edit("Reply to a sticker to kang it.")
+    if not reply:
+        await message.edit(
+            "Reply to a sticker, image, GIF, or video to kang it."
+        )
+        return
+
+    kind, media = message_media(reply)
+    if kind is None:
+        await message.edit(
+            "Unsupported media. Reply to a sticker, image, GIF, or video."
+        )
         return
 
     raw = (message.text or "").split(maxsplit=1)
@@ -799,13 +878,14 @@ async def kang_command(client, message: Message):
                 "no emoji huh, its fine but not recommended. try again"
             )
             return
-        await enqueue_sticker(client, reply.sticker, None, message, target)
+        await enqueue_sticker(client, reply, None, message, target)
         return
 
     if append_mode:
         sticker_emojis = list(
             dict.fromkeys(
-                x["emoji"] for x in emoji.emoji_list(reply.sticker.emoji or "")
+                x["emoji"]
+                for x in emoji.emoji_list(getattr(media, "emoji", "") or "")
             )
         )
         combined = sticker_emojis + user_emojis
@@ -815,15 +895,13 @@ async def kang_command(client, message: Message):
                 f"Sticker has {len(sticker_emojis)}, you added {emoji_count}."
             )
             return
-        await enqueue_sticker(
-            client, reply.sticker, "".join(combined), message, target
-        )
+        await enqueue_sticker(client, reply, "".join(combined), message, target)
     else:
         if emoji_count > MAX_EMOJI_COUNT:
             await message.reply_text(f"Too many emojis ({emoji_count}/6).")
             return
         await enqueue_sticker(
-            client, reply.sticker, "".join(user_emojis), message, target
+            client, reply, "".join(user_emojis), message, target
         )
 
 
@@ -840,7 +918,7 @@ async def monitor_sticker_handler(client, message: Message):
     if message.sticker is None:
         return
 
-    await enqueue_sticker(client, message.sticker, None, message, None)
+    await enqueue_sticker(client, message, None, message, None)
 
 
 # ============================================================
@@ -856,8 +934,9 @@ async def help_sticker(client, message: Message):
     prefix = config.CMD_PREFIX
     await message.edit(
         "**Sticker Plugin — Help**\n\n"
-        f"`{prefix}kang` (reply to a sticker)\n"
-        "  Copy the replied sticker into your default (auto) pack.\n\n"
+        f"`{prefix}kang` (reply to a sticker, image, GIF or video)\n"
+        "  Copy it into your default (auto) pack. Photos become static\n"
+        "  stickers; GIFs and videos become video stickers.\n\n"
         f"`{prefix}kang <number|shortname>`\n"
         "  Add to a specific pack you own. Get numbers from "
         f"`{prefix}packs`.\n\n"

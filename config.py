@@ -28,6 +28,9 @@ AI_SYSTEM_PROMPT = os.getenv(
     "AI_SYSTEM_PROMPT", "You are a helpful, concise assistant."
 )
 
+# .kang media conversion (image/GIF/video -> sticker). Empty = auto-detect.
+FFMPEG_BINARY = os.getenv("FFMPEG_BINARY", "")
+
 # Spam settings
 MAX_SPAM_COUNT = int(os.getenv("MAX_SPAM_COUNT", "100"))
 SPAM_DELAY = float(os.getenv("SPAM_DELAY", "0.5"))

@@ -228,16 +228,19 @@ CATEGORIES: dict[str, dict] = {
             {
                 "cmd": "kang",
                 "args": "",
-                "desc": "Copy the replied sticker into your default auto pack. "
-                "Add emojis to override the sticker's emoji.",
+                "desc": "Copy the replied sticker, image, GIF or video into "
+                "your default auto pack. Photos become static stickers; GIFs "
+                "and videos become video stickers. Add emojis to override the "
+                "sticker's emoji.",
                 "ex": ["{p}kang", "{p}kang 🐱", "{p}kang -a 🐱 (append emoji)"],
             },
             {
                 "cmd": "kang",
                 "args": "<pack>",
-                "desc": "Add the replied sticker to a specific pack. `<pack>` "
-                "can be a number from `.packs`, a short name, a numeric id, "
-                "or a suffix to create/reuse a themed pack.",
+                "desc": "Add the replied sticker, image, GIF or video to a "
+                "specific pack. `<pack>` can be a number from `.packs`, a "
+                "short name, a numeric id, or a suffix to create/reuse a "
+                "themed pack.",
                 "ex": [
                     "{p}kang 1",
                     "{p}kang fun",
