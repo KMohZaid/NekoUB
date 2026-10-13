@@ -10,6 +10,9 @@ All settings are configured in the `.env` file. Copy `.env.example` to `.env` an
 cp .env.example .env
 ```
 
+Only two settings are required (`API_ID`, `API_HASH`); everything else has a
+sensible default.
+
 ## 🔑 Required Settings
 
 ### Telegram API Credentials
@@ -27,7 +30,8 @@ Get these from: https://my.telegram.org/apps
 SESSION_STRING=your_session_string_here
 ```
 
-Generate using: `python generate_session_string.py`
+Generate using: `python generate_session_string.py` (it writes the value into
+`.env` for you).
 
 ## 🎨 Client Customization
 
@@ -35,46 +39,27 @@ Generate using: `python generate_session_string.py`
 ```env
 CLIENT_NAME=NekoUB
 ```
-The internal name for your client. This is used for session file naming and internal references.
-
-**Options:**
-- `NekoUB` - Default, matches the theme
-- Any custom name you want
+The internal name for your client.
 
 ### App Version
 ```env
 APP_VERSION=NekoUB 1.0.0
 ```
-The version string displayed to Telegram servers.
-
-**Options:**
-- `NekoUB 1.0.0` - Default custom version
-- `Telegram Desktop 5.8.4` - Mimic official client
-- Any custom version string
+The version string reported to Telegram.
 
 ### Workers
 ```env
 WORKERS=8
 ```
-Number of concurrent workers for handling updates. Higher = faster but more resource usage.
-
-**Recommended values:**
-- `4` - Low resource usage (VPS/shared hosting)
-- `8` - Balanced (default)
-- `16` - High performance (dedicated server)
-- `32` - Maximum performance (powerful systems only)
+Concurrent workers for handling updates. `4` for a small VPS, `8` balanced
+(default), `16`+ for a dedicated server.
 
 ### Parse Mode
 ```env
 PARSE_MODE=markdown
 ```
-Default text formatting mode for messages.
-
-**Options:**
-- `markdown` or `md` - Markdown syntax (default)
-- `html` - HTML tags
-- `combined` or `default` - Both Markdown and HTML
-- `disabled` or `none` - No automatic parsing
+Default formatting mode: `markdown`/`md` (default), `html`, `combined`/`default`,
+or `disabled`/`none`.
 
 ## 🎮 Bot Settings
 
@@ -82,23 +67,7 @@ Default text formatting mode for messages.
 ```env
 CMD_PREFIX=.
 ```
-The prefix character for bot commands.
-
-**Options:**
-- `.` - Dot (default)
-- `!` - Exclamation mark
-- `/` - Slash
-- Any single character
-
-## 🔌 Integrations
-
-### Todoist API Token
-```env
-TODOIST_API_TOKEN=your_todoist_token_here
-```
-
-Optional token used by the `.todo` command plugin to create tasks in Todoist.
-Generate or copy your API token from Todoist settings.
+The command prefix. Defaults to `.`; any character works (`!`, `/`, ...).
 
 ## 🛡️ Safety Settings
 
@@ -108,58 +77,120 @@ MAX_SPAM_COUNT=100
 SPAM_DELAY=0.5
 ```
 
-- `MAX_SPAM_COUNT` - Maximum messages for `.spam` command (default: 100)
+- `MAX_SPAM_COUNT` - Maximum messages for `.spam` (default: 100)
 - `SPAM_DELAY` - Delay between spam messages in seconds (default: 0.5)
 
-**Recommendations:**
-- Don't set MAX_SPAM_COUNT above 200 to avoid flood bans
-- Keep SPAM_DELAY at least 0.3 seconds
-- Lower delays = higher flood risk
+Keep `MAX_SPAM_COUNT` at or below 200 and `SPAM_DELAY` at least `0.3` to avoid
+flood bans.
 
-## 🔧 Advanced Settings
+## 🌐 Web Search (.web, .open, .read)
 
-These settings are available but not included in `.env.example`. Add them if needed:
-
-### Device Model
 ```env
-DEVICE_MODEL=Custom Device
+BROWSER_API_URL=https://ydc-index.io/v1/search
+BROWSER_API_KEY=
+BROWSER_API_KEY_HEADER=X-API-Key
 ```
-The device model reported to Telegram. Defaults to Python version if not set.
 
-### System Version
-```env
-SYSTEM_VERSION=Linux 6.0
-```
-Operating system version. Defaults to actual OS if not set.
+Any You.com-compatible search endpoint works. `BROWSER_API_KEY_HEADER` is the
+header that carries the key (e.g. `X-API-Key`).
 
-### Language Settings
-```env
-LANG_CODE=en
-SYSTEM_LANG_CODE=en
-```
-Language codes in ISO 639-1 format (default: en).
+## 🤖 AI (.ai)
 
-### IPv6
 ```env
-USE_IPV6=False
+AI_API_URL=http://127.0.0.1:8787/v1
+AI_API_KEY=
+AI_MODEL=groq/openai/gpt-oss-120b
+AI_SYSTEM_PROMPT=You are a helpful, concise assistant.
 ```
-Set to `True` to use IPv6 instead of IPv4.
 
-### Proxy
-```env
-PROXY_SCHEME=socks5
-PROXY_HOSTNAME=127.0.0.1
-PROXY_PORT=1080
-PROXY_USERNAME=user
-PROXY_PASSWORD=pass
-```
-Configure SOCKS5 or HTTP proxy (optional).
+Any OpenAI-compatible `chat/completions` endpoint. The default points at a local
+[synckey](https://github.com/) gateway. Per-chat model and system prompt can be
+overridden at runtime with `.ai model` and `.ai sys`.
 
-### Sleep Threshold
+## 🖼️ Stickers (.kang, .packs)
+
 ```env
-SLEEP_THRESHOLD=10
+STICKERSET_BASE=
+STICKERSET_NAME_FORMAT=
+STICKERSET_TITLE_FORMAT=
 ```
-Flood wait threshold in seconds. Requests with lower flood waits will auto-retry (default: 10).
+
+- `STICKERSET_BASE` - override the pack base name. Empty uses `@<username>`
+  (falling back to the first name).
+- `STICKERSET_NAME_FORMAT` / `STICKERSET_TITLE_FORMAT` - templates for pack
+  short names / titles. Placeholders: `{user_id}`, `{first_name}`, `{username}`,
+  `{base}`, `{suffix}`, `{index}`.
+
+## 🎬 Media & TTS
+
+```env
+FFMPEG_BINARY=
+TTS_VOICE=en-US-AriaNeural
+```
+
+- `FFMPEG_BINARY` - path to `ffmpeg`. Empty auto-detects it on `PATH` (then
+  `~/.local/bin/ffmpeg`). Required for `.kang` video stickers and `.tts`.
+- `TTS_VOICE` - Microsoft Edge neural voice for `.tts`. Run
+  `edge-tts --list-voices` for options (e.g. `hi-IN-SwaraNeural`,
+  `en-IN-NeerjaNeural`).
+
+## 💬 Quote Stickers (.q)
+
+```env
+QUOTE_API_URL=https://quote.nubcoders.com/generate
+```
+
+A Quotly-compatible quote generator endpoint.
+
+## 🌍 Translate (.tr)
+
+```env
+TRANSLATE_API_URL=https://translate.googleapis.com/translate_a/single
+TRANSLATE_TARGET=en
+```
+
+- `TRANSLATE_API_URL` - Google `gtx` endpoint (no API key required).
+- `TRANSLATE_TARGET` - default target language code (e.g. `en`, `hi`, `es`).
+  A language code passed on the command line (`.tr hi ...`) overrides it.
+
+### Voice transcription for `.tr`
+
+Voice/audio notes are transcribed with **Groq Whisper** before translation.
+
+```env
+GROQ_API_URL=https://api.groq.com/openai/v1/audio/transcriptions
+GROQ_API_KEY=
+GROQ_API_KEYS=
+TRANSCRIBE_MODEL=whisper-large-v3
+```
+
+- `TRANSCRIBE_MODEL` - `whisper-large-v3` (multilingual, default),
+  `whisper-large-v3-turbo` (faster/cheaper), or `distil-whisper-large-v3-en`
+  (English only).
+- `GROQ_API_KEY` / `GROQ_API_KEYS` (comma-separated) - set explicitly, **or**
+  leave empty to automatically reuse the enabled Groq keys already stored by
+  the local synckey gateway (`~/.synckey`).
+
+> The synckey gateway itself only proxies `chat/completions`, so audio is sent
+> directly to Groq.
+
+## 🕵️ SangMata (.sg)
+
+```env
+SANGMATA_BOT=SangMataInfo_bot
+```
+
+The bot used for name-history lookups. You may need to `/start` it from the
+userbot account once.
+
+## ✅ Todoist (.todo)
+
+```env
+TODOIST_API_TOKEN=your_todoist_token_here
+```
+
+Optional token used by the `.todo` command to create tasks. Copy it from your
+Todoist settings.
 
 ## 📊 Example Configurations
 
@@ -189,22 +220,14 @@ CMD_PREFIX=!
 # Safety
 MAX_SPAM_COUNT=50
 SPAM_DELAY=1.0
-```
 
-### Stealth Mode (Mimic Official Client)
-```env
-# Required
-API_ID=12345
-API_HASH=abc123def456
-SESSION_STRING=your_session_string
+# AI + web
+BROWSER_API_KEY=your_you_api_key
+AI_API_KEY=your_synckey_key
 
-# Mimic Telegram Desktop
-CLIENT_NAME=Telegram Desktop
-APP_VERSION=Telegram Desktop 5.8.4
-DEVICE_MODEL=PC
-SYSTEM_VERSION=Windows 10
-WORKERS=8
-PARSE_MODE=default
+# Voice
+TRANSLATE_TARGET=hi
+TTS_VOICE=hi-IN-SwaraNeural
 ```
 
 ## 🔄 Applying Changes
@@ -222,14 +245,14 @@ After editing `.env`:
    .reload
    ```
 
-**Note:** Configuration changes in `.env` require a full restart. The `.reload` command only reloads plugins, not core configuration.
+**Note:** Configuration changes in `.env` require a full restart. The `.reload`
+command only reloads plugins, not core configuration.
 
 ## ⚠️ Important Notes
 
 - Never commit your `.env` file to version control (it's in `.gitignore`)
 - Keep your `SESSION_STRING` secure - it provides full account access
 - Invalid settings will cause the bot to fail at startup with an error message
-- Some settings (like `CLIENT_NAME`) affect the session file name
 
 ---
 

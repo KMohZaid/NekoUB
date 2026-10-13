@@ -191,7 +191,7 @@ CATEGORIES: dict[str, dict] = {
                 "cmd": "tr",
                 "args": "[lang] <text>",
                 "desc": "Translate text, a replied message, or a replied "
-                "voice/audio note (voice needs GROQ_API_KEY). Pass a "
+                "voice/audio note (voice uses Groq Whisper). Pass a "
                 "language code first (e.g. `hi`, `es`), otherwise the "
                 "configured default is used. Alias: translate.",
                 "ex": ["{p}tr Hello", "{p}tr es Hello", "{p}tr hi (reply)"],
