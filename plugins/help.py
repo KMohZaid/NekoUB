@@ -187,6 +187,21 @@ CATEGORIES: dict[str, dict] = {
                 "Alias: sangmata.",
                 "ex": ["{p}sg (reply to a user)", "{p}sg @username", "{p}sg 12345678"],
             },
+            {
+                "cmd": "tr",
+                "args": "[lang] <text>",
+                "desc": "Translate text or the replied message. Pass a "
+                "language code first (e.g. `hi`, `es`), otherwise the "
+                "configured default is used. Alias: translate.",
+                "ex": ["{p}tr Hello", "{p}tr es Hello", "{p}tr hi (reply)"],
+            },
+            {
+                "cmd": "tts",
+                "args": "<text>",
+                "desc": "Convert text or the replied message into a voice "
+                "note. Voice is set by TTS_VOICE. Alias: say.",
+                "ex": ["{p}tts Hello there", "{p}tts (reply)"],
+            },
         ],
     },
     "fun": {
@@ -255,6 +270,15 @@ CATEGORIES: dict[str, dict] = {
                     "{p}kang fun 🐱",
                     "{p}kang oppeace_fun_123 🐱",
                 ],
+            },
+            {
+                "cmd": "q",
+                "args": "[#color] [text]",
+                "desc": "Turn the replied message into a quote sticker "
+                "(Quotly). `qr` also includes the replied-to message; a "
+                "`#hex` or named colour sets the background; extra text "
+                "overrides the quoted text.",
+                "ex": ["{p}q (reply)", "{p}q #ff0000 Nice", "{p}qr (reply)"],
             },
             {
                 "cmd": "packs",

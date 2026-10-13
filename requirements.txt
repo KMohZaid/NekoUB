@@ -9,3 +9,4 @@ watchfiles
 anyio
 todoist-api-python
 emoji
+edge-tts

@@ -34,6 +34,21 @@ FFMPEG_BINARY = os.getenv("FFMPEG_BINARY", "")
 # SangMata name-history lookup (.sg)
 SANGMATA_BOT = os.getenv("SANGMATA_BOT", "SangMataInfo_bot")
 
+# Quotly quote stickers (.q)
+QUOTE_API_URL = os.getenv(
+    "QUOTE_API_URL", "https://quote.nubcoders.com/generate"
+)
+
+# Translate (.tr) - Google gtx endpoint (no API key required)
+TRANSLATE_API_URL = os.getenv(
+    "TRANSLATE_API_URL",
+    "https://translate.googleapis.com/translate_a/single",
+)
+TRANSLATE_TARGET = os.getenv("TRANSLATE_TARGET", "en")
+
+# Text to speech (.tts) - Microsoft Edge neural voices via edge-tts
+TTS_VOICE = os.getenv("TTS_VOICE", "en-US-AriaNeural")
+
 # Spam settings
 MAX_SPAM_COUNT = int(os.getenv("MAX_SPAM_COUNT", "100"))
 SPAM_DELAY = float(os.getenv("SPAM_DELAY", "0.5"))
