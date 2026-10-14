@@ -1,4 +1,5 @@
 import base64
+import re
 import tempfile
 from pathlib import Path
 
@@ -27,6 +28,12 @@ NAMED_COLORS = {
     "grey": "#808080",
     "gray": "#808080",
 }
+
+# A quote can hold at most this many messages; extra is clamped down.
+QUOTE_MAX_MESSAGES = 4
+# How many nearby ids to probe past the anchor to skip deleted messages.
+QUOTE_NEIGHBOR_SLACK = 15
+COUNT_RE = re.compile(r"^[+-]?\d+$")
 
 
 def entity_type_name(entity) -> str:
@@ -107,13 +114,43 @@ async def build_user_info(client, user) -> dict | None:
     return info
 
 
-async def generate_quote(
+def reply_preview_text(reply: Message) -> str:
+    """Text shown for a replied-to message, as Telegram renders it."""
+    text = reply.text or reply.caption
+    if text:
+        return text
+    if reply.photo:
+        return "Photo"
+    if reply.video:
+        return "Video"
+    if reply.animation:
+        return "GIF"
+    if reply.video_note:
+        return "Video message"
+    if reply.sticker:
+        emoji = getattr(reply.sticker, "emoji", None)
+        return f"Sticker {emoji}".strip()
+    if reply.voice:
+        return "Voice message"
+    if reply.audio:
+        return "Audio"
+    if reply.document:
+        return "File"
+    if reply.contact:
+        return "Contact"
+    if reply.location or reply.venue:
+        return "Location"
+    if reply.poll:
+        return "Poll"
+    return " "
+
+
+async def build_message_data(
     client,
     message: Message,
     custom_text: str | None = None,
-    include_reply: bool = False,
-    color: str = DEFAULT_COLOR,
-) -> bytes | None:
+    with_reply: bool = False,
+) -> dict:
     text = custom_text if custom_text is not None else (
         message.text or message.caption or ""
     )
@@ -142,13 +179,13 @@ async def generate_quote(
     if media:
         msg_data["media"] = {"base64": media}
 
-    if include_reply and message.reply_to_message:
+    if with_reply and message.reply_to_message:
         reply = message.reply_to_message
         r_sender = reply.from_user or reply.sender_chat or reply.chat
         r_info = await build_user_info(client, r_sender)
         msg_data["replyMessage"] = {
             "name": (r_info or {}).get("name", "User"),
-            "text": (reply.text or reply.caption or " ")[:100],
+            "text": reply_preview_text(reply),
             "entities": convert_entities(
                 reply.entities or reply.caption_entities
             ),
@@ -156,11 +193,87 @@ async def generate_quote(
             "from": r_info or {"id": 1, "first_name": "User", "name": "User"},
         }
 
+    return msg_data
+
+
+async def build_stack(
+    client,
+    anchor: Message,
+    total: int,
+    direction: int,
+    exclude_id: int | None = None,
+) -> list[Message]:
+    """Return messages ordered oldest-first.
+
+    The anchor (the replied-to message) is always included. ``direction`` 1
+    extends downward (newer messages), -1 upward (older). Deleted messages are
+    skipped, so the result may be shorter than ``total``.
+    """
+    total = max(1, min(total, QUOTE_MAX_MESSAGES))
+    if total == 1:
+        return [anchor]
+
+    neighbor_count = total - 1
+    span = neighbor_count + QUOTE_NEIGHBOR_SLACK
+    candidate_ids = [
+        anchor.id + direction * step
+        for step in range(1, span + 1)
+        if anchor.id + direction * step > 0
+    ]
+    if not candidate_ids:
+        return [anchor]
+
+    fetched = await client.get_messages(
+        anchor.chat.id, message_ids=candidate_ids
+    )
+    if not isinstance(fetched, list):
+        fetched = [fetched]
+    existing = [
+        msg
+        for msg in fetched
+        if msg
+        and not getattr(msg, "empty", False)
+        and msg.id != exclude_id
+    ]
+    existing.sort(key=lambda msg: msg.id)
+
+    if direction > 0:
+        chosen = existing[:neighbor_count]
+        stack = [anchor] + chosen
+    else:
+        chosen = existing[-neighbor_count:] if neighbor_count else []
+        stack = chosen + [anchor]
+
+    stack.sort(key=lambda msg: msg.id)
+    return stack
+
+
+async def generate_quote(
+    client,
+    stack: list[Message],
+    anchor: Message,
+    custom_text: str | None = None,
+    with_replies: bool = False,
+    color: str = DEFAULT_COLOR,
+) -> bytes | None:
+    messages = []
+    for message in stack:
+        messages.append(
+            await build_message_data(
+                client,
+                message,
+                custom_text=(
+                    custom_text if message.id == anchor.id else None
+                ),
+                with_reply=with_replies,
+            )
+        )
+
     payload = {
         "type": "quote",
         "format": "webp",
         "backgroundColor": color,
-        "messages": [msg_data],
+        "messages": messages,
     }
 
     async with httpx.AsyncClient(timeout=25.0) as http:
@@ -176,8 +289,9 @@ async def generate_quote(
     return base64.b64decode(image)
 
 
-def parse_args(args: str) -> tuple[str, str]:
+def parse_args(args: str) -> tuple[str, int | None, str]:
     color = DEFAULT_COLOR
+    count = None
     parts = args.split()
     if parts:
         head = parts[0].lower()
@@ -187,7 +301,10 @@ def parse_args(args: str) -> tuple[str, str]:
         elif head in NAMED_COLORS:
             color = NAMED_COLORS[head]
             parts = parts[1:]
-    return color, " ".join(parts)
+    if parts and COUNT_RE.match(parts[0]):
+        count = int(parts[0])
+        parts = parts[1:]
+    return color, count, " ".join(parts)
 
 
 @main.app.on_message(
@@ -200,22 +317,41 @@ async def quote_command(client, message: Message):
     if not reply:
         await message.edit(
             "Reply to a message to quote it.\n"
-            f"`{config.CMD_PREFIX}q [#color] [text]`"
+            f"`{config.CMD_PREFIX}q [-|N] [#color] [text]`\n"
+            f"`{config.CMD_PREFIX}q 2` quotes the replied message + the one "
+            f"below it.\n"
+            f"`{config.CMD_PREFIX}q -2` quotes the one above it + the replied "
+            f"message.\n"
+            f"`{config.CMD_PREFIX}qr 2` also shows the replied-to context "
+            f"(max 4 messages)."
         )
         return
 
     parts = (message.text or "").split(maxsplit=1)
     command = parts[0].removeprefix(config.CMD_PREFIX).lower()
     args = parts[1].strip() if len(parts) > 1 else ""
-    color, custom_text = parse_args(args)
+    color, count, custom_text = parse_args(args)
+    with_replies = command == "qr"
+
+    total = abs(count) if count else 1
+    total = max(1, min(total, QUOTE_MAX_MESSAGES))
+    direction = -1 if (count is not None and count < 0) else 1
 
     await message.edit("🖼️ Generating quote...")
     try:
-        image = await generate_quote(
+        stack = await build_stack(
             client,
             reply,
+            total,
+            direction,
+            exclude_id=message.id,
+        )
+        image = await generate_quote(
+            client,
+            stack,
+            reply,
             custom_text=custom_text or None,
-            include_reply=command == "qr",
+            with_replies=with_replies,
             color=color,
         )
     except Exception as exc:

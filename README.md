@@ -180,9 +180,10 @@ Automations are **per chat**, stored in `.automessages.json`, and reloaded on re
   - Example: `.kang`, `.kang 🐱`, `.kang -a 🐱` (append emoji)
 - **`.kang <pack>`** - Add to a specific pack (number from `.packs`, short name, id, or suffix)
   - Example: `.kang 1`, `.kang fun`, `.kang fun 🐱`
-- **`.q`** - Turn the replied message into a quote sticker (alias: `.quote`)
-  - `.qr` also includes the replied-to message; a `#hex` or named colour sets the background; extra text overrides the quoted text
-  - Example: `.q` (reply), `.q #ff0000 Nice`, `.qr` (reply)
+- **`.q [N]`** - Turn the replied (targeted) message into a quote sticker (alias: `.quote`)
+  - `.q 2` adds the message below it, `.q -2` the message above it (max 4 messages; `.q 5` counts as `.q 4`)
+  - `.qr` also shows each message's replied-to context; a `#hex` or named colour sets the background; extra text overrides the quoted text
+  - Example: `.q` (reply), `.q 2` (reply), `.q -2` (reply), `.qr 3` (reply), `.q #ff0000 Nice`
 - **`.packs`** - List every sticker pack you own with number, short name, id and count (alias: `.mypacks`)
 - **`.start_sticker_monitor`** - Auto-kang every sticker you send in this chat
 - **`.stop_sticker_monitor`** - Stop the sticker monitor in all chats
