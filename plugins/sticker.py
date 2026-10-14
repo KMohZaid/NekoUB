@@ -31,6 +31,9 @@ MAX_STICKERS_PER_PACK = 120
 MAX_EMOJI_COUNT = 6
 ADD_COOLDOWN = 1  # seconds between sticker adds
 MAX_DISPLAY_PACKS = 50  # cap for the .packs listing
+PACK_SCAN_LIMIT = 800  # messages to scan when listing another user's packs
+PACK_SCAN_MAX_SETS = 25  # cap distinct packs shown for another user
+MAX_TITLE_LOOKUPS = 15  # how many set titles to resolve for a user listing
 
 # --- Runtime state ---
 monitoring_chats: set[int] = set()
@@ -361,6 +364,155 @@ async def fetch_owned_packs(client) -> list[dict]:
         )
     packs.sort(key=lambda p: p["title"].lower())
     return packs
+
+
+async def fetch_set_info(client, short_name: str) -> dict | None:
+    """Fetch title/id/count for any sticker set, by short name."""
+    try:
+        res = await client.invoke(
+            functions.messages.GetStickerSet(
+                stickerset=types.InputStickerSetShortName(
+                    short_name=short_name
+                ),
+                hash=0,
+            )
+        )
+    except Exception:
+        return None
+    s = getattr(res, "set", None)
+    if s is None:
+        return None
+    return {
+        "id": s.id,
+        "title": s.title,
+        "short_name": s.short_name,
+        "count": s.count,
+    }
+
+
+def parse_packs_arg(args: str) -> tuple[str, str | None]:
+    """Classify the optional ``.packs`` argument.
+
+    Returns one of ``("own", None)``, ``("user", ref)`` or
+    ``("pack", short_name)``.
+    """
+    token = args.strip().split()[0] if args.strip() else ""
+    if not token:
+        return "own", None
+    low = token.lower()
+    if "t.me/addstickers/" in low:
+        return "pack", token.split("t.me/addstickers/", 1)[1].strip("/")
+    if token.startswith("@") or token.lstrip("-").isdigit():
+        return "user", token
+    return "pack", token
+
+
+def _user_display(user) -> str:
+    if getattr(user, "username", None):
+        return f"@{user.username}"
+    name = getattr(user, "first_name", None) or "the user"
+    return f"{name} (`{user.id}`)"
+
+
+async def show_pack_info(client, message: Message, short_name: str) -> None:
+    short_name = short_name.strip()
+    if "t.me/addstickers/" in short_name:
+        short_name = short_name.split("t.me/addstickers/", 1)[1]
+    short_name = short_name.strip("/").lstrip("@")
+    info = await fetch_set_info(client, short_name)
+    if info is None:
+        await message.edit(
+            f"❌ Couldn't fetch pack `{short_name}`. "
+            "Check the short name or link."
+        )
+        return
+    await message.edit(
+        f"**{info['title']}**\n"
+        f"    short: `{info['short_name']}`\n"
+        f"    id: `{info['id']}`  •  "
+        f"{info['count']}/{MAX_STICKERS_PER_PACK} stickers\n"
+        f"    https://t.me/addstickers/{info['short_name']}"
+    )
+
+
+async def show_user_packs(client, message: Message, ref: str) -> None:
+    """Scan this chat for a user's stickers and list the packs they come from.
+
+    Telegram exposes no API for another user's owned packs, so this is the
+    only way to answer ``.packs @user`` — it reports packs that user's
+    stickers belong to.
+    """
+    try:
+        user = await client.get_users(
+            int(ref) if ref.lstrip("-").isdigit() else ref
+        )
+    except Exception:
+        user = None
+    if user is None:
+        await message.edit(f"❌ Couldn't resolve `{ref}`.")
+        return
+
+    display = _user_display(user)
+    await message.edit(f"🔎 Scanning this chat for stickers from {display} …")
+
+    counts: dict[str, int] = {}
+    scanned = 0
+    try:
+        async for msg in client.get_chat_history(
+            message.chat.id, limit=PACK_SCAN_LIMIT
+        ):
+            scanned += 1
+            sticker = msg.sticker
+            sender = msg.from_user
+            if (
+                sticker
+                and sticker.set_name
+                and sender
+                and sender.id == user.id
+            ):
+                counts[sticker.set_name] = counts.get(sticker.set_name, 0) + 1
+                if len(counts) >= PACK_SCAN_MAX_SETS:
+                    break
+    except Exception as exc:
+        await message.edit(
+            f"❌ Failed to scan chat: {type(exc).__name__}: {exc}"
+        )
+        return
+
+    if not counts:
+        await message.edit(
+            f"No stickers from {display} found in the last "
+            f"**{scanned}** messages of this chat.\n\n"
+            "Telegram doesn't expose another user's owned packs, so this "
+            "only reports packs their stickers come from."
+        )
+        return
+
+    ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    lines = [
+        f"**Sticker packs from {display}** ({len(ordered)})",
+        f"_scanned {scanned} messages in this chat_\n",
+    ]
+    for i, (short_name, used) in enumerate(ordered):
+        title = ""
+        if i < MAX_TITLE_LOOKUPS:
+            info = await fetch_set_info(client, short_name)
+            if info:
+                title = f"**{info['title']}**\n    "
+        lines.append(
+            f"`{i + 1}.` {title}short: `{short_name}`  •  {used} sticker(s)\n"
+            f"    https://t.me/addstickers/{short_name}"
+        )
+    if len(ordered) > MAX_TITLE_LOOKUPS:
+        lines.append(
+            f"\n_…titles omitted for the rest "
+            f"({len(ordered) - MAX_TITLE_LOOKUPS})._"
+        )
+    lines.append(
+        "\nNote: Telegram has no API for another user's owned packs — "
+        "these are packs their stickers come from."
+    )
+    await message.edit("\n".join(lines))
 
 
 async def send_pack_notification(client, title: str, short_name: str) -> None:
@@ -789,6 +941,16 @@ async def stop_sticker_monitor(client, message: Message):
 @continue_propagation
 async def packs_command(client, message: Message):
     global _pack_index
+    raw = (message.text or "").split(maxsplit=1)
+    args = raw[1] if len(raw) > 1 else ""
+    mode, ref = parse_packs_arg(args)
+    if mode == "pack":
+        await show_pack_info(client, message, ref)
+        return
+    if mode == "user":
+        await show_user_packs(client, message, ref)
+        return
+
     try:
         packs = await fetch_owned_packs(client)
     except Exception as exc:
@@ -818,7 +980,9 @@ async def packs_command(client, message: Message):
         lines.append(f"\n…and {len(packs) - MAX_DISPLAY_PACKS} more.")
     lines.append(
         "\nUse `.kang <number|shortname>` to add to a specific pack, "
-        "or `.kang <suffix>` for a themed pack (e.g. `.kang fun`)."
+        "or `.kang <suffix>` for a themed pack (e.g. `.kang fun`).\n"
+        "Look up other packs with `.packs <@user|id>` (packs their stickers "
+        "come from) or `.packs <t.me/addstickers/... shortname>`."
     )
     await message.edit("\n".join(lines))
 
@@ -951,6 +1115,11 @@ async def help_sticker(client, message: Message):
         f"`{prefix}packs`\n"
         "  List every sticker pack you own with its number, short name, "
         "id and sticker count.\n\n"
+        f"`{prefix}packs <@user|user_id>`\n"
+        "  Scan this chat and list the packs a user's stickers come from.\n"
+        "  (Telegram has no API for another user's owned packs.)\n\n"
+        f"`{prefix}packs <shortname|t.me/addstickers/...>`\n"
+        "  Inspect any sticker pack by short name or link.\n\n"
         f"`{prefix}start_sticker_monitor` / `{prefix}stop_sticker_monitor`\n"
         "  Auto-kang every sticker you send in a chat.\n\n"
         "---\n"
