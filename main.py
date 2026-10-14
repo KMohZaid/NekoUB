@@ -259,6 +259,14 @@ def main():
     if __name__ == "__main__":
         sys.modules["main"] = sys.modules["__main__"]
 
+    # Forward logs to a Telegram chat when DEBUG_CHAT_ID is configured.
+    try:
+        from userbot.telegram_logging import install as install_log_forwarder
+
+        install_log_forwarder(app.loop, app)
+    except Exception as exc:
+        logger.error(f"Could not install Telegram log forwarder: {exc}")
+
     # Load all plugins
     load_all_plugins()
 

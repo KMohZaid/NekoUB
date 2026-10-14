@@ -243,6 +243,10 @@ TRANSCRIBE_MODEL=whisper-large-v3
 # SangMata (.sg)
 SANGMATA_BOT=SangMata_BOT
 
+# Debug log forwarding
+DEBUG_CHAT_ID=                   # Forward logs to this chat (empty = off)
+DEBUG_LOG_LEVEL=INFO
+
 # Todoist (.todo)
 TODOIST_API_TOKEN=
 ```

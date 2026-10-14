@@ -74,6 +74,11 @@ APP_VERSION = os.getenv("APP_VERSION", "NekoUB 1.0.0")
 WORKERS = int(os.getenv("WORKERS", "8"))
 PARSE_MODE = os.getenv("PARSE_MODE", "markdown").lower()
 
+# Debug logging: forward logs to a Telegram chat (empty/0 => disabled).
+_debug_chat = os.getenv("DEBUG_CHAT_ID", "").strip()
+DEBUG_CHAT_ID = int(_debug_chat) if _debug_chat else 0
+DEBUG_LOG_LEVEL = os.getenv("DEBUG_LOG_LEVEL", "INFO").upper()
+
 # Sticker set name/title format
 # Placeholders: {user_id}, {first_name}, {username}, {base}, {suffix}, {index}
 # Base defaults to "@<username>" (or first name); per-command suffixes give

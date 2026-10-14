@@ -190,6 +190,19 @@ No configuration required. Automations are created per chat and stored in
 triggers (`every` / `at` / `in`) use the server's local timezone and keep
 running across restarts.
 
+## 🐞 Debug Log Forwarding
+
+```env
+DEBUG_CHAT_ID=
+DEBUG_LOG_LEVEL=INFO
+```
+
+- `DEBUG_CHAT_ID` - a chat/group id to forward the bot's logs to (negative for
+  groups). Leave empty to disable. Logs written before the client connects are
+  buffered and flushed once it is online.
+- `DEBUG_LOG_LEVEL` - minimum level to forward: `DEBUG`, `INFO` (default),
+  `WARNING` or `ERROR`.
+
 ## ✅ Todoist (.todo)
 
 ```env
