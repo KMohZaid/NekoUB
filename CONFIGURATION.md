@@ -134,14 +134,6 @@ TTS_VOICE=en-US-AriaNeural
   `edge-tts --list-voices` for options (e.g. `hi-IN-SwaraNeural`,
   `en-IN-NeerjaNeural`).
 
-## 💬 Quote Stickers (.q)
-
-```env
-QUOTE_API_URL=https://quote.nubcoders.com/generate
-```
-
-A Quotly-compatible quote generator endpoint.
-
 ## 🌍 Translate (.tr)
 
 ```env

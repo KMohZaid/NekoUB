@@ -15,7 +15,6 @@ A cute and powerful Telegram Userbot based on pyrotgfork with a modular plugin s
 - 🤖 **AI assistant** - `.ai` chat, web-search summarisation and per-chat model/system prompts
 - 🌐 **Web tools** - `.web` search plus `.open` / `.read` page reading
 - 🖼️ **Stickers** - `.kang` stickers, photos, GIFs and videos into your own packs
-- 💬 **Quote stickers** - `.q` Quotly quote stickers from any message
 - 🌍 **Translate** - `.tr` text, replies and voice notes
 - 🗣️ **Text to speech** - `.tts` natural voice notes (Microsoft Edge voices)
 - 🕵️ **SangMata** - `.sg` look up a user's past names and usernames
@@ -180,10 +179,6 @@ Automations are **per chat**, stored in `.automessages.json`, and reloaded on re
   - Example: `.kang`, `.kang 🐱`, `.kang -a 🐱` (append emoji)
 - **`.kang <pack>`** - Add to a specific pack (number from `.packs`, short name, id, or suffix)
   - Example: `.kang 1`, `.kang fun`, `.kang fun 🐱`
-- **`.q [N]`** - Turn the replied (targeted) message into a quote sticker (alias: `.quote`)
-  - `.q 2` adds the message below it, `.q -2` the message above it (max 4 messages; `.q 5` counts as `.q 4`)
-  - `.qr` also shows each message's replied-to context; a `#hex` or named colour sets the background; extra text overrides the quoted text
-  - Example: `.q` (reply), `.q 2` (reply), `.q -2` (reply), `.qr 3` (reply), `.q #ff0000 Nice`
 - **`.packs`** - List every sticker pack you own with number, short name, id and count (alias: `.mypacks`)
 - **`.start_sticker_monitor`** - Auto-kang every sticker you send in this chat
 - **`.stop_sticker_monitor`** - Stop the sticker monitor in all chats
@@ -235,9 +230,6 @@ AI_MODEL=groq/openai/gpt-oss-120b
 FFMPEG_BINARY=                   # Optional ffmpeg path (auto-detected)
 TTS_VOICE=en-US-AriaNeural
 
-# Quote stickers (.q)
-QUOTE_API_URL=https://quote.nubcoders.com/generate
-
 # Translate (.tr)
 TRANSLATE_TARGET=en
 GROQ_API_KEY=                    # Optional; falls back to synckey keys
@@ -281,7 +273,6 @@ NekoUB/
 │   ├── json.py                # .json
 │   ├── kill.py                # .kill
 │   ├── ping.py                # .ping
-│   ├── quote.py               # .q quote stickers
 │   ├── reload.py              # .reload
 │   ├── sangmata.py            # .sg name history
 │   ├── save.py                # .save

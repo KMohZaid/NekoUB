@@ -336,23 +336,6 @@ CATEGORIES: dict[str, dict] = {
                 ],
             },
             {
-                "cmd": "q",
-                "args": "[N|-N] [#color] [text]",
-                "desc": "Turn the replied (targeted) message into a quote "
-                "sticker (Quotly). `q 2` adds the message below it, `q -2` the "
-                "message above it (max 4 messages; `q 5` counts as `q 4`). "
-                "`qr` also shows each message's replied-to context. A `#hex` "
-                "or named colour sets the background; extra text overrides the "
-                "quoted text.",
-                "ex": [
-                    "{p}q (reply)",
-                    "{p}q 2 (reply)",
-                    "{p}q -2 (reply)",
-                    "{p}qr 3 (reply)",
-                    "{p}q #ff0000 Nice",
-                ],
-            },
-            {
                 "cmd": "packs",
                 "args": "",
                 "desc": "List every sticker pack you own with its number, "
