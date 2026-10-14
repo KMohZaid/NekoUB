@@ -51,6 +51,7 @@ class TelegramLogHandler(logging.Handler):
         self.setFormatter(_Formatter())
         self._buffer: deque[str] = deque(maxlen=MAX_BUFFER)
         self._sending = False
+        self._announced = False
 
     def filter(self, record: logging.LogRecord) -> bool:
         if self._sending:
@@ -75,26 +76,46 @@ class TelegramLogHandler(logging.Handler):
             size += len(line) + 1
         return batch
 
+    async def _send(self, client, text: str) -> None:
+        self._sending = True
+        try:
+            await client.send_message(
+                self.chat_id, text[:MAX_MESSAGE], parse_mode=ParseMode.DISABLED
+            )
+        finally:
+            self._sending = False
+
     async def run(self, client) -> None:
         while True:
             try:
                 if getattr(client, "is_connected", False):
+                    if not self._announced:
+                        await self._send(client, _online_label())
+                        self._announced = True
                     batch = self.drain()
                     if batch:
-                        self._sending = True
-                        try:
-                            await client.send_message(
-                                self.chat_id,
-                                "\n".join(batch)[:MAX_MESSAGE],
-                                parse_mode=ParseMode.DISABLED,
-                            )
-                        finally:
-                            self._sending = False
+                        await self._send(client, "\n".join(batch))
             except Exception as exc:  # never let forwarding crash the bot
                 print(
                     f"[telegram_logging] send failed: {exc}", file=sys.stderr
                 )
             await asyncio.sleep(POLL_SECONDS)
+
+
+def _uptime_seconds() -> float | None:
+    try:
+        with open("/proc/uptime") as handle:
+            return float(handle.read().split()[0])
+    except Exception:
+        return None
+
+
+def _online_label() -> str:
+    uptime = _uptime_seconds()
+    reason = "restarted"
+    if uptime is not None and uptime < 180:
+        reason = "server rebooted"
+    return f"🟢 NekoUB online ({reason}) — {datetime.now():%Y-%m-%d %H:%M:%S}"
 
 
 def install(loop, client) -> TelegramLogHandler | None:

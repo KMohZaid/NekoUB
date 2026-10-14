@@ -199,9 +199,10 @@ DEBUG_LOG_LEVEL=INFO
 
 - `DEBUG_CHAT_ID` - a chat/group id to forward the bot's logs to (negative for
   groups). Leave empty to disable. Logs written before the client connects are
-  buffered and flushed once it is online.
-- `DEBUG_LOG_LEVEL` - minimum level to forward: `DEBUG`, `INFO` (default),
-  `WARNING` or `ERROR`.
+  buffered and flushed once it is online. A "🟢 NekoUB online (restarted /
+  server rebooted)" notice is always sent on startup, regardless of the level.
+- `DEBUG_LOG_LEVEL` - minimum level to forward: `DEBUG`, `INFO`, `WARNING` or
+  `ERROR` (recommended — sends only failures).
 
 ## ✅ Todoist (.todo)
 
