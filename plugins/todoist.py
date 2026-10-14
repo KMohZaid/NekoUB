@@ -309,6 +309,17 @@ async def todo_command(client, message: Message):
 
     try:
         ensure_initialized()
+    except RuntimeError as init_error:
+        logger.warning(f"[TODOIST] Not configured: {init_error}")
+        await message.edit(
+            "❌ Todoist is not configured.\n\n"
+            f"Reason: `{init_error}`\n\n"
+            "Add `TODOIST_API_TOKEN` to `.env` (Settings → Integrations → "
+            "Developer in Todoist), then restart the bot."
+        )
+        return
+
+    try:
         description = build_description(message)
         todo_message_link = _build_message_link(message.chat.id, message.id)
 
