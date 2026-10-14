@@ -211,7 +211,12 @@ TODOIST_API_TOKEN=your_todoist_token_here
 ```
 
 Optional token used by the `.todo` command to create tasks. Copy it from your
-Todoist settings.
+Todoist settings (Settings → Integrations → Developer).
+
+Tasks created with `.todo` go into a section named
+`📩 From Telegram [UserBot]` inside your Todoist inbox. Use
+`.todo list` to browse them (10 per page) and `.todo list <n>` to jump to a
+page.
 
 ## 📊 Example Configurations
 

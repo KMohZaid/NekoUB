@@ -1,9 +1,11 @@
+import html
 import re
 from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
 from pyrogram import filters
+from pyrogram.enums import ParseMode
 from pyrogram.types import Message
 from todoist_api_python.api import TodoistAPI
 
@@ -28,6 +30,24 @@ DUE_PATTERN = re.compile(r"(?i)(?:^|\s)#due\s*\|([^|]+)\|")
 PRIORITY_MAP = {1: 4, 2: 3, 3: 2, 4: 1}
 MAX_TASK_CONTENT_LEN = 500
 MAX_TASK_DESCRIPTION_LEN = 16383
+
+LIST_PAGE_SIZE = 10
+LIST_CONTENT_PREVIEW = 200
+MAX_LIST_TEXT = 3500
+
+USAGE_TEXT = (
+    "Usage:\n"
+    "`.todo {content} + reply`\n"
+    "`.todo list [page]`\n\n"
+    "Help :\n\n"
+    "Reply : add context in description\n"
+    "`#pN` : priority, #p1->very urgent, urgent, normal, low\n"
+    "`#due |...|` : specify due date ...."
+)
+
+
+def _esc(text: str) -> str:
+    return html.escape(text or "", quote=False)
 
 
 def _iter_items(payload):
@@ -272,6 +292,135 @@ async def send_result_feedback(client, message: Message, success: bool):
             logger.error(f"[TODOIST] Feedback reply failed: {reply_error}")
 
 
+def _format_due_line(task) -> Optional[str]:
+    due = getattr(task, "due", None)
+    due_string = getattr(due, "string", None) if due else None
+    if not due_string:
+        return None
+    icon = "🔁" if getattr(due, "is_recurring", False) else "🗓"
+    return f"{icon} {_esc(due_string)}"
+
+
+def _task_meta(task) -> str:
+    parts = []
+    due_line = _format_due_line(task)
+    if due_line:
+        parts.append(due_line)
+
+    # Todoist priority 4..1 maps to user-facing p1..p4; skip p4 (low).
+    user_priority = 5 - int(getattr(task, "priority", 1) or 1)
+    if user_priority in (1, 2, 3):
+        parts.append(f"⚡ p{user_priority}")
+
+    labels = [
+        label
+        for label in (getattr(task, "labels", None) or [])
+        if label != TODOIST_LABEL_NAME
+    ]
+    if labels:
+        parts.append(f"🏷 {_esc(', '.join(labels))}")
+
+    return "  ·  ".join(parts)
+
+
+def fetch_section_tasks() -> list:
+    tasks = list(_iter_items(API.get_tasks(section_id=SECTION.id)))
+    tasks.sort(key=lambda task: int(getattr(task, "order", 0) or 0))
+    return tasks
+
+
+def render_todo_list(tasks: list, page: int) -> str:
+    total = len(tasks)
+    total_pages = max(1, (total + LIST_PAGE_SIZE - 1) // LIST_PAGE_SIZE)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * LIST_PAGE_SIZE
+    chunk = tasks[start : start + LIST_PAGE_SIZE]
+
+    lines = [
+        "📋 <b>Todoist · From Telegram</b>",
+        f"<i>page {page}/{total_pages} · {total} task(s)</i>",
+        "",
+    ]
+    for number, task in enumerate(chunk, start=start + 1):
+        content = task.content or "(untitled)"
+        if len(content) > LIST_CONTENT_PREVIEW:
+            content = content[:LIST_CONTENT_PREVIEW].rstrip() + "…"
+        lines.append(f"<b>{number}.</b> {_esc(content)}")
+        meta = _task_meta(task)
+        if meta:
+            lines.append(f"    {meta}")
+
+    if total_pages > 1:
+        nav = []
+        if page > 1:
+            nav.append(
+                f"◀ <code>{config.CMD_PREFIX}todo list {page - 1}</code>"
+            )
+        if page < total_pages:
+            nav.append(
+                f"<code>{config.CMD_PREFIX}todo list {page + 1}</code> ▶"
+            )
+        if nav:
+            lines.append("")
+            lines.append("  ·  ".join(nav))
+
+    text = "\n".join(lines)
+    if len(text) > MAX_LIST_TEXT:
+        text = text[:MAX_LIST_TEXT].rstrip() + "\n… (truncated)"
+    return text
+
+
+async def handle_todo_list(client, message: Message, page: int) -> None:
+    try:
+        ensure_initialized()
+    except RuntimeError as init_error:
+        logger.warning(f"[TODOIST] Not configured: {init_error}")
+        await message.edit(
+            "❌ Todoist is not configured.\n\n"
+            f"Reason: <code>{_esc(str(init_error))}</code>\n\n"
+            "Add <code>TODOIST_API_TOKEN</code> to <code>.env</code> "
+            "(Settings → Integrations → Developer in Todoist), then restart "
+            "the bot.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        tasks = fetch_section_tasks()
+    except Exception as exc:
+        error_details = _format_todoist_error(exc)
+        logger.error(
+            f"[TODOIST] Failed to list tasks: {error_details}", exc_info=True
+        )
+        await message.edit(
+            "❌ Could not load tasks.\n"
+            f"<code>{_esc(error_details)}</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if not tasks:
+        await message.edit(
+            "📭 <b>Todoist · From Telegram</b>\n\n"
+            "No tasks yet. Add one with "
+            f"<code>{config.CMD_PREFIX}todo &lt;content&gt;</code>.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    total_pages = max(1, (len(tasks) + LIST_PAGE_SIZE - 1) // LIST_PAGE_SIZE)
+    if page < 1 or page > total_pages:
+        await message.edit(
+            f"❌ Page {page} is out of range (1–{total_pages}).",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    await message.edit(
+        render_todo_list(tasks, page), parse_mode=ParseMode.HTML
+    )
+
+
 @main.app.on_message(
     filters.me & filters.command("todo", prefixes=config.CMD_PREFIX)
 )
@@ -281,26 +430,29 @@ async def todo_command(client, message: Message):
     raw_content = raw_text.split(maxsplit=1)
 
     if len(raw_content) < 2:
-        await message.edit(
-            "Usage:\n"
-            "`.todo {content} + reply`\n\n"
-            "Help :\n\n"
-            "Reply : add context in description\n"
-            "`#pN` : priority, #p1->very urgent, urgent, normal, low\n"
-            "`#due |...|` : specify due date ...."
-        )
+        await message.edit(USAGE_TEXT)
         return
 
-    parsed_content, priority, due_string = parse_todo_input(raw_content[1])
+    arg = raw_content[1].strip()
+    list_match = re.match(r"(?i)^list(?:\s+(\S+))?$", arg)
+    if list_match:
+        page_token = list_match.group(1)
+        if page_token is None:
+            page = 1
+        elif page_token.isdigit():
+            page = int(page_token)
+        else:
+            await message.edit(
+                f"Usage: <code>{config.CMD_PREFIX}todo list [page]</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        await handle_todo_list(client, message, page)
+        return
+
+    parsed_content, priority, due_string = parse_todo_input(arg)
     if not parsed_content:
-        await message.edit(
-            "Usage:\n"
-            "`.todo {content} + reply`\n\n"
-            "Help :\n\n"
-            "Reply : add context in description\n"
-            "`#pN` : priority, #p1->very urgent, urgent, normal, low\n"
-            "`#due |...|` : specify due date ...."
-        )
+        await message.edit(USAGE_TEXT)
         return
     if len(parsed_content) > MAX_TASK_CONTENT_LEN:
         await message.reply_text("title is more than 500 char")
@@ -313,9 +465,11 @@ async def todo_command(client, message: Message):
         logger.warning(f"[TODOIST] Not configured: {init_error}")
         await message.edit(
             "❌ Todoist is not configured.\n\n"
-            f"Reason: `{init_error}`\n\n"
-            "Add `TODOIST_API_TOKEN` to `.env` (Settings → Integrations → "
-            "Developer in Todoist), then restart the bot."
+            f"Reason: <code>{_esc(str(init_error))}</code>\n\n"
+            "Add <code>TODOIST_API_TOKEN</code> to <code>.env</code> "
+            "(Settings → Integrations → Developer in Todoist), then restart "
+            "the bot.",
+            parse_mode=ParseMode.HTML,
         )
         return
 

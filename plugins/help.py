@@ -388,6 +388,16 @@ CATEGORIES: dict[str, dict] = {
                     "{p}todo Meeting #due |tomorrow 5pm| (reply for context)",
                 ],
             },
+            {
+                "cmd": "todo list",
+                "args": "[page]",
+                "desc": "List the tasks added from Telegram (10 per page). "
+                "Pass a page number to jump to that page.",
+                "ex": [
+                    "{p}todo list",
+                    "{p}todo list 2",
+                ],
+            },
         ],
     },
 }

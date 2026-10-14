@@ -193,6 +193,8 @@ Automations are **per chat**, stored in `.automessages.json`, and reloaded on re
 - **`.todo <content> [#pN] [#due |<date>|]`** - Create a Todoist task in your inbox
   - Reply to a message to attach its context to the task description
   - Example: `.todo Buy milk`, `.todo Pay bill #p1`
+- **`.todo list [page]`** - List the tasks added from Telegram (10 per page)
+  - Example: `.todo list`, `.todo list 2`
 
 ## 🔧 Configuration
 
