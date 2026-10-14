@@ -337,20 +337,17 @@ CATEGORIES: dict[str, dict] = {
             },
             {
                 "cmd": "packs",
-                "args": "[@user|id|pack]",
+                "args": "",
                 "desc": "List every sticker pack you own with its number, "
-                "short name, id and sticker count. No argument lists your "
-                "own packs. Pass `@user` / a user id to scan this chat and "
-                "list the packs that user's stickers come from (Telegram has "
-                "no API for another user's owned packs), or pass a short name "
-                "/ `t.me/addstickers/...` link to inspect any pack. "
-                "Alias: mypacks.",
-                "ex": [
-                    "{p}packs",
-                    "{p}packs @username",
-                    "{p}packs 123456789",
-                    "{p}packs https://t.me/addstickers/packname",
-                ],
+                "short name, id and sticker count. Alias: mypacks.",
+                "ex": ["{p}packs"],
+            },
+            {
+                "cmd": "packs search",
+                "args": "<keyword>",
+                "desc": "Search all public Telegram sticker packs by keyword "
+                "and get their add links.",
+                "ex": ["{p}packs search cats", "{p}packs search meme"],
             },
             {
                 "cmd": "start_sticker_monitor",

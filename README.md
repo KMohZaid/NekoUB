@@ -179,7 +179,8 @@ Automations are **per chat**, stored in `.automessages.json`, and reloaded on re
   - Example: `.kang`, `.kang 🐱`, `.kang -a 🐱` (append emoji)
 - **`.kang <pack>`** - Add to a specific pack (number from `.packs`, short name, id, or suffix)
   - Example: `.kang 1`, `.kang fun`, `.kang fun 🐱`
-- **`.packs [@user|id|pack]`** - Sticker packs (alias: `.mypacks`): no arg lists every pack you own (number, short name, id, count); `@user`/id scans this chat for that user's stickers and lists the packs they come from; a short name or `t.me/addstickers/...` link inspects any pack
+- **`.packs`** - List every sticker pack you own with number, short name, id and count (alias: `.mypacks`)
+- **`.packs search <keyword>`** - Search all public Telegram sticker packs by keyword and get their add links
 - **`.start_sticker_monitor`** - Auto-kang every sticker you send in this chat
 - **`.stop_sticker_monitor`** - Stop the sticker monitor in all chats
 - **`.help_sticker`** - Show the sticker plugin's detailed help
