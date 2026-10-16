@@ -23,6 +23,13 @@ MAX_POLLS = 30  # deferred-queue polls before giving up
 SEARCH_RESULTS = 8  # results fed to the model for `.ai search`
 MAX_SUMMARY_CHARS = 3000
 
+PLAIN_TEXT_DIRECTIVE = (
+    "Format the response as plain text that reads well without any rendering: "
+    "no Markdown (no **bold**, #headings, or backticks), no tables or column "
+    "layouts, no HTML tags (e.g. <br>), and no LaTeX. Write short paragraphs; "
+    "for lists, start each item with '- ' or '1. ' on its own line."
+)
+
 # chat_id -> list of {"role", "content"}
 _history: dict[int, list] = {}
 # chat_id -> {"model": str | None, "system": str | None}
@@ -45,7 +52,7 @@ def _esc(text: str) -> str:
     return html.escape(text or "", quote=False)
 
 
-# --- Markdown stripping (AI answers are sent as plain text) ---
+# --- Markdown/HTML/LaTeX stripping (AI answers are sent as plain text) ---
 _FENCE_RE = re.compile(r"```[^\n]*\n?(.*?)```", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)[^)]*\)")
@@ -58,10 +65,87 @@ _BOLD_RE = re.compile(r"(\*\*|__)(.+?)\1")
 _STRIKE_RE = re.compile(r"~~(.+?)~~")
 _ITALIC_UND_RE = re.compile(r"(?<!\w)_(?=\S)(.+?)(?<=\S)_(?!\w)")
 _ITALIC_STAR_RE = re.compile(r"(?<!\*)\*(?=\S)(.+?)(?<=\S)\*(?!\*)")
+_HTML_BR_RE = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_HTML_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
+_LATEX_DELIM_RE = re.compile(r"\\[()\[\]]|\$\$")
+_LATEX_WORDS = {
+    r"\times": "×",
+    r"\cdot": "·",
+    r"\approx": "≈",
+    r"\geq": "≥",
+    r"\leq": "≤",
+    r"\rightarrow": "→",
+    r"\to": "→",
+    r"\infty": "∞",
+    r"\pm": "±",
+    r"\ldots": "…",
+    r"\dots": "…",
+}
+_SEP_CELL_RE = re.compile(r"^:?-{2,}:?$")
+
+
+def _is_table_line(line: str) -> bool:
+    stripped = line.strip()
+    return bool(stripped) and stripped.startswith("|") and stripped.endswith("|")
+
+
+def _parse_table_row(line: str) -> list[str]:
+    row = line.strip()
+    row = row[1:] if row.startswith("|") else row
+    row = row[:-1] if row.endswith("|") else row
+    return [_HTML_BR_RE.sub(" ", cell).strip() for cell in row.split("|")]
+
+
+def _is_sep_row(cells: list[str]) -> bool:
+    return bool(cells) and all(_SEP_CELL_RE.fullmatch(c.replace(" ", "")) for c in cells)
+
+
+def _render_table(block: list[str]) -> list[str]:
+    parsed = [_parse_table_row(line) for line in block]
+    header = None
+    if len(parsed) >= 2 and _is_sep_row(parsed[1]):
+        header = parsed[0]
+        parsed = parsed[2:]
+    else:
+        parsed = [row for row in parsed if not _is_sep_row(row)]
+    lines: list[str] = []
+    for cells in parsed:
+        nonempty = [c for c in cells if c]
+        if not nonempty:
+            continue
+        if len(cells) == 2 and all(cells):
+            lines.append(f"• {cells[0]}: {cells[1]}")
+        elif header and len(header) == len(cells):
+            lines.append(f"• {cells[0] or '—'}")
+            for index in range(1, len(cells)):
+                if cells[index]:
+                    label = header[index].strip() or f"Column {index + 1}"
+                    lines.append(f"  {label}: {cells[index]}")
+        else:
+            lines.append("• " + " — ".join(nonempty))
+    return lines
+
+
+def _flatten_tables(text: str) -> str:
+    lines = text.split("\n")
+    out: list[str] = []
+    index = 0
+    total = len(lines)
+    while index < total:
+        if _is_table_line(lines[index]):
+            block: list[str] = []
+            while index < total and _is_table_line(lines[index]):
+                block.append(lines[index])
+                index += 1
+            out.extend(_render_table(block))
+        else:
+            out.append(lines[index])
+            index += 1
+    return "\n".join(out)
 
 
 def _strip_markdown(text: str) -> str:
-    """Convert a model's Markdown answer into clean plain text."""
+    """Convert a model's Markdown answer into clean, readable plain text."""
     if not text:
         return ""
     # Code: drop fences/backticks but keep the code itself.
@@ -70,6 +154,21 @@ def _strip_markdown(text: str) -> str:
     # Images keep their label; links become "label (url)".
     text = _IMAGE_RE.sub(r"\1", text)
     text = _LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2)})", text)
+    # Tables -> readable bullet lines (this also consumes in-cell <br>).
+    text = _flatten_tables(text)
+    # HTML: <br> -> newline, then drop remaining tags and unescape entities.
+    text = _HTML_BR_RE.sub("\n", text)
+    text = _HTML_TAG_RE.sub("", text)
+    text = (
+        text.replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+    )
+    # LaTeX: drop math delimiters and translate common symbols.
+    text = _LATEX_DELIM_RE.sub("", text)
+    for command, symbol in _LATEX_WORDS.items():
+        text = text.replace(command, symbol)
     # Block structure.
     text = _HEADING_RE.sub("", text)
     text = _RULE_RE.sub("", text)
@@ -81,7 +180,8 @@ def _strip_markdown(text: str) -> str:
     text = _ITALIC_STAR_RE.sub(r"\1", text)
     # Bullets -> "• ".
     text = _BULLET_RE.sub(r"\1• ", text)
-    # Tidy up blank lines left behind by removed rules/underlines.
+    # Tidy up whitespace.
+    text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
@@ -232,7 +332,8 @@ async def _ai_search(message: Message, query: str, chat_id: int) -> None:
                 "You are a research assistant. Using ONLY the numbered search "
                 "results provided, write a concise, well-structured answer to "
                 "the user's query. Cite sources inline with their [n] markers. "
-                "Never invent facts or sources."
+                "Never invent facts or sources. "
+                + PLAIN_TEXT_DIRECTIVE
             ),
         },
         {
@@ -380,7 +481,10 @@ async def ai_command(client, message: Message):
     messages = []
     system = _system(chat_id)
     if system:
-        messages.append({"role": "system", "content": system})
+        system = f"{system}\n\n{PLAIN_TEXT_DIRECTIVE}".strip()
+    else:
+        system = PLAIN_TEXT_DIRECTIVE
+    messages.append({"role": "system", "content": system})
     messages.extend(history)
     messages.append({"role": "user", "content": prompt})
 
