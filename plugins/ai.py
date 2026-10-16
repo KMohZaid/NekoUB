@@ -1,5 +1,6 @@
 import asyncio
 import html
+import re
 from urllib.parse import urlparse
 
 import httpx
@@ -42,6 +43,47 @@ def _headers() -> dict:
 
 def _esc(text: str) -> str:
     return html.escape(text or "", quote=False)
+
+
+# --- Markdown stripping (AI answers are sent as plain text) ---
+_FENCE_RE = re.compile(r"```[^\n]*\n?(.*?)```", re.DOTALL)
+_INLINE_CODE_RE = re.compile(r"`([^`]+)`")
+_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)[^)]*\)")
+_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)[^)]*\)")
+_HEADING_RE = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+", re.MULTILINE)
+_RULE_RE = re.compile(r"^[ \t]{0,3}(?:[-*_=][ \t]*){2,}$", re.MULTILINE)
+_QUOTE_RE = re.compile(r"^[ \t]{0,3}>[ \t]?", re.MULTILINE)
+_BULLET_RE = re.compile(r"^([ \t]*)[-*+][ \t]+", re.MULTILINE)
+_BOLD_RE = re.compile(r"(\*\*|__)(.+?)\1")
+_STRIKE_RE = re.compile(r"~~(.+?)~~")
+_ITALIC_UND_RE = re.compile(r"(?<!\w)_(?=\S)(.+?)(?<=\S)_(?!\w)")
+_ITALIC_STAR_RE = re.compile(r"(?<!\*)\*(?=\S)(.+?)(?<=\S)\*(?!\*)")
+
+
+def _strip_markdown(text: str) -> str:
+    """Convert a model's Markdown answer into clean plain text."""
+    if not text:
+        return ""
+    # Code: drop fences/backticks but keep the code itself.
+    text = _FENCE_RE.sub(lambda m: m.group(1), text)
+    text = _INLINE_CODE_RE.sub(r"\1", text)
+    # Images keep their label; links become "label (url)".
+    text = _IMAGE_RE.sub(r"\1", text)
+    text = _LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2)})", text)
+    # Block structure.
+    text = _HEADING_RE.sub("", text)
+    text = _RULE_RE.sub("", text)
+    text = _QUOTE_RE.sub("", text)
+    # Emphasis.
+    text = _BOLD_RE.sub(r"\2", text)
+    text = _STRIKE_RE.sub(r"\1", text)
+    text = _ITALIC_UND_RE.sub(r"\1", text)
+    text = _ITALIC_STAR_RE.sub(r"\1", text)
+    # Bullets -> "• ".
+    text = _BULLET_RE.sub(r"\1• ", text)
+    # Tidy up blank lines left behind by removed rules/underlines.
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def _model(chat_id: int) -> str:
@@ -219,21 +261,17 @@ async def _ai_search(message: Message, query: str, chat_id: int) -> None:
         await message.edit(f"❌ {_esc(error)}", parse_mode=ParseMode.HTML)
         return
 
-    body = summary[:MAX_SUMMARY_CHARS]
+    body = _strip_markdown(summary)[:MAX_SUMMARY_CHARS]
     if len(summary) > MAX_SUMMARY_CHARS:
         body += "\n… (truncated)"
     sources = "\n".join(
-        f"{index}. {_esc(result['title'])}\n   {_esc(result['url'])}"
+        f"{index}. {result['title']}\n   {result['url']}"
         for index, result in enumerate(results, 1)
     )
-    text = (
-        f"🔎 <b>{_esc(query)}</b>\n\n"
-        f"{_esc(body)}\n\n"
-        f"<b>Sources</b>\n{sources}"
-    )
+    text = f"🔎 {query}\n\n{body}\n\nSources\n{sources}"
     if len(text) > 4000:
         text = text[:3990] + "…"
-    await message.edit(text, parse_mode=ParseMode.HTML)
+    await message.edit(text, parse_mode=ParseMode.DISABLED)
 
 
 @main.app.on_message(
@@ -368,14 +406,14 @@ async def ai_command(client, message: Message):
     if len(history) > MAX_HISTORY:
         del history[: len(history) - MAX_HISTORY]
 
-    body = content[:MAX_REPLY_CHARS]
+    body = _strip_markdown(content)[:MAX_REPLY_CHARS]
     if len(content) > MAX_REPLY_CHARS:
         body += "\n… (truncated)"
     question = (arg or reply_text or "").strip()
     if len(question) > 300:
         question = question[:300] + "…"
-    footer = f"\n\n<i>Asked question: {_esc(question)}</i>" if question else ""
+    footer = f"\n\nAsked question: {question}" if question else ""
     await message.edit(
-        f"🤖 {_esc(body)}{footer}",
-        parse_mode=ParseMode.HTML,
+        f"🤖 {body}{footer}",
+        parse_mode=ParseMode.DISABLED,
     )
