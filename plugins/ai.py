@@ -513,11 +513,19 @@ async def ai_command(client, message: Message):
     body = _strip_markdown(content)[:MAX_REPLY_CHARS]
     if len(content) > MAX_REPLY_CHARS:
         body += "\n… (truncated)"
-    question = (arg or reply_text or "").strip()
-    if len(question) > 300:
-        question = question[:300] + "…"
-    footer = f"\n\nAsked question: {question}" if question else ""
+    # Show the question: both the typed arg and the replied message when present.
+    arg = arg.strip()
+    reply_text = reply_text.strip()
+    if arg and reply_text:
+        combined = f"{arg}: {reply_text}"
+    else:
+        combined = arg or reply_text
+    if len(combined) > 300:
+        combined = combined[:300] + "…"
+    footer = (
+        f"\n\n<b>Asked question:</b> <i>{_esc(combined)}</i>" if combined else ""
+    )
     await message.edit(
-        f"🤖 {body}{footer}",
-        parse_mode=ParseMode.DISABLED,
+        f"🤖 {_esc(body)}{footer}",
+        parse_mode=ParseMode.HTML,
     )
