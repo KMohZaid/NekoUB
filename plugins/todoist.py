@@ -1,12 +1,8 @@
 import html
 import re
-<<<<<<< HEAD
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-=======
 from datetime import date, datetime, time, timezone
 from zoneinfo import ZoneInfo
->>>>>>> 775ebc5 (feat(todoist): improve task list links and due dates)
 from typing import Optional
 
 import httpx
@@ -313,47 +309,44 @@ def build_description(
 ) -> Optional[str]:
     user_description = (user_description or "").strip()
     reply = message.reply_to_message
-    if not reply:
-        if not user_description:
-            return None
-        return _truncate(user_description, MAX_TASK_DESCRIPTION_LEN)
-
     chat_id = message.chat.id
     chat_title = message.chat.title or message.chat.first_name or "Chat"
     message_link = _build_message_link(chat_id, message.id)
-    replied_message_link = _build_message_link(chat_id, reply.id)
-    sender_line = _build_reply_sender_line(reply)
-
-    replied_text = _extract_message_text(reply).strip()
-    replied_content = replied_text if replied_text else "(non-text message)"
     timestamp_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     description_prefix = (
         f"Chat [Task originates from] : {chat_title} #{chat_id}\n"
-        f"Message [Task cmd message] : [Message #{message.id}]({message_link})\n\n"
-        "=== Replied Message (If any) ===\n"
-        f"[Message #{reply.id}]({replied_message_link})\n\n"
-        f"{sender_line}\n\n"
-        "=========================================\n\n"
+        f"Message [Task cmd message] : [Message #{message.id}]({message_link})\n"
     )
+    replied_content = ""
+    if reply:
+        replied_message_link = _build_message_link(chat_id, reply.id)
+        sender_line = _build_reply_sender_line(reply)
+        replied_text = _extract_message_text(reply).strip()
+        replied_content = replied_text if replied_text else "(non-text message)"
+        description_prefix += (
+            "\n=== Replied Message (If any) ===\n"
+            f"[Message #{reply.id}]({replied_message_link})\n\n"
+            f"{sender_line}\n\n"
+            "=========================================\n\n"
+        )
+
     description_suffix = (
         "\n\n"
         "=========================================\n\n\n"
         f"Task added on : {timestamp_utc}"
     )
 
-    user_block = f"{user_description}\n\n" if user_description else ""
-    budget = (
+    max_replied_len = max(
+        0,
         MAX_TASK_DESCRIPTION_LEN
         - len(description_prefix)
         - len(description_suffix)
+        - len(user_description)
+        - (2 if user_description else 0),
     )
-    user_description = _truncate(user_description, budget - 200)
-    user_block = f"{user_description}\n\n" if user_description else ""
-    max_replied_len = budget - len(user_block)
-
     replied_content = _truncate(replied_content, max_replied_len)
-
+    user_block = f"{user_description}\n\n" if user_description else ""
     description = user_block + description_prefix + replied_content
     return _truncate(
         description + description_suffix, MAX_TASK_DESCRIPTION_LEN
