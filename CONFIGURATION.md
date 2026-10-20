@@ -210,6 +210,23 @@ Tasks created with `.todo` go into a section named
 `.todo list` to browse them (10 per page) and `.todo list <n>` to jump to a
 page.
 
+The task title is the plain text after `.todo`. Optional fields:
+
+- `#tags |a, b|` (or `#tag a`) - labels to attach. Missing labels are created
+  in Todoist, so the token needs permission to manage labels.
+- `#desc |...|` - your own description, placed above any replied-message
+  context.
+- `#pN` - priority (`#p1` very urgent … `#p4` low).
+- `#due |...|` - due date, parsed by Todoist.
+- Replying to a message appends its text, sender and a link to the
+  description.
+
+Example:
+
+```
+.todo Fix login #tags |backend, urgent| #desc |500 on submit| #due |tomorrow|
+```
+
 ## 📊 Example Configurations
 
 ### Minimal Configuration (Default)

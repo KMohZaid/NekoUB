@@ -187,10 +187,13 @@ Automations are **per chat**, stored in `.automessages.json`, and reloaded on re
 
 ### ✅ Todoist
 
-- **`.todo <content> [#pN] [#due |<date>|]`** - Create a Todoist task in your inbox
+- **`.todo <title> [#tags |a, b|] [#desc |text|] [#pN] [#due |<date>|]`** - Create a Todoist task in your inbox
   - Reply to a message to attach its context to the task description
+  - `#tags |...|` adds Todoist labels (missing labels are created automatically); `#tag <name>` also works
+  - `#desc |...|` adds your own description above the reply context
   - Example: `.todo Buy milk`, `.todo Pay bill #p1`
-- **`.todo list [page]`** - List the tasks added from Telegram (10 per page)
+  - Example: `.todo Fix login #tags |backend, urgent| #desc |Repro: 500 on submit| #due |tomorrow|`
+- **`.todo list [page]`** - List the tasks added from Telegram (10 per page), with labels and a description preview
   - Example: `.todo list`, `.todo list 2`
 
 ## 🔧 Configuration

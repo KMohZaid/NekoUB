@@ -1,5 +1,6 @@
 import html
 import re
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -27,23 +28,40 @@ TODOIST_LABEL_COLOR = "blue"
 
 PRIORITY_PATTERN = re.compile(r"(?i)(?:^|\s)#p([1-4])\b")
 DUE_PATTERN = re.compile(r"(?i)(?:^|\s)#due\s*\|([^|]+)\|")
+DESCRIPTION_PATTERN = re.compile(r"(?is)(?:^|\s)#desc\s*\|(.*?)\|")
+TAGS_PATTERN = re.compile(r"(?is)(?:^|\s)#tags?\s*\|([^|]*)\|")
+TAG_PATTERN = re.compile(r"(?i)(?:^|\s)#tag\s+([^\s#|]+)")
 PRIORITY_MAP = {1: 4, 2: 3, 3: 2, 4: 1}
 MAX_TASK_CONTENT_LEN = 500
 MAX_TASK_DESCRIPTION_LEN = 16383
+MAX_LABEL_LEN = 60
+MAX_TASK_LABELS = 20
 
 LIST_PAGE_SIZE = 10
 LIST_CONTENT_PREVIEW = 200
+LIST_DESCRIPTION_PREVIEW = 120
 MAX_LIST_TEXT = 3500
 
 USAGE_TEXT = (
     "Usage:\n"
-    "`.todo {content} + reply`\n"
+    "`.todo {title} [#tags |a, b|] [#desc |text|] [#pN] [#due |when|]`\n"
     "`.todo list [page]`\n\n"
     "Help :\n\n"
-    "Reply : add context in description\n"
+    "Reply : attach the quoted message to the description\n"
+    "`#tags |a, b|` : labels, created in Todoist if missing\n"
+    "`#desc |...|` : extra description\n"
     "`#pN` : priority, #p1->very urgent, urgent, normal, low\n"
     "`#due |...|` : specify due date ...."
 )
+
+
+@dataclass
+class ParsedTodo:
+    title: str
+    description: Optional[str] = None
+    tags: list = field(default_factory=list)
+    priority: Optional[int] = None
+    due_string: Optional[str] = None
 
 
 def _esc(text: str) -> str:
@@ -116,6 +134,38 @@ def create_label(
     logger.info(f"[TODOIST] Created label: {LABEL}")
 
 
+def resolve_labels(names: list) -> list:
+    """Map user tags to existing label names, creating missing ones."""
+    if not names:
+        return []
+
+    existing = {}
+    try:
+        for label in _iter_items(API.get_labels(limit=200)):
+            name = getattr(label, "name", None)
+            if name:
+                existing[name.casefold()] = name
+    except Exception as exc:
+        logger.warning(f"[TODOIST] Could not fetch labels: {exc}")
+
+    resolved = []
+    for name in names:
+        key = name.casefold()
+        if key in existing:
+            resolved.append(existing[key])
+            continue
+        try:
+            label = API.add_label(name=name)
+            existing[key] = label.name
+            resolved.append(label.name)
+            logger.info(f"[TODOIST] Created label: {label.name}")
+        except Exception as exc:
+            # Todoist also accepts plain names, so keep the raw tag on failure.
+            logger.warning(f"[TODOIST] Could not create label '{name}': {exc}")
+            resolved.append(name)
+    return resolved
+
+
 def initialize_todoist():
     global API, INIT_ERROR, PROJECT, SECTION, LABEL
     INIT_ERROR = None
@@ -147,23 +197,72 @@ def ensure_initialized():
         raise RuntimeError(INIT_ERROR)
 
 
-def parse_todo_input(raw_content: str):
+def _clean_label(label: str) -> Optional[str]:
+    label = label.strip().lstrip("#").strip()
+    if not label:
+        return None
+    if label.casefold() == TODOIST_LABEL_NAME.casefold():
+        return None
+    return label[:MAX_LABEL_LEN].strip()
+
+
+def _dedupe_labels(labels: list) -> list:
+    seen = set()
+    deduped = []
+    for label in labels:
+        cleaned = _clean_label(label)
+        if not cleaned:
+            continue
+        key = cleaned.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(cleaned)
+        if len(deduped) >= MAX_TASK_LABELS:
+            break
+    return deduped
+
+
+def parse_todo_input(raw_content: str) -> ParsedTodo:
+    remaining = raw_content
+
+    description_blocks = [
+        block.strip()
+        for block in DESCRIPTION_PATTERN.findall(remaining)
+        if block.strip()
+    ]
+    remaining = DESCRIPTION_PATTERN.sub(" ", remaining)
+    description = "\n\n".join(description_blocks) or None
+
+    tag_values = []
+    for block in TAGS_PATTERN.findall(remaining):
+        tag_values.extend(re.split(r"[,\n]", block))
+    remaining = TAGS_PATTERN.sub(" ", remaining)
+    tag_values.extend(TAG_PATTERN.findall(remaining))
+    remaining = TAG_PATTERN.sub(" ", remaining)
+    tags = _dedupe_labels(tag_values)
+
     priority = None
-    priority_matches = PRIORITY_PATTERN.findall(raw_content)
+    priority_matches = PRIORITY_PATTERN.findall(remaining)
     if priority_matches:
         parsed_priority = int(priority_matches[-1])
         priority = PRIORITY_MAP.get(parsed_priority)
-
-    content_without_priority = PRIORITY_PATTERN.sub(" ", raw_content)
+    remaining = PRIORITY_PATTERN.sub(" ", remaining)
 
     due_string = None
-    due_matches = DUE_PATTERN.findall(content_without_priority)
+    due_matches = DUE_PATTERN.findall(remaining)
     if due_matches:
         due_string = due_matches[-1].strip()
+    remaining = DUE_PATTERN.sub(" ", remaining)
 
-    content_without_tags = DUE_PATTERN.sub(" ", content_without_priority)
-    content = " ".join(content_without_tags.split()).strip()
-    return content, priority, due_string
+    title = " ".join(remaining.split()).strip()
+    return ParsedTodo(
+        title=title,
+        description=description,
+        tags=tags,
+        priority=priority,
+        due_string=due_string,
+    )
 
 
 def _build_reply_sender_line(reply: Message) -> str:
@@ -184,10 +283,26 @@ def _build_reply_sender_line(reply: Message) -> str:
     return "Sender: Unknown"
 
 
-def build_description(message: Message) -> Optional[str]:
+def _truncate(text: str, limit: int, suffix: str = "\n... (truncated)") -> str:
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    keep_len = limit - len(suffix)
+    if keep_len <= 0:
+        return text[:limit]
+    return text[:keep_len].rstrip() + suffix
+
+
+def build_description(
+    message: Message, user_description: Optional[str] = None
+) -> Optional[str]:
+    user_description = (user_description or "").strip()
     reply = message.reply_to_message
     if not reply:
-        return None
+        if not user_description:
+            return None
+        return _truncate(user_description, MAX_TASK_DESCRIPTION_LEN)
 
     chat_id = message.chat.id
     chat_title = message.chat.title or message.chat.first_name or "Chat"
@@ -213,26 +328,22 @@ def build_description(message: Message) -> Optional[str]:
         f"Task added on : {timestamp_utc}"
     )
 
-    max_replied_len = (
+    user_block = f"{user_description}\n\n" if user_description else ""
+    budget = (
         MAX_TASK_DESCRIPTION_LEN
         - len(description_prefix)
         - len(description_suffix)
     )
-    if max_replied_len < 0:
-        max_replied_len = 0
+    user_description = _truncate(user_description, budget - 200)
+    user_block = f"{user_description}\n\n" if user_description else ""
+    max_replied_len = budget - len(user_block)
 
-    if len(replied_content) > max_replied_len:
-        truncation_suffix = "\n... (truncated)"
-        keep_len = max_replied_len - len(truncation_suffix)
-        if keep_len > 0:
-            replied_content = (
-                replied_content[:keep_len].rstrip() + truncation_suffix
-            )
-        else:
-            replied_content = replied_content[:max_replied_len]
+    replied_content = _truncate(replied_content, max_replied_len)
 
-    description = description_prefix + replied_content + description_suffix
-    return description
+    description = user_block + description_prefix + replied_content
+    return _truncate(
+        description + description_suffix, MAX_TASK_DESCRIPTION_LEN
+    )
 
 
 def _format_todoist_error(error: Exception) -> str:
@@ -349,6 +460,13 @@ def render_todo_list(tasks: list, page: int) -> str:
         meta = _task_meta(task)
         if meta:
             lines.append(f"    {meta}")
+        description = " ".join((task.description or "").split())
+        if description:
+            if len(description) > LIST_DESCRIPTION_PREVIEW:
+                description = (
+                    description[:LIST_DESCRIPTION_PREVIEW].rstrip() + "…"
+                )
+            lines.append(f"    <i>{_esc(description)}</i>")
 
     if total_pages > 1:
         nav = []
@@ -450,11 +568,11 @@ async def todo_command(client, message: Message):
         await handle_todo_list(client, message, page)
         return
 
-    parsed_content, priority, due_string = parse_todo_input(arg)
-    if not parsed_content:
+    parsed = parse_todo_input(arg)
+    if not parsed.title:
         await message.edit(USAGE_TEXT)
         return
-    if len(parsed_content) > MAX_TASK_CONTENT_LEN:
+    if len(parsed.title) > MAX_TASK_CONTENT_LEN:
         await message.reply_text("title is more than 500 char")
         await send_result_feedback(client, message, success=False)
         return
@@ -474,20 +592,24 @@ async def todo_command(client, message: Message):
         return
 
     try:
-        description = build_description(message)
+        description = build_description(message, parsed.description)
         todo_message_link = _build_message_link(message.chat.id, message.id)
+        labels = [LABEL.name]
+        for label in resolve_labels(parsed.tags):
+            if label.casefold() != LABEL.name.casefold():
+                labels.append(label)
 
         create_task_kwargs = {
-            "content": parsed_content,
+            "content": parsed.title,
             "section_id": SECTION.id,
-            "labels": [LABEL.name],
+            "labels": labels,
         }
         if description:
             create_task_kwargs["description"] = description
-        if priority:
-            create_task_kwargs["priority"] = priority
-        if due_string:
-            create_task_kwargs["due_string"] = due_string
+        if parsed.priority:
+            create_task_kwargs["priority"] = parsed.priority
+        if parsed.due_string:
+            create_task_kwargs["due_string"] = parsed.due_string
             create_task_kwargs["due_lang"] = "en"
 
         API.add_task(**create_task_kwargs)

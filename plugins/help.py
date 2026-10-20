@@ -376,21 +376,25 @@ CATEGORIES: dict[str, dict] = {
         "commands": [
             {
                 "cmd": "todo",
-                "args": "<content> [#pN] [#due |<date>|]",
+                "args": "<title> [#tags |a, b|] [#desc |text|] [#pN] [#due |<date>|]",
                 "desc": "Create a Todoist task in your inbox. Reply to a "
                 "message to attach its context to the task description. "
+                "`#tags |...|` adds labels (created if missing); "
+                "`#desc |...|` adds your own description; "
                 "`#p1`..`#p4` set priority; `#due |...|` sets a due date.",
                 "ex": [
                     "{p}todo Buy milk",
                     "{p}todo Pay bill #p1",
+                    "{p}todo Fix login #tags |backend, urgent| #desc |500 on submit|",
                     "{p}todo Meeting #due |tomorrow 5pm| (reply for context)",
                 ],
             },
             {
                 "cmd": "todo list",
                 "args": "[page]",
-                "desc": "List the tasks added from Telegram (10 per page). "
-                "Pass a page number to jump to that page.",
+                "desc": "List the tasks added from Telegram (10 per page) "
+                "with labels and a description preview. Pass a page number "
+                "to jump to that page.",
                 "ex": [
                     "{p}todo list",
                     "{p}todo list 2",
