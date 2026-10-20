@@ -372,21 +372,55 @@ CATEGORIES: dict[str, dict] = {
     "todoist": {
         "emoji": "✅",
         "title": "Todoist",
-        "desc": "Requires TODOIST_API_TOKEN in .env.",
+        "desc": "Requires TODOIST_API_TOKEN in .env. Tasks have a title, "
+        "an optional description and optional tags.",
         "commands": [
             {
                 "cmd": "todo",
-                "args": "<title> [#tags |a, b|] [#desc |text|] [#pN] [#due |<date>|]",
-                "desc": "Create a Todoist task in your inbox. Reply to a "
-                "message to attach its context to the task description. "
-                "`#tags |...|` adds labels (created if missing); "
-                "`#desc |...|` adds your own description; "
-                "`#p1`..`#p4` set priority; `#due |...|` sets a due date.",
+                "args": "<title>",
+                "desc": "Create a task with just a title. Reply to a message "
+                "to attach its text, sender and link to the description.",
                 "ex": [
                     "{p}todo Buy milk",
+                    "{p}todo Pay bill (reply to the bill message)",
+                ],
+            },
+            {
+                "cmd": "todo",
+                "args": "<title> #desc |text|",
+                "desc": "Add your own description above any replied-message "
+                "context. Can span multiple lines.",
+                "ex": [
+                    "{p}todo Fix login #desc |Repro: 500 on submit|",
+                ],
+            },
+            {
+                "cmd": "todo",
+                "args": "<title> #tags |a, b|",
+                "desc": "Attach Todoist labels. Missing labels are created "
+                "automatically; the single `#tag <name>` form also works.",
+                "ex": [
+                    "{p}todo Fix login #tags |backend, urgent|",
+                    "{p}todo Call back #tag phone",
+                ],
+            },
+            {
+                "cmd": "todo",
+                "args": "<title> [#pN] [#due |<date>|]",
+                "desc": "Set priority (`#p1` very urgent … `#p4` low) and/or "
+                "a due date parsed by Todoist.",
+                "ex": [
                     "{p}todo Pay bill #p1",
-                    "{p}todo Fix login #tags |backend, urgent| #desc |500 on submit|",
-                    "{p}todo Meeting #due |tomorrow 5pm| (reply for context)",
+                    "{p}todo Meeting #due |tomorrow 5pm|",
+                ],
+            },
+            {
+                "cmd": "todo",
+                "args": "<title> [#tags |a, b|] [#desc |text|] [#pN] [#due |<date>|]",
+                "desc": "Everything combined into one rich task.",
+                "ex": [
+                    "{p}todo Fix login #tags |backend, urgent| "
+                    "#desc |500 on submit| #p1 #due |tomorrow|",
                 ],
             },
             {
@@ -478,12 +512,21 @@ def render_detail(key: str, offset: int) -> str:
     return "\n".join(lines)
 
 
+def _summarize(desc: str, limit: int = 90) -> str:
+    text = desc.split(". ")[0].rstrip(".")
+    if len(text) > limit:
+        text = text[:limit].rstrip() + "…"
+    return text
+
+
 def render_all() -> str:
     lines = ["**🐱 NekoUB — All commands**", ""]
     for cat in CATEGORIES.values():
         lines.append(f"{cat['emoji']} **{cat['title']}**")
         for command in cat["commands"]:
-            lines.append(f"• {_usage_code(command)} — {command['desc']}")
+            lines.append(
+                f"• {_usage_code(command)} — {_summarize(command['desc'])}"
+            )
         lines.append("")
     text = "\n".join(lines).strip()
     if len(text) > MAX_TEXT:

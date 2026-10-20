@@ -44,14 +44,23 @@ MAX_LIST_TEXT = 3500
 
 USAGE_TEXT = (
     "Usage:\n"
-    "`.todo {title} [#tags |a, b|] [#desc |text|] [#pN] [#due |when|]`\n"
+    "`.todo <title>`\n"
+    "`.todo <title> #desc |text|`\n"
+    "`.todo <title> #tags |a, b|`\n"
+    "`.todo <title> [#pN] [#due |when|]`\n"
+    "`.todo <title> #tags |a, b| #desc |text| #pN #due |when|`\n"
     "`.todo list [page]`\n\n"
-    "Help :\n\n"
-    "Reply : attach the quoted message to the description\n"
-    "`#tags |a, b|` : labels, created in Todoist if missing\n"
-    "`#desc |...|` : extra description\n"
-    "`#pN` : priority, #p1->very urgent, urgent, normal, low\n"
-    "`#due |...|` : specify due date ...."
+    "Examples:\n"
+    "`.todo Buy milk`\n"
+    "`.todo Fix login #desc |500 on submit| #tags |backend| #p1`\n"
+    "`.todo Meeting #due |tomorrow 5pm|`\n"
+    "`.todo list`\n\n"
+    "Help:\n"
+    "Reply: attach the quoted message to the description\n"
+    "`#desc |...|`: your own description\n"
+    "`#tags |a, b|` or `#tag <name>`: labels, created if missing\n"
+    "`#pN`: priority, #p1->very urgent, urgent, normal, low\n"
+    "`#due |...|`: specify due date ...."
 )
 
 
