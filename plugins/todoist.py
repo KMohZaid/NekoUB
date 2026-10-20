@@ -510,7 +510,12 @@ def fetch_section_tasks() -> list:
         if not getattr(task, "is_completed", False)
         and not getattr(task, "completed_at", None)
     ]
-    tasks.sort(key=lambda task: int(getattr(task, "order", 0) or 0))
+    tasks.sort(
+        key=lambda task: (
+            -int(getattr(task, "priority", 1) or 1),
+            int(getattr(task, "order", 0) or 0),
+        )
+    )
     return tasks
 
 
