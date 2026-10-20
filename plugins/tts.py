@@ -95,10 +95,10 @@ VOICE_IDS = {
 }
 VOICE_NAMES = {voice_id: voice_id.split("_", 1)[1].title() for voice_id in VOICE_IDS.values()}
 
-TOKEN_NOTE = """💡 Customize pronunciation with Markdown link syntax and /slashes/ like `[Kokoro](/kˈOkəɹO/)`
-💬 Adjust intonation with punctuation `;:,.!?—…\"()“”` or stress marks `ˈ` and `ˌ`
-⬇️ Lower stress with `[1 level](-1)` or `[2 levels](-2)`
-⬆️ Raise stress with `[or](+2)` (works best on less-stressed, usually short words)"""
+TOKEN_NOTE = """💡 Customize pronunciation with Markdown link syntax and /slashes/ like <code>[Kokoro](/kˈOkəɹO/)</code>
+💬 Adjust intonation with punctuation <code>;:,.!?—…\"()“”</code> or stress marks <code>ˈ</code> and <code>ˌ</code>
+⬇️ Lower stress with <code>[1 level](-1)</code> or <code>[2 levels](-2)</code>
+⬆️ Raise stress with <code>[or](+2)</code> (works best on less-stressed, usually short words)"""
 
 HELP_TEXT = """<b>🎙 Text to speech · .say / .tts</b>
 
@@ -107,14 +107,14 @@ HELP_TEXT = """<b>🎙 Text to speech · .say / .tts</b>
 <b>Multi voice</b>
 <code>.say -m [-i] speaker lines</code>
 
-<b>Put options before the text.</b> Once text starts, everything after it is spoken literally. For example, <code>.say Adam -s 0.1 hello</code> speaks “Adam -s 0.1 hello”.
+<blockquote><b>Put options before the text.</b> Once text starts, everything after it is spoken literally. For example, <code>.say Adam -s 0.1 hello</code> speaks “Adam -s 0.1 hello”.
 
 <code>-v</code> / <code>-voice</code> selects a voice (default: Adam).
 <code>-s</code> / <code>-speed</code> sets speed from 0.5 to 2 (default: 1; 0.9 means 90% speed).
 <code>-m</code> / <code>-multi</code> enables speaker-labelled dialogue. Do not combine multi mode with global <code>-v</code> or <code>-s</code>; set speed per speaker, e.g. <code>Adam 0.8: Hello</code>.
 <code>-i</code> / <code>-info</code> adds generation details (model, voices, CPU, input length, generation time, and speech duration) to the caption.
 <code>-t</code> / <code>-transcript</code> sends the input text separately in a blockquote reply to the voice note.
-When replying to a text message, you can omit the text; flags still work, e.g. <code>.say -v heart -i</code>.
+When replying to a text message, you can omit the text; flags still work, e.g. <code>.say -v heart -i</code>.</blockquote>
 
 <b>Examples</b>
 <pre><code>1. .say Hello, how are you?
