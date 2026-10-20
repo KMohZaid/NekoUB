@@ -1,6 +1,8 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 from pyrogram import filters
+from pyrogram.enums import ParseMode
 from pyrogram.types import Message
 
 import config
@@ -11,7 +13,13 @@ logger = get_logger(__name__)
 
 POLL_INTERVAL = 2
 RESPONSE_TIMEOUT = 30
-DONE_MARKERS = ("no records", "name history", "username history")
+DONE_MARKERS = (
+    "no records",
+    "no data available",
+    "used up your quota for today",
+    "name history",
+    "username history",
+)
 
 
 def reply_user_id(message: Message) -> int | None:
@@ -28,6 +36,9 @@ async def resolve_target(client, message: Message) -> int | None:
     user_id = reply_user_id(message)
     if user_id is not None:
         return user_id
+
+    if message.reply_to_message:
+        return None
 
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
@@ -49,13 +60,32 @@ def _is_final(text: str) -> bool:
     return any(marker in low for marker in DONE_MARKERS)
 
 
+def _next_quota_reset_markup() -> str:
+    tomorrow = datetime.now(timezone.utc).date() + timedelta(days=1)
+    reset_at = datetime.combine(tomorrow, datetime.min.time(), tzinfo=timezone.utc)
+    reset_unix = int(reset_at.timestamp())
+    return f'<tg-time unix="{reset_unix}" format="dt">00:00 UTC</tg-time>'
+
+
+def _quota_reset_message(text: str) -> str | None:
+    if "used up your quota for today" not in text.lower():
+        return None
+
+    return (
+        "SangMata's daily lookup quota is used up. It resets at "
+        f"{_next_quota_reset_markup()}."
+    )
+
+
 async def query_sangmata(client, user_id: int) -> str:
     """Ask SangMata for a user's history and return its reply text.
 
     SangMata expects just the numeric id (no /search_id prefix).
     """
     bot = config.SANGMATA_BOT
+    logger.info(f"[SANGMATA] Sending lookup for user_id={user_id} to @{bot}")
     sent = await client.send_message(bot, str(user_id))
+    logger.info(f"[SANGMATA] Lookup message sent: message_id={sent.id}")
     text = ""
     seen: list[int] = []
 
@@ -87,9 +117,28 @@ async def query_sangmata(client, user_id: int) -> str:
 )
 @continue_propagation
 async def sangmata_command(client, message: Message):
-    await message.edit("🔎 `Searching name history...`")
+    logger.info(f"[SANGMATA] Command received in chat_id={message.chat.id}")
+    try:
+        await message.edit(
+            f"🔎 Searching name history...\n"
+            f"Daily quota resets at {_next_quota_reset_markup()}.",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as exc:
+        logger.warning(f"[SANGMATA] Could not show search status: {exc}")
+        await message.edit("🔎 Searching name history...")
+
+    if message.reply_to_message and reply_user_id(message) is None:
+        await message.edit("SangMata lookup only works for users, not bots or chats.")
+        return
 
     user_id = await resolve_target(client, message)
+    target_user = None
+    if user_id is not None:
+        try:
+            target_user = await client.get_users(user_id)
+        except Exception:
+            target_user = None
     if user_id is None:
         await message.edit(
             "Reply to a user's message, or use "
@@ -107,8 +156,32 @@ async def sangmata_command(client, message: Message):
     if not text.strip():
         await message.edit("SangMata did not respond. Try again later.")
         return
-    if "no records" in text.lower():
-        await message.edit(f"No name history found for `{user_id}`.")
+
+    quota_message = _quota_reset_message(text)
+    if quota_message:
+        await message.edit(quota_message, parse_mode=ParseMode.HTML)
+        return
+
+    if any(
+        marker in text.lower()
+        for marker in ("no records", "no data available")
+    ):
+        user_name = " ".join(
+            part
+            for part in (
+                getattr(target_user, "first_name", None),
+                getattr(target_user, "last_name", None),
+            )
+            if part
+        )
+        if user_name:
+            await message.edit(
+                f'No name history found for <a href="tg://user?id={user_id}">'
+                f"{user_name}</a>.",
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            await message.edit(f"No name history found for `{user_id}`.")
         return
 
     await message.edit(f"**SangMata — history for `{user_id}`**\n\n{text}")
