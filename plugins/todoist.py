@@ -1,7 +1,12 @@
 import html
 import re
+<<<<<<< HEAD
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+=======
+from datetime import date, datetime, time, timezone
+from zoneinfo import ZoneInfo
+>>>>>>> 775ebc5 (feat(todoist): improve task list links and due dates)
 from typing import Optional
 
 import httpx
@@ -414,11 +419,63 @@ async def send_result_feedback(client, message: Message, success: bool):
 
 def _format_due_line(task) -> Optional[str]:
     due = getattr(task, "due", None)
-    due_string = getattr(due, "string", None) if due else None
-    if not due_string:
+    due_date = getattr(due, "date", None) if due else None
+    if not due_date:
         return None
+
+    due_timezone = getattr(due, "timezone", None) or "UTC"
+    try:
+        zone = ZoneInfo(due_timezone)
+    except (KeyError, ValueError):
+        zone = timezone.utc
+        due_timezone = "UTC"
+
+    if isinstance(due_date, datetime) or "T" in str(due_date):
+        due_at = (
+            due_date
+            if isinstance(due_date, datetime)
+            else datetime.fromisoformat(str(due_date))
+        )
+        if due_at.tzinfo is None:
+            due_at = due_at.replace(tzinfo=zone)
+        else:
+            due_at = due_at.astimezone(zone)
+        due_unix = int(due_at.timestamp())
+        display_date = due_at.strftime("%b %d, %Y %I:%M %p").replace(" 0", " ")
+        time_text = (
+            f'<tg-time unix="{due_unix}" format="dt">'
+            f'{_esc(display_date)}</tg-time>'
+        )
+        offset = due_at.utcoffset() or timezone.utc.utcoffset(due_at)
+        offset_minutes = int(offset.total_seconds() // 60)
+        sign = "+" if offset_minutes >= 0 else "-"
+        hours, minutes = divmod(abs(offset_minutes), 60)
+        utc_offset = f"UTC{sign}{hours:02d}:{minutes:02d}"
+        timezone_label = due_at.tzname() or due_timezone
+        zone_display = (
+            f"{utc_offset} ({_esc(timezone_label)})"
+            if offset_minutes != 0
+            else ""
+        )
+        due_text = f"{time_text} {zone_display}"
+        is_past_due = due_at < datetime.now(zone)
+    else:
+        due_day = (
+            due_date
+            if isinstance(due_date, date)
+            else date.fromisoformat(str(due_date)[:10])
+        )
+        due_at = datetime.combine(due_day, time.max, tzinfo=zone)
+        due_unix = int(due_at.timestamp())
+        display_date = due_day.strftime("%b %d, %Y")
+        due_text = (
+            f'<tg-time unix="{due_unix}" format="d">{_esc(display_date)}</tg-time>'
+        )
+        is_past_due = due_day < datetime.now(zone).date()
+
     icon = "🔁" if getattr(due, "is_recurring", False) else "🗓"
-    return f"{icon} {_esc(due_string)}"
+    prefix = "Past Due 💔 " if is_past_due else ""
+    return f"{prefix}{icon} {due_text}"
 
 
 def _task_meta(task) -> str:
@@ -443,8 +500,23 @@ def _task_meta(task) -> str:
     return "  ·  ".join(parts)
 
 
+def _task_message_link(task) -> Optional[str]:
+    description = getattr(task, "description", "") or ""
+    match = re.search(
+        r"Message \[Task cmd message\].*?\((https://[^)]+)\)",
+        description,
+        re.DOTALL,
+    )
+    return match.group(1) if match else None
+
+
 def fetch_section_tasks() -> list:
-    tasks = list(_iter_items(API.get_tasks(section_id=SECTION.id)))
+    tasks = [
+        task
+        for task in _iter_items(API.get_tasks(section_id=SECTION.id))
+        if not getattr(task, "is_completed", False)
+        and not getattr(task, "completed_at", None)
+    ]
     tasks.sort(key=lambda task: int(getattr(task, "order", 0) or 0))
     return tasks
 
@@ -465,7 +537,9 @@ def render_todo_list(tasks: list, page: int) -> str:
         content = task.content or "(untitled)"
         if len(content) > LIST_CONTENT_PREVIEW:
             content = content[:LIST_CONTENT_PREVIEW].rstrip() + "…"
-        lines.append(f"<b>{number}.</b> {_esc(content)}")
+        message_link = _task_message_link(task)
+        link = f' [<a href="{_esc(message_link)}">Go to msg</a>]' if message_link else ""
+        lines.append(f"<b>{number}.</b> {_esc(content)}{link}")
         meta = _task_meta(task)
         if meta:
             lines.append(f"    {meta}")
@@ -476,6 +550,7 @@ def render_todo_list(tasks: list, page: int) -> str:
                     description[:LIST_DESCRIPTION_PREVIEW].rstrip() + "…"
                 )
             lines.append(f"    <i>{_esc(description)}</i>")
+        lines.append("")
 
     if total_pages > 1:
         nav = []
