@@ -1,6 +1,7 @@
 import logging
 import sys
 import os
+import time
 from typing import Optional
 from functools import wraps
 from colorama import Fore, Style, init
@@ -51,6 +52,22 @@ handler.setFormatter(
 logging.basicConfig(level=logging.INFO, handlers=[handler])
 
 logger = logging.getLogger(__name__)
+
+_PREMIUM_CACHE_TTL = 60 * 60
+_premium_cache: tuple[bool, float] | None = None
+
+
+async def is_user_premium(client) -> bool:
+    """Return whether the current account has Premium, cached for one hour."""
+    global _premium_cache
+    now = time.monotonic()
+    if _premium_cache and now - _premium_cache[1] < _PREMIUM_CACHE_TTL:
+        return _premium_cache[0]
+
+    me = await client.get_me()
+    premium = bool(me and me.is_premium)
+    _premium_cache = (premium, now)
+    return premium
 
 
 def get_logger(name: str) -> logging.Logger:

@@ -10,13 +10,14 @@ from pyrogram.types import Message
 
 import config
 import main
-from userbot.utils import continue_propagation, get_logger
+from userbot.utils import continue_propagation, get_logger, is_user_premium
 from userbot.websearch import search as web_search
 
 logger = get_logger(__name__)
 
 REQUEST_TIMEOUT = 120.0
-MAX_REPLY_CHARS = 3600
+FREE_MESSAGE_LIMIT = 3700
+PREMIUM_MESSAGE_LIMIT = 7700
 MAX_HISTORY = 16  # messages kept per chat (8 exchanges)
 MAX_REPLY_CONTEXT = 2000
 MAX_POLLS = 30  # deferred-queue polls before giving up
@@ -184,6 +185,77 @@ def _strip_markdown(text: str) -> str:
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def _split_lines(text: str, limit: int) -> list[str]:
+    """Split text at line boundaries, falling back to word boundaries if needed."""
+    chunks: list[str] = []
+    current = ""
+    for line in text.splitlines():
+        pieces = [line]
+        if len(line) > limit:
+            pieces = []
+            remainder = line
+            while len(remainder) > limit:
+                split_at = remainder.rfind(" ", 0, limit + 1)
+                if split_at <= 0:
+                    split_at = limit
+                pieces.append(remainder[:split_at])
+                remainder = remainder[split_at:].lstrip()
+            if remainder:
+                pieces.append(remainder)
+
+        for piece in pieces:
+            candidate = f"{current}\n{piece}" if current else piece
+            if len(candidate) > limit:
+                if current:
+                    chunks.append(current)
+                current = piece
+            else:
+                current = candidate
+    if current:
+        chunks.append(current)
+    return chunks or [""]
+
+
+async def _send_ai_response(
+    client, message: Message, body: str, question: str
+) -> None:
+    """Send a long AI answer as paginated, line-preserving messages."""
+    try:
+        is_premium = await is_user_premium(client)
+    except Exception as exc:
+        logger.warning(f"[AI] Could not determine Premium status; using free limit: {exc}")
+        is_premium = False
+
+    # TODO: Improve length accounting to ignore formatting markup and use the exact Telegram limit.
+    body_limit = PREMIUM_MESSAGE_LIMIT if is_premium else FREE_MESSAGE_LIMIT
+    chunks = _split_lines(body, body_limit)
+    total = len(chunks)
+    question = question.strip()
+    if len(question) > 300:
+        question = question[:300] + "…"
+
+    for index, chunk in enumerate(chunks, 1):
+        pagination = f" ({index}/{total})" if total > 1 else ""
+        if len(body) > 1500:
+            quote = f"<blockquote expandable>🤖 {_esc(chunk)}</blockquote>"
+        elif len(body) > 700:
+            quote = f"<blockquote>🤖 {_esc(chunk)}</blockquote>"
+        else:
+            quote = f"🤖 {_esc(chunk)}"
+        footer = (
+            f"\n\n<b>Asked question{pagination}:</b> "
+            f"<i>{_esc(question)}</i>"
+            if question
+            else f"\n\n{pagination.strip()}"
+        )
+        rendered = quote + footer
+        if index == 1:
+            await message.edit(rendered, parse_mode=ParseMode.HTML)
+        else:
+            await asyncio.sleep(1.5)
+            await message.reply_text(rendered, parse_mode=ParseMode.HTML)
 
 
 def _model(chat_id: int) -> str:
@@ -362,17 +434,13 @@ async def _ai_search(message: Message, query: str, chat_id: int) -> None:
         await message.edit(f"❌ {_esc(error)}", parse_mode=ParseMode.HTML)
         return
 
-    body = _strip_markdown(summary)[:MAX_SUMMARY_CHARS]
-    if len(summary) > MAX_SUMMARY_CHARS:
-        body += "\n… (truncated)"
+    body = _strip_markdown(summary)
     sources = "\n".join(
         f"{index}. {result['title']}\n   {result['url']}"
         for index, result in enumerate(results, 1)
     )
     text = f"🔎 {query}\n\n{body}\n\nSources\n{sources}"
-    if len(text) > 4000:
-        text = text[:3990] + "…"
-    await message.edit(text, parse_mode=ParseMode.DISABLED)
+    await _send_ai_response(client, message, text, query)
 
 
 @main.app.on_message(
@@ -510,9 +578,7 @@ async def ai_command(client, message: Message):
     if len(history) > MAX_HISTORY:
         del history[: len(history) - MAX_HISTORY]
 
-    body = _strip_markdown(content)[:MAX_REPLY_CHARS]
-    if len(content) > MAX_REPLY_CHARS:
-        body += "\n… (truncated)"
+    body = _strip_markdown(content)
     # Show the question: both the typed arg and the replied message when present.
     arg = arg.strip()
     reply_text = reply_text.strip()
@@ -520,12 +586,4 @@ async def ai_command(client, message: Message):
         combined = f"{arg}: {reply_text}"
     else:
         combined = arg or reply_text
-    if len(combined) > 300:
-        combined = combined[:300] + "…"
-    footer = (
-        f"\n\n<b>Asked question:</b> <i>{_esc(combined)}</i>" if combined else ""
-    )
-    await message.edit(
-        f"🤖 {_esc(body)}{footer}",
-        parse_mode=ParseMode.HTML,
-    )
+    await _send_ai_response(client, message, body, combined)
