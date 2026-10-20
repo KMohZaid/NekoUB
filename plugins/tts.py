@@ -495,7 +495,7 @@ async def _show_error(client, chat_id: int, reply_id: int | None, error: str):
 async def tts_command(client, message: Message):
     raw = (message.text or "").split(maxsplit=1)
     raw_args = raw[1] if len(raw) > 1 else ""
-    if not raw_args.strip():
+    if not raw_args.strip() and not message.reply_to_message:
         await message.edit(_format_help(), parse_mode=ParseMode.HTML)
         return
 
