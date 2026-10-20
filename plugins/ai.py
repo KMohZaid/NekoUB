@@ -10,7 +10,12 @@ from pyrogram.types import Message
 
 import config
 import main
-from userbot.utils import continue_propagation, get_logger, is_user_premium
+from userbot.utils import (
+    continue_propagation,
+    get_logger,
+    is_user_premium,
+    split_text_into_chunks,
+)
 from userbot.websearch import search as web_search
 
 logger = get_logger(__name__)
@@ -22,7 +27,7 @@ MAX_HISTORY = 16  # messages kept per chat (8 exchanges)
 MAX_REPLY_CONTEXT = 2000
 MAX_POLLS = 30  # deferred-queue polls before giving up
 SEARCH_RESULTS = 8  # results fed to the model for `.ai search`
-MAX_SUMMARY_CHARS = 3000
+MAX_AI_MESSAGES = 3
 
 PLAIN_TEXT_DIRECTIVE = (
     "Format the response as plain text that reads well without any rendering: "
@@ -187,37 +192,6 @@ def _strip_markdown(text: str) -> str:
     return text.strip()
 
 
-def _split_lines(text: str, limit: int) -> list[str]:
-    """Split text at line boundaries, falling back to word boundaries if needed."""
-    chunks: list[str] = []
-    current = ""
-    for line in text.splitlines():
-        pieces = [line]
-        if len(line) > limit:
-            pieces = []
-            remainder = line
-            while len(remainder) > limit:
-                split_at = remainder.rfind(" ", 0, limit + 1)
-                if split_at <= 0:
-                    split_at = limit
-                pieces.append(remainder[:split_at])
-                remainder = remainder[split_at:].lstrip()
-            if remainder:
-                pieces.append(remainder)
-
-        for piece in pieces:
-            candidate = f"{current}\n{piece}" if current else piece
-            if len(candidate) > limit:
-                if current:
-                    chunks.append(current)
-                current = piece
-            else:
-                current = candidate
-    if current:
-        chunks.append(current)
-    return chunks or [""]
-
-
 async def _send_ai_response(
     client, message: Message, body: str, question: str
 ) -> None:
@@ -230,14 +204,17 @@ async def _send_ai_response(
 
     # TODO: Improve length accounting to ignore formatting markup and use the exact Telegram limit.
     body_limit = PREMIUM_MESSAGE_LIMIT if is_premium else FREE_MESSAGE_LIMIT
-    chunks = _split_lines(body, body_limit)
+    chunks = split_text_into_chunks(body, body_limit)
     total = len(chunks)
+    send_count = min(total, MAX_AI_MESSAGES)
     question = question.strip()
     if len(question) > 300:
         question = question[:300] + "…"
 
-    for index, chunk in enumerate(chunks, 1):
+    for index, chunk in enumerate(chunks[:send_count], 1):
         pagination = f" ({index}/{total})" if total > 1 else ""
+        if index == send_count and total > send_count:
+            pagination = f" ({index}/{total} - stopped here, but got more responses)"
         if len(body) > 1500:
             quote = f"<blockquote expandable>🤖 {_esc(chunk)}</blockquote>"
         elif len(body) > 700:
@@ -364,7 +341,7 @@ async def _complete(messages: list, chat_id: int) -> tuple[str | None, str | Non
         return content, None
 
 
-async def _ai_search(message: Message, query: str, chat_id: int) -> None:
+async def _ai_search(client, message: Message, query: str, chat_id: int) -> None:
     """Search the web, then have the model summarize the results."""
     await message.edit(
         f"🔎 Searching the web for <b>{_esc(query)}</b>…",
@@ -521,7 +498,7 @@ async def ai_command(client, message: Message):
                 parse_mode=ParseMode.HTML,
             )
             return
-        await _ai_search(message, query, chat_id)
+        await _ai_search(client, message, query, chat_id)
         return
 
     reply_text = _reply_text(message)

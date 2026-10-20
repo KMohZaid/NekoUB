@@ -70,6 +70,37 @@ async def is_user_premium(client) -> bool:
     return premium
 
 
+def split_text_into_chunks(text: str, limit: int) -> list[str]:
+    """Split text at line boundaries, falling back to word boundaries if needed."""
+    chunks: list[str] = []
+    current = ""
+    for line in text.splitlines():
+        pieces = [line]
+        if len(line) > limit:
+            pieces = []
+            remainder = line
+            while len(remainder) > limit:
+                split_at = remainder.rfind(" ", 0, limit + 1)
+                if split_at <= 0:
+                    split_at = limit
+                pieces.append(remainder[:split_at])
+                remainder = remainder[split_at:].lstrip()
+            if remainder:
+                pieces.append(remainder)
+
+        for piece in pieces:
+            candidate = f"{current}\n{piece}" if current else piece
+            if len(candidate) > limit:
+                if current:
+                    chunks.append(current)
+                current = piece
+            else:
+                current = candidate
+    if current:
+        chunks.append(current)
+    return chunks or [""]
+
+
 def get_logger(name: str) -> logging.Logger:
     """Get a logger instance with the given name."""
     return logging.getLogger(name)
