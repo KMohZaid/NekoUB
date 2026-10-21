@@ -337,10 +337,21 @@ CATEGORIES: dict[str, dict] = {
             },
             {
                 "cmd": "packs",
-                "args": "",
-                "desc": "List every sticker pack you own with its number, "
-                "short name, id and sticker count. Alias: mypacks.",
-                "ex": ["{p}packs"],
+                "args": "[page] [-c] [-e] [-a] [-n] [-s]",
+                "desc": "List your sticker packs 10 at a time with numbered "
+                "pages. Use `.packs <page>` to navigate; numbers stay global "
+                "for `.kang`. Filters: `-e` emoji, `-a` animated, `-n` normal, "
+                "`-s` normal + animated stickers. `-c` shows owned, active, "
+                "archived and total counts. Combine filters; no filter shows all. "
+                "Alias: mypacks.",
+                "ex": [
+                    "{p}packs",
+                    "{p}packs 2",
+                    "{p}packs -e",
+                    "{p}packs -s",
+                    "{p}packs -a -n 2",
+                    "{p}packs -c",
+                ],
             },
             {
                 "cmd": "packs search",

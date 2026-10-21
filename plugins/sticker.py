@@ -1,4 +1,5 @@
 import asyncio
+import html
 import json
 import os
 import random
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import emoji
 from pyrogram import filters
+from pyrogram.enums import ParseMode
 from pyrogram.errors import (
     StickersetInvalid,
     StickersEmpty,
@@ -28,9 +30,17 @@ logger = get_logger(__name__)
 
 CACHE_PATH = Path(__file__).resolve().parent.parent / ".sticker_cache.json"
 MAX_STICKERS_PER_PACK = 120
+MAX_ANIMATED_STICKERS_PER_PACK = 50
+MAX_EMOJIS_PER_PACK = 200
 MAX_EMOJI_COUNT = 6
+MAX_NORMAL_PACK_SIZE = MAX_STICKERS_PER_PACK
+MAX_ANIMATED_PACK_SIZE = MAX_ANIMATED_STICKERS_PER_PACK
+MAX_EMOJI_PACK_SIZE = MAX_EMOJIS_PER_PACK
+STICKER_PACK_URL_PREFIX = "https://t.me/addstickers/"
+MAX_STICKER_SHORT_NAME_LENGTH = 62
+PACK_TYPE_ICONS = {"normal": "📄", "animated": "💿", "emoji": "🪎"}
 ADD_COOLDOWN = 1  # seconds between sticker adds
-MAX_DISPLAY_PACKS = 50  # cap for the .packs listing
+PACKS_PAGE_SIZE = 10
 MAX_DISPLAY_SEARCH = 40  # cap for `.packs search` results
 
 # --- Runtime state ---
@@ -121,7 +131,14 @@ def _format_all(template: str, user, index: int, suffix: str = "") -> str:
     )
 
 
-def build_default_pack_names(user, pack_number: int) -> tuple[str, str]:
+def _limit_pack_short_name(short_name: str) -> str:
+    """Keep the full Telegram add-sticker URL within Telegram's 62-char limit."""
+    return short_name[:MAX_STICKER_SHORT_NAME_LENGTH].rstrip("_")
+
+
+def build_default_pack_names(
+    user, pack_number: int, pack_type: str = "normal"
+) -> tuple[str, str]:
     """Names for the auto ("no suffix") pack, e.g. '@OpPeace' / 'oppeace_vol1_7192'."""
     title_fmt = _strip_quotes(config.STICKERSET_TITLE_FORMAT)
     name_fmt = _strip_quotes(config.STICKERSET_NAME_FORMAT)
@@ -129,20 +146,34 @@ def build_default_pack_names(user, pack_number: int) -> tuple[str, str]:
     base = get_base_display(user)
     base_slug = get_base_slug(user)
 
+    type_suffix = " (Animated)" if pack_type == "animated" else " Emojis" if pack_type == "emoji" else ""
     if title_fmt:
         title = _format_all(title_fmt, user, pack_number)
+        if pack_type != "normal" and pack_type.lower() not in title.lower():
+            title = f"{title}{type_suffix}"
     else:
         title = base if pack_number == 1 else f"{base} Vol{pack_number}"
+        title += type_suffix
 
     if name_fmt:
-        short_name = _format_all(name_fmt, user, pack_number)
+        formatted_name = _format_all(name_fmt, user, pack_number)
+        suffix = f"_vol{pack_number}_{user.id}"
+        if pack_type != "normal" and pack_type not in formatted_name:
+            suffix = f"_{pack_type}{suffix}"
+        short_name = _limit_pack_short_name(
+            f"{formatted_name[:MAX_STICKER_SHORT_NAME_LENGTH - len(suffix)]}{suffix}"
+        )
     else:
-        short_name = f"{base_slug}_vol{pack_number}_{user.id}"
+        type_part = f"_{pack_type}" if pack_type != "normal" else ""
+        suffix = f"_vol{pack_number}{type_part}_{user.id}"
+        short_name = f"{base_slug[:MAX_STICKER_SHORT_NAME_LENGTH - len(suffix)]}{suffix}"
 
-    return title, short_name
+    return title, _limit_pack_short_name(short_name)
 
 
-def build_themed_pack_names(user, suffix: str, volume: int) -> tuple[str, str]:
+def build_themed_pack_names(
+    user, suffix: str, volume: int, pack_type: str = "normal"
+) -> tuple[str, str]:
     """Names for a themed pack, e.g. '@OpPeace fun' / 'oppeace_fun_7192'."""
     title_fmt = _strip_quotes(config.STICKERSET_TITLE_FORMAT)
     name_fmt = _strip_quotes(config.STICKERSET_NAME_FORMAT)
@@ -150,23 +181,46 @@ def build_themed_pack_names(user, suffix: str, volume: int) -> tuple[str, str]:
     base = get_base_display(user)
     base_slug = get_base_slug(user)
     suffix_slug = slugify(suffix) or "pack"
+    type_suffix = " (Animated)" if pack_type == "animated" else " Emojis" if pack_type == "emoji" else ""
 
     if title_fmt:
         title = _format_all(title_fmt, user, volume, suffix=suffix)
+        if pack_type != "normal" and pack_type.lower() not in title.lower():
+            title = f"{title}{type_suffix}"
     else:
         title = f"{base} {suffix}"
         if volume > 1:
             title += f" Vol{volume}"
+        title += type_suffix
 
     if name_fmt:
-        short_name = _format_all(name_fmt, user, volume, suffix=suffix_slug)
+        formatted_name = _format_all(name_fmt, user, volume, suffix=suffix_slug)
+        user_marker = f"_{user.id}"
+        marker = user_marker
+        if pack_type != "normal" and pack_type not in formatted_name.lower():
+            marker = f"_{pack_type}{marker}"
+        if volume > 1 and f"{volume}" not in formatted_name:
+            marker = f"_vol{volume}{marker}"
+        if user_marker in formatted_name:
+            short_name = _limit_pack_short_name(
+                f"{formatted_name[:MAX_STICKER_SHORT_NAME_LENGTH - len(marker)]}"
+                f"{marker if marker != user_marker else ''}"
+            )
+        else:
+            short_name = _limit_pack_short_name(
+                f"{formatted_name[:MAX_STICKER_SHORT_NAME_LENGTH - len(marker)]}{marker}"
+            )
     else:
-        short_name = f"{base_slug}_{suffix_slug}"
-        if volume > 1:
-            short_name += f"_vol{volume}"
-        short_name += f"_{user.id}"
+        volume_part = f"_vol{volume}" if volume > 1 else ""
+        type_part = f"_{pack_type}" if pack_type != "normal" else ""
+        suffix_part = f"{volume_part}{type_part}_{user.id}"
+        base_part = f"{base_slug}_{suffix_slug}"
+        short_name = (
+            f"{base_part[:MAX_STICKER_SHORT_NAME_LENGTH - len(suffix_part)]}"
+            f"{suffix_part}"
+        )
 
-    return title, short_name
+    return title, _limit_pack_short_name(short_name)
 
 
 # Keep the old public helpers working for any external callers.
@@ -253,6 +307,55 @@ async def convert_and_upload(client, message: Message, kind: str):
     return getattr(uploaded, "document", None), uploaded
 
 
+def _get_input_pack_type(sticker) -> str:
+    mime_type = (getattr(sticker, "mime_type", None) or "").lower()
+    if (
+        getattr(sticker, "is_animated", False)
+        or getattr(sticker, "is_video", False)
+        or mime_type in ("application/x-tgsticker", "video/webm")
+    ):
+        return "animated"
+    attributes = getattr(sticker, "attributes", None) or []
+    if any(
+        isinstance(attribute, (types.DocumentAttributeAnimated, types.DocumentAttributeVideo))
+        for attribute in attributes
+    ):
+        return "animated"
+    return "normal"
+
+
+def _pack_cache_key(pack_type: str) -> str:
+    return f"{pack_type}_pack"
+
+
+def _pack_limit(pack_type: str) -> int:
+    return {
+        "normal": MAX_NORMAL_PACK_SIZE,
+        "animated": MAX_ANIMATED_PACK_SIZE,
+        "emoji": MAX_EMOJI_PACK_SIZE,
+    }[pack_type]
+
+
+def _is_animated_document(document) -> bool:
+    if getattr(document, "mime_type", "") in ("application/x-tgsticker", "video/webm"):
+        return True
+    return any(
+        isinstance(attribute, (types.DocumentAttributeAnimated, types.DocumentAttributeVideo))
+        for attribute in getattr(document, "attributes", [])
+    )
+
+
+async def _get_pack_type(client, short_name: str, is_emoji: bool = False, documents=None) -> str:
+    if is_emoji:
+        return "emoji"
+    if documents:
+        return "animated" if any(_is_animated_document(document) for document in documents) else "normal"
+    stickers = await client.get_stickers(short_name)
+    if any(getattr(sticker, "is_animated", False) or getattr(sticker, "is_video", False) for sticker in stickers):
+        return "animated"
+    return "normal"
+
+
 async def add_sticker_to_pack(
     client, pack_short_name: str, sticker, emoji: str | None = None
 ) -> None:
@@ -272,7 +375,12 @@ async def add_sticker_to_pack(
 
 
 async def create_pack_with_sticker(
-    client, title: str, short_name: str, sticker, emoji: str | None = None
+    client,
+    title: str,
+    short_name: str,
+    sticker,
+    emoji: str | None = None,
+    pack_type: str = "normal",
 ) -> None:
     input_doc = decode_sticker_file_id(sticker)
     await client.invoke(
@@ -287,6 +395,7 @@ async def create_pack_with_sticker(
                     keywords="",
                 )
             ],
+            emojis=(True if pack_type == "emoji" else None),
         )
     )
 
@@ -304,29 +413,40 @@ async def short_name_available(client, short_name: str) -> bool:
 
 
 async def make_unique_short_name(client, short_name: str) -> str:
-    candidate = short_name[:60]
+    candidate = _limit_pack_short_name(short_name)
     for attempt in range(6):
         if await short_name_available(client, candidate):
             return candidate
-        candidate = f"{short_name[:54]}_{_random_token()}"
+        candidate = _limit_pack_short_name(
+            f"{short_name[:MAX_STICKER_SHORT_NAME_LENGTH - 5]}_{_random_token()}"
+        )
     return candidate
 
 
 async def create_pack_safe(
-    client, title: str, short_name: str, sticker, emoji: str | None = None
+    client,
+    title: str,
+    short_name: str,
+    sticker,
+    emoji: str | None = None,
+    pack_type: str = "normal",
 ) -> str:
     """Create a pack, retrying with a random suffix if the name is taken."""
     candidate = await make_unique_short_name(client, short_name)
     last_exc = None
     for attempt in range(4):
         try:
-            await create_pack_with_sticker(client, title, candidate, sticker, emoji)
+            await create_pack_with_sticker(
+                client, title, candidate, sticker, emoji, pack_type
+            )
             return candidate
         except Exception as exc:  # noqa: BLE001 - inspect message below
             last_exc = exc
             msg = str(exc).upper()
             if "SHORT_NAME" in msg or "OCCUPIED" in msg or "INVALID" in msg:
-                candidate = f"{short_name[:50]}_{_random_token(5)}"
+                candidate = _limit_pack_short_name(
+                    f"{short_name[:MAX_STICKER_SHORT_NAME_LENGTH - 6]}_{_random_token(5)}"
+                )
                 continue
             raise
     raise last_exc if last_exc else RuntimeError("pack creation failed")
@@ -340,28 +460,217 @@ async def get_pack_sticker_count(client, pack_short_name: str) -> int | None:
         return None
 
 
-async def fetch_owned_packs(client) -> list[dict]:
-    """Return every sticker set created by the current account."""
-    await ensure_me(client)
-    result = await client.invoke(
-        functions.messages.GetMyStickers(offset_id=0, limit=100)
+def _pack_sort_key(pack: dict) -> tuple[int, str]:
+    title = (pack.get("title") or "").strip()
+    first = title[:1]
+    if first and not first.isalnum():
+        category = 0
+    elif first and first.isdigit():
+        category = 1
+    else:
+        category = 2
+    return category, title.casefold()
+
+
+async def _parse_owned_pack(client, covered) -> dict | None:
+    sticker_set = getattr(covered, "set", None)
+    if sticker_set is None:
+        return None
+    type_cover = (
+        (getattr(covered, "documents", None) or [None])[0]
+        if getattr(covered, "documents", None)
+        else getattr(covered, "cover", None)
+        or next(iter(getattr(covered, "covers", [])), None)
     )
-    packs: list[dict] = []
-    for covered in result.sets:
-        s = getattr(covered, "set", None)
-        if s is None:
-            continue
-        packs.append(
-            {
-                "id": s.id,
-                "access_hash": s.access_hash,
-                "title": s.title,
-                "short_name": s.short_name,
-                "count": s.count,
-            }
+    pack = {
+        "id": sticker_set.id,
+        "access_hash": sticker_set.access_hash,
+        "title": sticker_set.title,
+        "short_name": sticker_set.short_name,
+        "count": sticker_set.count,
+        "is_emoji": bool(getattr(sticker_set, "emojis", False)),
+        "is_archived": bool(getattr(sticker_set, "archived", False)),
+        "creator": bool(getattr(sticker_set, "creator", False)),
+    }
+    try:
+        pack["type"] = await _get_pack_type(
+            client,
+            pack["short_name"],
+            pack["is_emoji"],
+            [type_cover] if type_cover else None,
         )
-    packs.sort(key=lambda p: p["title"].lower())
+    except Exception as exc:
+        logger.warning(
+            f"[STICKER] Could not inspect pack type for {pack['short_name']}: {exc}"
+        )
+        pack["type"] = "emoji" if pack["is_emoji"] else "normal"
+    pack["limit"] = _pack_limit(pack["type"])
+    pack["icon"] = PACK_TYPE_ICONS[pack["type"]]
+    return pack
+
+
+async def fetch_all_owned_packs(client, include_archived: bool = True) -> list[dict]:
+    await ensure_me(client)
+    packs = []
+    offset_id = 0
+    page_size = 40
+    while True:
+        response = await client.invoke(
+            functions.messages.GetMyStickers(offset_id=offset_id, limit=page_size)
+        )
+        batch = response.sets
+        if not batch:
+            break
+        for covered in batch:
+            pack = await _parse_owned_pack(client, covered)
+            if pack is not None:
+                packs.append(pack)
+        if len(batch) < page_size:
+            break
+        offset_id = batch[-1].set.id
+    if not include_archived:
+        packs = [pack for pack in packs if not pack["is_archived"]]
+    packs.sort(key=_pack_sort_key)
     return packs
+
+
+async def fetch_owned_packs(
+    client, include_archived: bool = True, page: int = 1, page_size: int = 100
+) -> list[dict]:
+    """Return a numbered page from the owned sticker-pack list."""
+    if page < 1:
+        return []
+    packs = await fetch_all_owned_packs(client, include_archived)
+    start = (page - 1) * page_size
+    return packs[start : start + page_size]
+
+
+async def fetch_archived_packs(client) -> list[dict]:
+    packs = []
+    offset_id = 0
+    page_size = 40
+    while True:
+        response = await client.invoke(
+            functions.messages.GetArchivedStickers(offset_id=offset_id, limit=page_size)
+        )
+        batch = getattr(response, "sets", []) or []
+        if not batch:
+            break
+        for covered in batch:
+            pack = await _parse_owned_pack(client, covered)
+            if pack is not None:
+                pack["is_archived"] = True
+                packs.append(pack)
+        if len(batch) < page_size:
+            break
+        offset_id = batch[-1].set.id
+    return packs
+
+
+async def _installed_pack_types(client) -> list[dict]:
+    sets = []
+    for request in (
+        functions.messages.GetAllStickers(hash=0),
+        functions.messages.GetEmojiStickers(hash=0),
+        functions.messages.GetMaskStickers(hash=0),
+    ):
+        response = await client.invoke(request)
+        sets.extend(getattr(response, "sets", []) or [])
+    unique = {pack.id: pack for pack in sets}
+    result = []
+    for sticker_set in unique.values():
+        kind = "emoji" if getattr(sticker_set, "emojis", False) else "normal"
+        if kind != "emoji":
+            try:
+                stickers = await client.get_stickers(sticker_set.short_name)
+                if any(st.is_animated or st.is_video for st in stickers):
+                    kind = "animated"
+            except Exception as exc:
+                logger.debug(f"[STICKER] Could not inspect installed pack {sticker_set.short_name}: {exc}")
+        result.append({"id": sticker_set.id, "type": kind})
+    return result
+
+
+def _format_pack_type_counts(counts: dict) -> str:
+    parts = [
+        f"{PACK_TYPE_ICONS[kind]} {counts.get(kind, 0)} {kind}"
+        for kind in ("normal", "animated", "emoji")
+        if counts.get(kind, 0)
+    ]
+    return " · ".join(parts) or "0"
+
+
+async def get_pack_usage_stats(client) -> dict:
+    owned_packs = await fetch_all_owned_packs(client)
+    owned_by_id = {pack["id"]: pack for pack in owned_packs if pack["creator"]}
+    installed = await _installed_pack_types(client)
+    installed_by_id = {pack["id"]: pack for pack in installed}
+    archived_packs = await fetch_archived_packs(client)
+    archived_by_id = {pack["id"]: pack for pack in archived_packs}
+    active_by_id = {
+        pack_id: pack for pack_id, pack in installed_by_id.items()
+        if pack_id not in archived_by_id
+    }
+    owned_active = [
+        {**pack, "is_archived": False} for pack_id, pack in owned_by_id.items()
+        if pack_id in active_by_id
+    ]
+    owned_archived = [
+        {**pack, "is_archived": True} for pack_id, pack in owned_by_id.items()
+        if pack_id in archived_by_id
+    ]
+    owned = sorted(owned_active + owned_archived, key=_pack_sort_key)
+    active = sorted(owned_active, key=_pack_sort_key)
+
+    def type_counts(packs):
+        return {
+            kind: sum(pack["type"] == kind for pack in packs)
+            for kind in ("normal", "animated", "emoji")
+        }
+
+    overall_active_by_id = dict(active_by_id)
+    overall_archived_by_id = {
+        pack["id"]: pack for pack in archived_packs
+    }
+    overall_archived = list(overall_archived_by_id.values())
+    overall_active = [
+        pack
+        for pack_id, pack in overall_active_by_id.items()
+        if pack_id not in overall_archived_by_id
+    ]
+    overall_active_types = type_counts(overall_active)
+    overall_archived_types = type_counts(overall_archived)
+    overall_total_packs_by_id = {**overall_active_by_id, **overall_archived_by_id}
+    overall_total_packs = list(overall_total_packs_by_id.values())
+    overall_total_types = type_counts(overall_total_packs)
+    overall_total = len(overall_total_packs_by_id)
+    owned_active_types = type_counts(owned_active)
+    owned_total_types = type_counts(owned)
+    overall_active = sorted(overall_active, key=_pack_sort_key)
+    overall_archived = sorted(overall_archived, key=_pack_sort_key)
+    overall_total_packs = sorted(
+        overall_total_packs_by_id.values(),
+        key=_pack_sort_key,
+    )
+    return {
+        "owned": len(owned),
+        "active": len(owned_active),
+        "archived": len(owned_archived),
+        "total": len(owned),
+        **owned_total_types,
+        "owned_archived_types": type_counts(owned_archived),
+        "owned_packs": owned,
+        "active_packs": active,
+        "overall_active": len(overall_active),
+        "overall_archived": len(overall_archived),
+        "overall_total": overall_total,
+        "overall_active_types": overall_active_types,
+        "overall_archived_types": overall_archived_types,
+        "overall_total_types": overall_total_types,
+        "overall_active_packs": overall_active,
+        "overall_archived_packs": overall_archived,
+        "overall_total_packs": overall_total_packs,
+    }
 
 
 async def search_sticker_sets(
@@ -425,7 +734,7 @@ async def send_pack_notification(client, title: str, short_name: str) -> None:
 # ============================================================
 
 
-async def resolve_current_pack(client) -> dict:
+async def resolve_current_pack(client, pack_type: str = "normal") -> dict:
     await ensure_me(client)
     cache = load_cache()
 
@@ -433,45 +742,81 @@ async def resolve_current_pack(client) -> dict:
     first_name = me_user.first_name or "User"
 
     if cache.get("user_id") != user_id:
-        cache = {
+        cache = {"user_id": user_id, "first_name": first_name}
+
+    pack_key = _pack_cache_key(pack_type)
+    legacy_name = cache.get("current_pack_short_name")
+    legacy_count = cache.get("current_pack_count", 0)
+    legacy_number = cache.get("current_pack_number", 1)
+    state = cache.get(pack_key)
+    if state is None and pack_type == "normal" and legacy_name:
+        if await get_pack_sticker_count(client, legacy_name) is not None:
+            legacy_packs = await fetch_all_owned_packs(client)
+            legacy_pack = next(
+                (pack for pack in legacy_packs if pack["short_name"] == legacy_name),
+                None,
+            )
+            if legacy_pack and legacy_pack["type"] == "normal":
+                state = {
+                    "user_id": user_id,
+                    "first_name": first_name,
+                    "current_pack_number": legacy_number,
+                    "current_pack_short_name": legacy_name,
+                    "current_pack_count": legacy_count,
+                    "type": "normal",
+                }
+                cache[pack_key] = state
+    if state is None:
+        state = {
             "user_id": user_id,
-            "first_name": first_name,
             "current_pack_number": 1,
             "current_pack_short_name": None,
             "current_pack_count": 0,
+            "type": pack_type,
         }
-
-    pack_number = cache.get("current_pack_number", 1)
+        cache[pack_key] = state
+    pack_number = state.get("current_pack_number", 1)
 
     while True:
-        _, short_name = build_default_pack_names(me_user, pack_number)
+        _, short_name = build_default_pack_names(me_user, pack_number, pack_type)
         count = await get_pack_sticker_count(client, short_name)
-
-        if count is None:
-            cache["current_pack_number"] = pack_number
-            cache["current_pack_short_name"] = None
-            cache["current_pack_count"] = 0
-            save_cache(cache)
-            return cache
-
-        if count < MAX_STICKERS_PER_PACK:
-            cache["current_pack_number"] = pack_number
-            cache["current_pack_short_name"] = short_name
-            cache["current_pack_count"] = count
-            save_cache(cache)
-            return cache
-
+        state = {
+            "user_id": user_id,
+            "first_name": first_name,
+            "current_pack_number": pack_number,
+            "current_pack_short_name": short_name if count is not None else None,
+            "current_pack_count": count or 0,
+            "type": pack_type,
+        }
+        cache[pack_key] = state
+        save_cache(cache)
+        if count is None or count < _pack_limit(pack_type):
+            return {**cache, **state}
         pack_number += 1
 
 
-async def ensure_pack(client) -> dict:
+async def ensure_pack(client, pack_type: str = "normal") -> dict:
     cache = load_cache()
-    if (
-        not cache.get("current_pack_short_name")
-        and cache.get("current_pack_count", 0) == 0
-    ):
-        cache = await resolve_current_pack(client)
-    return cache
+    pack_key = _pack_cache_key(pack_type)
+    state = cache.get(pack_key, {})
+    if not state.get("current_pack_short_name") and state.get("current_pack_count", 0) == 0:
+        return await resolve_current_pack(client, pack_type)
+    return {**cache, **state}
+
+
+def save_pack_state(pack_type: str, state: dict) -> None:
+    cache = load_cache()
+    cache[_pack_cache_key(pack_type)] = {
+        key: state[key]
+        for key in (
+            "user_id", "first_name", "current_pack_number",
+            "current_pack_short_name", "current_pack_count", "type",
+        )
+        if key in state
+    }
+    cache["user_id"] = state.get("user_id")
+    cache["first_name"] = state.get("first_name")
+    save_cache(cache)
 
 
 # ============================================================
@@ -483,60 +828,65 @@ def _parse_volume(title: str, prefix: str) -> int | None:
     """Return the volume number for a title matching '{prefix}' or '{prefix} VolN'."""
     if title == prefix:
         return 1
-    match = re.fullmatch(re.escape(prefix) + r" Vol(\d+)", title)
+    match = re.fullmatch(re.escape(prefix) + r"(?: Vol)?(\d+)", title)
     if match:
         return int(match.group(1))
     return None
 
 
-async def resolve_themed_target(client, suffix: str) -> dict:
+async def resolve_themed_target(
+    client, suffix: str, pack_type: str = "normal"
+) -> dict:
     """Find (or plan to create) the pack for a given suffix/theme.
 
     Returns a target dict understood by add_sticker_to_target.
     """
     await ensure_me(client)
-    packs = await fetch_owned_packs(client)
+    pack_type = pack_type or "normal"
+    packs = await fetch_all_owned_packs(client, include_archived=False)
 
     base = get_base_display(me_user)
-    prefix = f"{base} {suffix}"
+    type_suffix = " (Animated)" if pack_type == "animated" else " Emojis" if pack_type == "emoji" else ""
+    prefix = f"{base} {suffix}{type_suffix}"
 
     volumes: dict[int, dict] = {}
     for pack in packs:
+        if pack["type"] != pack_type or pack["is_archived"]:
+            continue
         vol = _parse_volume(pack["title"], prefix)
         if vol is not None:
             volumes[vol] = pack
 
     if volumes:
         for vol in sorted(volumes):
-            if volumes[vol]["count"] < MAX_STICKERS_PER_PACK:
+            if volumes[vol]["count"] < _pack_limit(pack_type):
                 pack = volumes[vol]
                 return {
+                    **pack,
                     "create": False,
-                    "title": pack["title"],
-                    "short_name": pack["short_name"],
-                    "id": pack["id"],
-                    "access_hash": pack["access_hash"],
                     "suffix": suffix,
                     "volume": vol,
+                    "type": pack_type,
                 }
         next_vol = max(volumes) + 1
     else:
         next_vol = 1
 
-    title, short_name = build_themed_pack_names(me_user, suffix, next_vol)
+    title, short_name = build_themed_pack_names(me_user, suffix, next_vol, pack_type)
     return {
         "create": True,
         "title": title,
         "short_name": short_name,
         "suffix": suffix,
         "volume": next_vol,
+        "type": pack_type,
     }
 
 
 async def resolve_pack_reference(client, ref: str) -> dict | None:
-    """Resolve a numeric id, 1-based list index, or a short name."""
+    """Resolve a numeric id, global list index, or a short name."""
     global _pack_index
-    packs = await fetch_owned_packs(client)
+    packs = await fetch_all_owned_packs(client, include_archived=False)
     _pack_index = packs
 
     if ref.isdigit():
@@ -567,7 +917,8 @@ async def add_sticker_with_pack_management(
     client, sticker, emoji: str | None = None
 ) -> bool:
     try:
-        cache = await ensure_pack(client)
+        pack_type = _get_input_pack_type(sticker)
+        cache = await ensure_pack(client, pack_type)
         user_id = cache["user_id"]
         first_name = cache.get("first_name", "User")
         pack_number = cache["current_pack_number"]
@@ -575,43 +926,48 @@ async def add_sticker_with_pack_management(
         count = cache["current_pack_count"]
 
         if short_name is None:
+            pack_type = _get_input_pack_type(sticker)
             title, short_name = build_default_pack_names(
-                me_user, pack_number
+                me_user, pack_number, pack_type
             )
             created = await create_pack_safe(
-                client, title, short_name, sticker, emoji
+                client, title, short_name, sticker, emoji, pack_type
             )
             cache["current_pack_short_name"] = created
             cache["current_pack_count"] = 1
-            save_cache(cache)
+            cache["type"] = pack_type
+            save_pack_state(pack_type, cache)
             await send_pack_notification(client, title, created)
             return True
 
         await add_sticker_to_pack(client, short_name, sticker, emoji)
         count += 1
         cache["current_pack_count"] = count
+        cache["type"] = pack_type
 
-        if count >= MAX_STICKERS_PER_PACK:
+        if count >= _pack_limit(pack_type):
             cache["current_pack_number"] = pack_number + 1
             cache["current_pack_short_name"] = None
             cache["current_pack_count"] = 0
 
-        save_cache(cache)
+        save_pack_state(pack_type, cache)
         return True
 
     except _PACK_FULL_ERRORS:
-        cache = await ensure_pack(client)
+        pack_type = _get_input_pack_type(sticker)
+        cache = await ensure_pack(client, pack_type)
         cache["current_pack_number"] = cache["current_pack_number"] + 1
         cache["current_pack_short_name"] = None
         cache["current_pack_count"] = 0
-        save_cache(cache)
+        save_pack_state(pack_type, cache)
         return await add_sticker_with_pack_management(client, sticker, emoji)
 
     except StickersetInvalid:
-        cache = await ensure_pack(client)
+        pack_type = _get_input_pack_type(sticker)
+        cache = await ensure_pack(client, pack_type)
         cache["current_pack_short_name"] = None
         cache["current_pack_count"] = 0
-        save_cache(cache)
+        save_pack_state(pack_type, cache)
         try:
             return await add_sticker_with_pack_management(
                 client, sticker, emoji
@@ -630,8 +986,9 @@ async def add_sticker_to_target(
     try:
         if target.get("create"):
             title = target["title"]
+            pack_type = _get_input_pack_type(sticker)
             created = await create_pack_safe(
-                client, title, target["short_name"], sticker, emoji
+                client, title, target["short_name"], sticker, emoji, target.get("type", pack_type)
             )
             await send_pack_notification(client, title, created)
             return True
@@ -824,34 +1181,42 @@ async def stop_sticker_monitor(client, message: Message):
     await message.edit("Stopped sticker monitor in all chats")
 
 
-def _md_escape(text: str) -> str:
-    for ch in ("_", "*", "`", "[", "]"):
-        text = text.replace(ch, "\\" + ch)
-    return text
+def _esc(text: str) -> str:
+    return html.escape(text or "", quote=False)
 
 
 async def packs_search(client, message: Message, query: str) -> None:
     """Render `.packs search <keyword>` results (global sticker-set search)."""
     if not query:
         await message.edit(
-            f"Usage: `{config.CMD_PREFIX}packs search <keyword>`\n"
-            "Searches all public Telegram sticker packs."
+            f"Usage: <code>{_esc(config.CMD_PREFIX)}packs search &lt;keyword&gt;</code>\n"
+            "Searches all public Telegram sticker packs.",
+            parse_mode=ParseMode.HTML,
         )
         return
 
-    await message.edit(f"🔎 Searching sticker packs for `{query}`…")
+    await message.edit(
+        f"🔎 Searching sticker packs for <b>{_esc(query)}</b>…",
+        parse_mode=ParseMode.HTML,
+    )
     try:
         results = await search_sticker_sets(client, query)
     except Exception as exc:
         logger.exception("[STICKER] Pack search failed")
-        await message.edit(f"❌ Search failed: {type(exc).__name__}: {exc}")
+        await message.edit(
+            f"❌ Search failed: {_esc(type(exc).__name__)}: {_esc(str(exc))}",
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     if not results:
-        await message.edit(f"No sticker packs found for `{query}`.")
+        await message.edit(
+            f"No sticker packs found for <b>{_esc(query)}</b>.",
+            parse_mode=ParseMode.HTML,
+        )
         return
 
-    lines = [f"**Sticker packs matching** `{query}` ({len(results)})\n"]
+    lines = [f"<b>Sticker packs matching</b> {_esc(query)} ({len(results)})\n"]
     for i, pack in enumerate(results[:MAX_DISPLAY_SEARCH], 1):
         tags = [
             label
@@ -862,15 +1227,23 @@ async def packs_search(client, message: Message, query: str) -> None:
             )
             if pack[flag]
         ]
-        tag = f"  _({' · '.join(tags)})_" if tags else ""
+        tag = f" · {' · '.join(tags)}" if tags else ""
+        pack_type = "emoji" if pack["emojis"] else "normal"
+        icon = PACK_TYPE_ICONS[pack_type]
+        limit = _pack_limit(pack_type)
+        url = f"{STICKER_PACK_URL_PREFIX}{pack['short_name']}"
         lines.append(
-            f"`{i}.` **{_md_escape(pack['title'])}**{tag}\n"
-            f"    `{pack['short_name']}`  •  {pack['count']} stickers\n"
-            f"    https://t.me/addstickers/{pack['short_name']}"
+            f'<blockquote>{i}. <a href="{_esc(url)}">'
+            f"{_esc(pack['title'])}</a> {icon}{_esc(tag)}\n"
+            f"    {_esc(pack['short_name'])} · {pack['count']}/{limit}</blockquote>"
         )
     if len(results) > MAX_DISPLAY_SEARCH:
         lines.append(f"\n…and {len(results) - MAX_DISPLAY_SEARCH} more.")
-    await message.edit("\n".join(lines))
+    await message.edit(
+        "\n".join(lines),
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
 
 
 @main.app.on_message(
@@ -880,50 +1253,164 @@ async def packs_search(client, message: Message, query: str) -> None:
 @continue_propagation
 async def packs_command(client, message: Message):
     global _pack_index
+    logger.info(f"[STICKER] packs command received in chat={message.chat.id}")
 
     raw = (message.text or "").split(maxsplit=1)
     args = raw[1].strip() if len(raw) > 1 else ""
+    tokens = args.split()
 
-    # `.packs search <keyword>` (aliases: find, s) -> global search.
-    if args:
-        head, _, rest = args.partition(" ")
-        if head.lower() in ("search", "find", "s"):
-            await packs_search(client, message, rest.strip())
+    if tokens and tokens[0].lower() in ("search", "find"):
+        await packs_search(client, message, " ".join(tokens[1:]))
+        return
+
+    count_only = False
+    page = 1
+    selected_types: set[str] = set()
+    for token in tokens:
+        flag = token.lower()
+        if flag in ("-c", "-count"):
+            count_only = True
+        elif flag in ("-e", "-emoji"):
+            selected_types.add("emoji")
+        elif flag in ("-a", "-animated"):
+            selected_types.add("animated")
+        elif flag in ("-n", "-normal"):
+            selected_types.add("normal")
+        elif flag in ("-s", "-sticker"):
+            selected_types.update(("normal", "animated"))
+        elif flag.isdigit() and page == 1:
+            page = int(flag)
+        elif flag not in ("search", "find"):
+            await message.edit(
+                f"Usage: <code>{_esc(config.CMD_PREFIX)}packs [page] "
+                "[-c] [-e] [-a] [-n] [-s]</code> or "
+                f"<code>{_esc(config.CMD_PREFIX)}packs search &lt;keyword&gt;</code>",
+                parse_mode=ParseMode.HTML,
+            )
             return
 
     try:
-        packs = await fetch_owned_packs(client)
+        stats = await get_pack_usage_stats(client)
+        archived_count = stats["archived"]
+        owned_packs = stats["owned_packs"]
+        all_active_packs = stats["active_packs"]
     except Exception as exc:
+        logger.exception("[STICKER] Failed to fetch owned/archived pack counts")
         await message.edit(
             f"❌ Failed to fetch packs: {type(exc).__name__}: {exc}"
         )
         return
 
-    _pack_index = packs
-
-    if not packs:
+    counts = {
+        pack_type: stats[pack_type]
+        for pack_type in ("normal", "animated", "emoji")
+    }
+    selected_types = {"normal", "animated", "emoji"} if len(selected_types) == 3 else selected_types
+    filter_types = selected_types or {"normal", "animated", "emoji"}
+    if count_only:
         await message.edit(
-            "You don't own any sticker packs yet.\n"
-            "Reply to a sticker and use `.kang` to create one."
+            "<b>Sticker pack counts</b>\n\n"
+            "<b>Owned ✨</b>\n"
+            "<blockquote>"
+            f"Total: {stats['owned']} ({_format_pack_type_counts(counts)})\n"
+            f"Active: {stats['active']}\n"
+            f"🗃️ Archived: {stats['archived']} "
+            f"({_format_pack_type_counts(stats['owned_archived_types'])})"
+            "</blockquote>\n\n"
+            "<b>Overall 🌐</b>\n"
+            "<blockquote>"
+            f"Total: {stats['overall_total']} "
+            f"({_format_pack_type_counts(stats['overall_total_types'])})\n"
+            f"Active: {stats['overall_active']}\n"
+            f"🗃️ Archived: {stats['overall_archived']} "
+            f"({_format_pack_type_counts(stats['overall_archived_types'])})"
+            "</blockquote>",
+            parse_mode=ParseMode.HTML,
         )
         return
 
-    lines = [f"**Your sticker packs** ({len(packs)})\n"]
-    for i, pack in enumerate(packs[:MAX_DISPLAY_PACKS], 1):
-        lines.append(
-            f"`{i}.` **{pack['title']}**\n"
-            f"    short: `{pack['short_name']}`\n"
-            f"    id: `{pack['id']}`  •  {pack['count']}/{MAX_STICKERS_PER_PACK} stickers\n"
-            f"    https://t.me/addstickers/{pack['short_name']}"
+    filtered_count = sum(counts[pack_type] for pack_type in filter_types)
+    if not filtered_count:
+        await message.edit(
+            "No active sticker packs match that filter.",
+            parse_mode=ParseMode.HTML,
         )
-    if len(packs) > MAX_DISPLAY_PACKS:
-        lines.append(f"\n…and {len(packs) - MAX_DISPLAY_PACKS} more.")
-    lines.append(
-        "\nSearch all public packs with `.packs search <keyword>`.\n"
-        "Use `.kang <number|shortname>` to add to a specific pack, "
-        "or `.kang <suffix>` for a themed pack (e.g. `.kang fun`)."
+        return
+
+    packs = (
+        [pack for pack in owned_packs if pack["type"] in filter_types]
+        if selected_types
+        else owned_packs
     )
-    await message.edit("\n".join(lines))
+    _pack_index = owned_packs
+
+    total_pages = max(1, (len(packs) + PACKS_PAGE_SIZE - 1) // PACKS_PAGE_SIZE)
+    if page < 1 or page > total_pages:
+        await message.edit(
+            f"Page must be between 1 and {total_pages}.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    start = (page - 1) * PACKS_PAGE_SIZE
+    page_packs = packs[start : start + PACKS_PAGE_SIZE]
+    if selected_types:
+        visible_numbers = {
+            pack["id"]: all_active_packs.index(pack) + 1 for pack in page_packs
+        }
+    else:
+        visible_numbers = {
+            pack["id"]: index + 1
+            for index, pack in enumerate(page_packs, start)
+        }
+    filter_label = ", ".join(sorted(filter_types))
+    lines = [
+        f"<b>Your sticker packs</b> · page {page}/{total_pages} · "
+        f"{len(packs)} shown · {stats['owned']} owned · "
+        f"{archived_count} archived\n",
+        f"Counts: 📄 {counts['normal']} normal · 💿 {counts['animated']} animated · "
+        f"🪎 {counts['emoji']} emoji"
+        f"{f' · filter: {_esc(filter_label)}' if selected_types else ''}\n",
+    ]
+    lines.append("<blockquote>")
+    for pack in page_packs:
+        number = visible_numbers[pack["id"]]
+        pack_type = pack["type"]
+        limit = _pack_limit(pack_type)
+        icon = PACK_TYPE_ICONS[pack_type]
+        item_name = "emoji" if pack_type == "emoji" else "stickers"
+        url = f"{STICKER_PACK_URL_PREFIX}{pack['short_name']}"
+        lines.append(
+            f'{number}. <a href="{_esc(url)}">'
+            f"{_esc(pack['title'])}</a> {icon} "
+            f"({pack['count']}/{limit} {item_name})"
+            f"{' 🗃️' if pack['is_archived'] else ''}\n"
+            f"    short: {_esc(pack['short_name'])}\n"
+            f"    id: {pack['id']}  •  {pack['count']}/{limit} {item_name}\n"
+        )
+    lines.append("</blockquote>")
+    nav = []
+    filter_args = " ".join(token for token in tokens if token.startswith("-"))
+    if page > 1:
+        nav.append(
+            f"◀ <code>{_esc(config.CMD_PREFIX)}packs {filter_args} {page - 1}</code>".strip()
+        )
+    if page < total_pages:
+        nav.append(
+            f"<code>{_esc(config.CMD_PREFIX)}packs {filter_args} {page + 1}</code> ▶"
+        )
+    if nav:
+        lines.append("  ·  ".join(nav))
+    lines.append(
+        f"Search public packs with <code>{_esc(config.CMD_PREFIX)}packs search &lt;keyword&gt;</code>. "
+        f"Use <code>{_esc(config.CMD_PREFIX)}kang &lt;number|shortname&gt;</code> or "
+        f"<code>{_esc(config.CMD_PREFIX)}kang &lt;suffix&gt;</code> to add stickers."
+    )
+    await message.edit(
+        "\n".join(lines),
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
 
 
 @main.app.on_message(
@@ -961,7 +1448,9 @@ async def kang_command(client, message: Message):
         if target is None:
             # Not an existing pack: treat the reference as a themed suffix.
             try:
-                target = await resolve_themed_target(client, pack_ref)
+                target = await resolve_themed_target(
+                    client, pack_ref, _get_input_pack_type(media)
+                )
             except Exception as exc:
                 logger.error(f"[STICKER] Themed pack lookup failed: {exc}")
                 await message.reply_text(
