@@ -1689,10 +1689,13 @@ async def refresh_sticker_index(client, *, force: bool = False) -> bool:
         if not force and sticker_index.snapshot_is_usable(me_user.id, max_age=3600):
             return True
         try:
-            packs = [
-                pack for pack in await fetch_all_owned_packs(client, include_archived=True)
-                if pack.get("creator")
-            ]
+            all_owned_packs = await fetch_all_owned_packs(client, include_archived=True)
+            cache = load_cache()
+            if cache.get("user_id") != me_user.id:
+                cache = {"user_id": me_user.id}
+            cache["owned_packs"] = all_owned_packs
+            save_cache(cache)
+            packs = [pack for pack in all_owned_packs if pack.get("creator")]
             eligible_packs = [pack for pack in packs if not pack.get("is_archived")]
             snapshots = []
             semaphore = asyncio.Semaphore(3)
