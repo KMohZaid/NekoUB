@@ -1784,6 +1784,14 @@ async def _update_index_after_add_locked(client, short_name: str, response, targ
             hash=0,
         )
     )
+    actual_set = getattr(pack_set, "set", None)
+    if actual_set is not None:
+        pack.update(
+            id=getattr(actual_set, "id", pack.get("id")),
+            short_name=getattr(actual_set, "short_name", short_name),
+            is_emoji=bool(getattr(actual_set, "emojis", pack.get("is_emoji", False))),
+            is_archived=bool(getattr(actual_set, "archived", pack.get("is_archived", False))),
+        )
     index_pack, records = await _fetch_indexed_pack(client, pack, pack_set)
     sticker_index.replace_pack(index_pack, records)
 
