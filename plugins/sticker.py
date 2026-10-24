@@ -1,23 +1,27 @@
 import asyncio
+import hashlib
 import html
 import json
+import math
 import os
 import random
 import re
 import string
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import emoji
-from pyrogram import filters
-from pyrogram.enums import ParseMode
+from pyrogram import enums, filters
+from pyrogram.enums import ParseMode, StickerFormat, StickerType
+from pyrogram.types import InputSticker
 from pyrogram.errors import (
     StickersetInvalid,
     StickersEmpty,
     StickerpackStickersTooMuch,
     StickersTooMuch,
 )
-from pyrogram.file_id import FileId
+from pyrogram.file_id import FileId, FileType
 from pyrogram.raw import functions, types
 from pyrogram.types import Message
 
@@ -30,15 +34,12 @@ logger = get_logger(__name__)
 
 CACHE_PATH = Path(__file__).resolve().parent.parent / ".sticker_cache.json"
 MAX_STICKERS_PER_PACK = 120
-MAX_ANIMATED_STICKERS_PER_PACK = 50
 MAX_EMOJIS_PER_PACK = 200
 MAX_EMOJI_COUNT = 6
-MAX_NORMAL_PACK_SIZE = MAX_STICKERS_PER_PACK
-MAX_ANIMATED_PACK_SIZE = MAX_ANIMATED_STICKERS_PER_PACK
 MAX_EMOJI_PACK_SIZE = MAX_EMOJIS_PER_PACK
 STICKER_PACK_URL_PREFIX = "https://t.me/addstickers/"
 MAX_STICKER_SHORT_NAME_LENGTH = 62
-PACK_TYPE_ICONS = {"normal": "📄", "animated": "💿", "emoji": "🪎"}
+PACK_TYPE_ICONS = {"normal": "📄", "animated": "💿", "mixed": "📺", "emoji": "🪎"}
 ADD_COOLDOWN = 1  # seconds between sticker adds
 PACKS_PAGE_SIZE = 10
 MAX_DISPLAY_SEARCH = 40  # cap for `.packs search` results
@@ -85,6 +86,27 @@ async def ensure_me(client) -> None:
         me_user = await client.get_me()
 
 
+async def cache_owned_packs(client) -> list[dict]:
+    """Refresh the cached list of packs owned by the current user."""
+    await ensure_me(client)
+    packs = await fetch_all_owned_packs(client)
+    cache = load_cache()
+    if cache.get("user_id") != me_user.id:
+        cache = {"user_id": me_user.id}
+    cache["owned_packs"] = packs
+    save_cache(cache)
+    return packs
+
+
+async def cached_owned_packs(client) -> list[dict]:
+    """Return the owned-pack index, initializing it if needed."""
+    await ensure_me(client)
+    cache = load_cache()
+    if cache.get("user_id") != me_user.id or not isinstance(cache.get("owned_packs"), list):
+        return await cache_owned_packs(client)
+    return cache["owned_packs"]
+
+
 def _strip_quotes(value: str | None) -> str:
     return (value or "").strip().strip('"').strip("'")
 
@@ -97,14 +119,18 @@ def slugify(text: str | None) -> str:
 
 
 def get_base_display(user) -> str:
-    """Human-facing base name, e.g. '@OpPeace' (falls back to first name)."""
+    """Return username, full name, or first name for display titles."""
     override = _strip_quotes(config.STICKERSET_BASE)
     if override:
         return override
     username = getattr(user, "username", None)
     if username:
         return f"@{username}"
-    return user.first_name or "User"
+    full_name = " ".join(
+        part for part in (getattr(user, "first_name", None), getattr(user, "last_name", None))
+        if part
+    )
+    return full_name or "User"
 
 
 def get_base_slug(user) -> str:
@@ -120,15 +146,43 @@ def get_base_slug(user) -> str:
     return slug
 
 
+_NAMING_WARNINGS: set[str] = set()
+_NAMING_FIELDS = {"user_id", "first_name", "username", "base", "suffix", "index"}
+
+
 def _format_all(template: str, user, index: int, suffix: str = "") -> str:
-    return template.format(
-        user_id=user.id,
-        first_name=user.first_name or "User",
-        username=getattr(user, "username", "") or "",
-        base=get_base_display(user),
-        suffix=suffix,
-        index=index,
+    values = {
+        "user_id": user.id,
+        "first_name": user.first_name or "User",
+        "username": getattr(user, "username", "") or "",
+        "base": get_base_display(user),
+        "suffix": suffix,
+        "index": index,
+    }
+    return template.format(**values)
+
+
+def _valid_naming_template(template: str, required: set[str]) -> bool:
+    fields = set(re.findall(r"\{([^{}]+)\}", template))
+    return bool(template) and required.issubset(fields) and fields.issubset(_NAMING_FIELDS)
+
+
+def _warn_invalid_naming(label: str, required: set[str]) -> None:
+    missing = ", ".join(f"{{{name}}}" for name in sorted(required))
+    warning = (
+        f"Your {label} is missing required variable(s) {missing}; "
+        "will use base format."
     )
+    if warning not in _NAMING_WARNINGS:
+        logger.warning(warning)
+        _NAMING_WARNINGS.add(warning)
+
+
+def _custom_naming_value(template: str, label: str, required: set[str]) -> bool:
+    valid = _valid_naming_template(template, required)
+    if not valid:
+        _warn_invalid_naming(label, required)
+    return valid
 
 
 def _limit_pack_short_name(short_name: str) -> str:
@@ -143,30 +197,19 @@ def build_default_pack_names(
     title_fmt = _strip_quotes(config.STICKERSET_TITLE_FORMAT)
     name_fmt = _strip_quotes(config.STICKERSET_NAME_FORMAT)
 
-    base = get_base_display(user)
-    base_slug = get_base_slug(user)
-
-    type_suffix = " (Animated)" if pack_type == "animated" else " Emojis" if pack_type == "emoji" else ""
-    if title_fmt:
-        title = _format_all(title_fmt, user, pack_number)
-        if pack_type != "normal" and pack_type.lower() not in title.lower():
-            title = f"{title}{type_suffix}"
-    else:
-        title = base if pack_number == 1 else f"{base} Vol{pack_number}"
-        title += type_suffix
-
-    if name_fmt:
-        formatted_name = _format_all(name_fmt, user, pack_number)
-        suffix = f"_vol{pack_number}_{user.id}"
-        if pack_type != "normal" and pack_type not in formatted_name:
-            suffix = f"_{pack_type}{suffix}"
+    if _custom_naming_value(name_fmt, "sticker set shortname", {"index"}):
         short_name = _limit_pack_short_name(
-            f"{formatted_name[:MAX_STICKER_SHORT_NAME_LENGTH - len(suffix)]}{suffix}"
+            _format_all(name_fmt, user, pack_number)
         )
     else:
-        type_part = f"_{pack_type}" if pack_type != "normal" else ""
-        suffix = f"_vol{pack_number}{type_part}_{user.id}"
-        short_name = f"{base_slug[:MAX_STICKER_SHORT_NAME_LENGTH - len(suffix)]}{suffix}"
+        short_name = f"{user.id}_vol{pack_number}"
+
+    if _custom_naming_value(title_fmt, "sticker set title", {"index"}):
+        title = _format_all(title_fmt, user, pack_number)
+    else:
+        title = f"{base}'s Pack Vol. {pack_number}"
+    if pack_type == "emoji" and "emoji" not in title.lower():
+        title += " Emojis"
 
     return title, _limit_pack_short_name(short_name)
 
@@ -175,50 +218,28 @@ def build_themed_pack_names(
     user, suffix: str, volume: int, pack_type: str = "normal"
 ) -> tuple[str, str]:
     """Names for a themed pack, e.g. '@OpPeace fun' / 'oppeace_fun_7192'."""
-    title_fmt = _strip_quotes(config.STICKERSET_TITLE_FORMAT)
-    name_fmt = _strip_quotes(config.STICKERSET_NAME_FORMAT)
+    themed_title_fmt = _strip_quotes(config.THEMED_STICKERSET_DISPLAY_NAME)
+    themed_name_fmt = _strip_quotes(config.THEMED_STICKERSET_SHORTNAME)
 
     base = get_base_display(user)
-    base_slug = get_base_slug(user)
-    suffix_slug = slugify(suffix) or "pack"
-    type_suffix = " (Animated)" if pack_type == "animated" else " Emojis" if pack_type == "emoji" else ""
-
-    if title_fmt:
-        title = _format_all(title_fmt, user, volume, suffix=suffix)
-        if pack_type != "normal" and pack_type.lower() not in title.lower():
-            title = f"{title}{type_suffix}"
-    else:
-        title = f"{base} {suffix}"
-        if volume > 1:
-            title += f" Vol{volume}"
-        title += type_suffix
-
-    if name_fmt:
-        formatted_name = _format_all(name_fmt, user, volume, suffix=suffix_slug)
-        user_marker = f"_{user.id}"
-        marker = user_marker
-        if pack_type != "normal" and pack_type not in formatted_name.lower():
-            marker = f"_{pack_type}{marker}"
-        if volume > 1 and f"{volume}" not in formatted_name:
-            marker = f"_vol{volume}{marker}"
-        if user_marker in formatted_name:
-            short_name = _limit_pack_short_name(
-                f"{formatted_name[:MAX_STICKER_SHORT_NAME_LENGTH - len(marker)]}"
-                f"{marker if marker != user_marker else ''}"
-            )
-        else:
-            short_name = _limit_pack_short_name(
-                f"{formatted_name[:MAX_STICKER_SHORT_NAME_LENGTH - len(marker)]}{marker}"
-            )
-    else:
-        volume_part = f"_vol{volume}" if volume > 1 else ""
-        type_part = f"_{pack_type}" if pack_type != "normal" else ""
-        suffix_part = f"{volume_part}{type_part}_{user.id}"
-        base_part = f"{base_slug}_{suffix_slug}"
-        short_name = (
-            f"{base_part[:MAX_STICKER_SHORT_NAME_LENGTH - len(suffix_part)]}"
-            f"{suffix_part}"
+    suffix_slug = slugify(suffix) or "theme"
+    if _custom_naming_value(
+        themed_name_fmt, "themed sticker set shortname", {"suffix", "index"}
+    ):
+        short_name = _limit_pack_short_name(
+            _format_all(themed_name_fmt, user, volume, suffix=suffix_slug)
         )
+    else:
+        short_name = f"{user.id}_{suffix_slug}_vol{volume}"
+
+    if _custom_naming_value(
+        themed_title_fmt, "themed sticker set title", {"suffix", "index"}
+    ):
+        title = _format_all(themed_title_fmt, user, volume, suffix=suffix)
+    else:
+        title = f"{base}'s {suffix} Pack Vol. {volume}"
+    if pack_type == "emoji" and "emoji" not in title.lower():
+        title += " Emojis"
 
     return title, _limit_pack_short_name(short_name)
 
@@ -251,13 +272,106 @@ def _random_token(n: int = 4) -> str:
 # ============================================================
 
 
-def decode_sticker_file_id(sticker) -> types.InputDocument:
-    d = FileId.decode(sticker.file_id)
+def decode_sticker_file_id(sticker):
+    return FileId.decode(sticker.file_id)
+
+
+def sticker_input_document(sticker) -> types.InputDocument:
+    file_id = decode_sticker_file_id(sticker)
+    if file_id.file_type not in (FileType.STICKER, FileType.DOCUMENT):
+        raise TypeError(
+            f"Expected a Telegram sticker or document file ID, "
+            f"got {file_id.file_type.name}"
+        )
     return types.InputDocument(
-        id=d.media_id,
-        access_hash=d.access_hash,
-        file_reference=d.file_reference,
+        id=file_id.media_id,
+        access_hash=file_id.access_hash,
+        file_reference=file_id.file_reference,
     )
+
+
+def _media_fingerprint(path: str, is_video: bool) -> int | str:
+    if is_video:
+        digest = hashlib.sha256()
+        with open(path, "rb") as media_file:
+            for block in iter(lambda: media_file.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+
+    from PIL import Image, ImageOps
+
+    size = 32
+    with Image.open(path) as image:
+        pixels = list(
+            ImageOps.exif_transpose(image)
+            .convert("L")
+            .resize((size, size))
+            .getdata()
+        )
+    coeffs = []
+    for v in range(8):
+        for u in range(8):
+            coeffs.append(
+                sum(
+                    pixels[y * size + x]
+                    * math.cos((2 * x + 1) * u * math.pi / (2 * size))
+                    * math.cos((2 * y + 1) * v * math.pi / (2 * size))
+                    for y in range(size)
+                    for x in range(size)
+                )
+            )
+    median = sorted(coeffs[1:])[len(coeffs[1:]) // 2]
+    return sum(1 << i for i, value in enumerate(coeffs) if value > median)
+
+
+async def _find_duplicate_sticker(client, sticker, documents) -> bool:
+    is_video = bool(getattr(sticker, "is_video", False))
+    with tempfile.TemporaryDirectory(prefix="nekoub-dedupe-") as folder:
+        try:
+            source_path = (
+                sticker.file_id
+                if isinstance(sticker.file_id, (str, os.PathLike))
+                and os.path.isfile(sticker.file_id)
+                else await client.download_media(
+                    sticker.file_id, file_name=os.path.join(folder, "source")
+                )
+            )
+            if not source_path:
+                return False
+            source_hash = await asyncio.to_thread(
+                _media_fingerprint, source_path, is_video
+            )
+        except Exception:
+            logger.warning("[STICKER] Could not fingerprint input for duplicate check", exc_info=True)
+            return False
+
+        for index, document in enumerate(documents):
+            if getattr(document, "mime_type", None) != getattr(sticker, "mime_type", None):
+                continue
+            if getattr(document, "size", None) != getattr(sticker, "file_size", None):
+                continue
+            try:
+                candidate_path = await client.download_media(
+                    sticker_set_document_file_id(document),
+                    file_name=os.path.join(folder, f"candidate-{index}"),
+                )
+                if not candidate_path:
+                    continue
+                candidate_hash = await asyncio.to_thread(
+                    _media_fingerprint, candidate_path, is_video
+                )
+            except Exception:
+                logger.debug(
+                    "[STICKER] Could not fingerprint existing pack item", exc_info=True
+                )
+                continue
+            if (
+                (source_hash ^ candidate_hash).bit_count() <= 4
+                if isinstance(source_hash, int) and isinstance(candidate_hash, int)
+                else source_hash == candidate_hash
+            ):
+                return True
+    return False
 
 
 def message_media(message: Message) -> tuple[str | None, object]:
@@ -271,56 +385,79 @@ def message_media(message: Message) -> tuple[str | None, object]:
     if message.video:
         return "video", message.video
     if message.document:
-        mime = (message.document.mime_type or "").lower()
-        name = (message.document.file_name or "").lower()
-        if mime.startswith("image/gif") or name.endswith(".gif"):
+        mime = (getattr(message.document, "mime_type", None) or "").lower()
+        name = (getattr(message.document, "file_name", None) or "").lower()
+        suffix = Path(name).suffix
+        if mime == "image/gif" or suffix == ".gif":
             return "video", message.document
-        if mime.startswith("image/"):
+        if mime.startswith("image/") or suffix in {
+            ".bmp", ".heic", ".heif", ".jpeg", ".jpg", ".png", ".tif",
+            ".tiff", ".webp",
+        }:
             return "image", message.document
-        if mime.startswith("video/"):
+        if mime.startswith("video/") or suffix in {
+            ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm",
+        }:
             return "video", message.document
     return None, None
 
 
 async def convert_and_upload(client, message: Message, kind: str):
-    """Convert a photo/GIF/video to a sticker and upload it as a document.
-
-    Returns (document, uploaded_message); the caller removes the message once
-    the sticker has been stored in a pack.
-    """
-    with tempfile.TemporaryDirectory() as folder:
+    """Convert replied media locally for direct InputSticker file upload."""
+    folder = tempfile.TemporaryDirectory(prefix="nekoub-kang-")
+    try:
         source = await client.download_media(
-            message, file_name=os.path.join(folder, "source")
+            message, file_name=os.path.join(folder.name, "source")
         )
         if not source:
+            folder.cleanup()
             return None, None
         output = os.path.join(
-            folder, "sticker.webm" if kind == "video" else "sticker.webp"
+            folder.name, "sticker.webm" if kind == "video" else "sticker.webp"
         )
         if kind == "video":
             await video_to_sticker(source, output)
         else:
             await image_to_sticker(source, output)
-        uploaded = await client.send_document(
-            "me", output, disable_notification=True
+        sticker = SimpleNamespace(
+            file_id=output,
+            file_unique_id=None,
+            mime_type="video/webm" if kind == "video" else "image/webp",
+            file_size=os.path.getsize(output),
+            is_video=kind == "video",
+            is_animated=False,
+            emoji=None,
         )
-    return getattr(uploaded, "document", None), uploaded
+        return sticker, folder
+    except Exception:
+        folder.cleanup()
+        raise
+
+
+def _sticker_format(sticker) -> StickerFormat:
+    mime_type = (getattr(sticker, "mime_type", None) or "").lower()
+    if (
+        getattr(sticker, "is_video", False)
+        or mime_type == "video/webm"
+    ):
+        return StickerFormat.VIDEO
+    if getattr(sticker, "is_animated", False) or mime_type == "application/x-tgsticker":
+        return StickerFormat.ANIMATED
+    attributes = getattr(sticker, "attributes", None) or []
+    if any(
+        isinstance(attribute, types.DocumentAttributeVideo)
+        for attribute in attributes
+    ):
+        return StickerFormat.VIDEO
+    if any(
+        isinstance(attribute, types.DocumentAttributeAnimated)
+        for attribute in attributes
+    ):
+        return StickerFormat.ANIMATED
+    return StickerFormat.STATIC
 
 
 def _get_input_pack_type(sticker) -> str:
-    mime_type = (getattr(sticker, "mime_type", None) or "").lower()
-    if (
-        getattr(sticker, "is_animated", False)
-        or getattr(sticker, "is_video", False)
-        or mime_type in ("application/x-tgsticker", "video/webm")
-    ):
-        return "animated"
-    attributes = getattr(sticker, "attributes", None) or []
-    if any(
-        isinstance(attribute, (types.DocumentAttributeAnimated, types.DocumentAttributeVideo))
-        for attribute in attributes
-    ):
-        return "animated"
     return "normal"
 
 
@@ -329,11 +466,9 @@ def _pack_cache_key(pack_type: str) -> str:
 
 
 def _pack_limit(pack_type: str) -> int:
-    return {
-        "normal": MAX_NORMAL_PACK_SIZE,
-        "animated": MAX_ANIMATED_PACK_SIZE,
-        "emoji": MAX_EMOJI_PACK_SIZE,
-    }[pack_type]
+    if pack_type in ("normal", "animated", "mixed"):
+        return MAX_STICKERS_PER_PACK
+    return MAX_EMOJIS_PER_PACK
 
 
 def _is_animated_document(document) -> bool:
@@ -348,30 +483,264 @@ def _is_animated_document(document) -> bool:
 async def _get_pack_type(client, short_name: str, is_emoji: bool = False, documents=None) -> str:
     if is_emoji:
         return "emoji"
-    if documents:
-        return "animated" if any(_is_animated_document(document) for document in documents) else "normal"
-    stickers = await client.get_stickers(short_name)
-    if any(getattr(sticker, "is_animated", False) or getattr(sticker, "is_video", False) for sticker in stickers):
-        return "animated"
-    return "normal"
+    if not documents:
+        sticker_set = await client.get_sticker_set(short_name)
+        documents = getattr(sticker_set, "stickers", None) or []
+    has_static = False
+    has_animated = False
+    for sticker in documents:
+        if _is_animated_document(sticker) or getattr(sticker, "is_animated", False) or getattr(sticker, "is_video", False):
+            has_animated = True
+        else:
+            has_static = True
+        if has_static and has_animated:
+            return "mixed"
+    return "animated" if has_animated else "normal"
 
 
 async def add_sticker_to_pack(
-    client, pack_short_name: str, sticker, emoji: str | None = None
-) -> None:
-    input_doc = decode_sticker_file_id(sticker)
-    await client.invoke(
-        functions.stickers.AddStickerToSet(
-            stickerset=types.InputStickerSetShortName(
-                short_name=pack_short_name
-            ),
-            sticker=types.InputStickerSetItem(
-                document=input_doc,
-                emoji=emoji or getattr(sticker, "emoji", None) or "🌟",
-                keywords="",
-            ),
+    client, pack_short_name: str, sticker, emoji: str | None = None,
+    fetch_result: bool = False,
+    response_holder: dict | None = None,
+    allow_duplicates: bool = False,
+):
+    previous = await client.invoke(
+        functions.messages.GetStickerSet(
+            stickerset=types.InputStickerSetShortName(short_name=pack_short_name),
+            hash=0,
         )
     )
+    # file_unique_id is mostly useless across packs: Telegram can give the same
+    # sticker a different ID in another pack. Still check it first; when it does
+    # match, we can skip the more expensive media-download/fingerprint checks.
+    if not allow_duplicates and getattr(sticker, "file_unique_id", None) and any(
+        getattr(document, "file_unique_id", None) == sticker.file_unique_id
+        for document in previous.documents
+    ):
+        if response_holder is not None:
+            response_holder["sticker_set"] = previous
+        return (previous if fetch_result else None), False, previous
+    if not allow_duplicates and await _find_duplicate_sticker(
+        client, sticker, previous.documents
+    ):
+        if response_holder is not None:
+            response_holder["sticker_set"] = previous
+        return (previous if fetch_result else None), False, previous
+    try:
+        result = await client.add_sticker_to_set(
+            user_id="me",
+            name=pack_short_name,
+            sticker=InputSticker(
+                sticker=sticker.file_id,
+                format=_sticker_format(sticker),
+                emoji_list=[emoji or getattr(sticker, "emoji", None) or "🌟"],
+            ),
+        )
+        added = True
+        if response_holder is not None:
+            response_holder["sticker_set"] = result
+        return result, added, previous
+    except Exception as exc:
+        if "STICKERSET_STICKER_ALREADY_EXISTS" not in str(exc).upper():
+            raise
+
+    result = await client.invoke(
+        functions.messages.GetStickerSet(
+            stickerset=types.InputStickerSetShortName(short_name=pack_short_name),
+            hash=0,
+        )
+    )
+    if response_holder is not None:
+        response_holder["sticker_set"] = result
+    return (result if fetch_result else None), False, previous
+
+
+async def sticker_is_in_pack(client, pack_short_name: str, sticker) -> bool:
+    """Verify Telegram actually includes a sticker in the requested pack."""
+    file_id = getattr(sticker, "file_id", None)
+    if not file_id:
+        return False
+    try:
+        media_id = FileId.decode(file_id).media_id
+        sticker_set = await client.invoke(
+            functions.messages.GetStickerSet(
+                stickerset=types.InputStickerSetShortName(short_name=pack_short_name),
+                hash=0,
+            )
+        )
+    except Exception:
+        logger.exception(
+            f"[STICKER] Could not verify sticker membership in {pack_short_name}"
+        )
+        return False
+    return any(
+        getattr(document, "id", None) == media_id
+        for document in getattr(sticker_set, "documents", []) or []
+    )
+
+
+def sticker_set_document_file_id(document) -> str:
+    """Convert a raw or parsed Telegram sticker document into a sticker file ID."""
+    # Parsed Pyrogram documents already carry a reusable file ID and may not
+    # expose raw MTProto fields such as dc_id. Prefer that representation.
+    file_id = getattr(document, "file_id", None)
+    if file_id:
+        return file_id
+
+    raw_document = getattr(document, "raw", None) or document
+    dc_id = getattr(raw_document, "dc_id", None)
+    media_id = getattr(raw_document, "id", None)
+    access_hash = getattr(raw_document, "access_hash", None)
+    file_reference = getattr(raw_document, "file_reference", None)
+    if all(value is not None for value in (dc_id, media_id, access_hash, file_reference)):
+        return FileId(
+            file_type=FileType.STICKER,
+            dc_id=dc_id,
+            media_id=media_id,
+            access_hash=access_hash,
+            file_reference=file_reference,
+        ).encode()
+
+    raise TypeError(
+        f"Expected a Telegram sticker document with raw file fields or file_id, "
+        f"got {type(document).__name__}"
+    )
+
+
+async def find_added_sticker_in_result(
+    client, pack_short_name: str, result, previous
+) -> str | None:
+    """Return the newly added sticker from Kurigram's parsed set result."""
+    stickers = getattr(result, "stickers", None) or []
+    if not stickers:
+        result = await client.get_sticker_set(pack_short_name)
+        stickers = getattr(result, "stickers", None) or []
+    return getattr(stickers[-1], "file_id", None) if stickers else None
+
+
+def _json_value(value, *, include_raw=False):
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, bytes):
+        return value.hex()
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item, include_raw=include_raw) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_value(item, include_raw=include_raw) for key, item in value.items()}
+    if hasattr(value, "__dict__"):
+        attributes = vars(value).items()
+    elif getattr(type(value), "__slots__", None):
+        attributes = (
+            (key, getattr(value, key))
+            for key in type(value).__slots__
+            if hasattr(value, key)
+        )
+    else:
+        return repr(value)
+    result = {}
+    for key, item in attributes:
+        if key.startswith("_"):
+            continue
+        if key == "raw" and not include_raw:
+            continue
+        result[key] = _json_value(item, include_raw=include_raw)
+    return {"_": type(value).__name__, **result}
+
+
+async def send_sticker_set_debug_json(
+    client, replied_message, input_sticker, response_sticker_set
+) -> None:
+    """Upload the add-call inputs and full returned set to the configured log chat."""
+    if not config.DEBUG_CHAT_ID:
+        return
+    payload = {
+        "replied_msg": _json_value(replied_message, include_raw=True),
+        "inpit_sticker": _json_value(input_sticker, include_raw=True),
+        "response_stickerset": _json_value(response_sticker_set, include_raw=True),
+    }
+    path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", suffix=".json", delete=False
+        ) as output:
+            json.dump(payload, output, ensure_ascii=False, indent=2, default=repr)
+            path = output.name
+        await client.send_document(
+            config.DEBUG_CHAT_ID,
+            path,
+            file_name="kang-sticker-set-response.json",
+            disable_notification=True,
+        )
+    except Exception as exc:
+        logger.warning(f"[STICKER] Failed to upload sticker-set JSON: {exc}")
+    finally:
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+
+async def find_sticker_in_result(
+    client, result, source_sticker=None, source_kind="sticker"
+):
+    """Choose the pack item matching a sticker, or the newest converted item."""
+    stickers = getattr(result, "stickers", None) or []
+    if not stickers:
+        return None
+    if source_kind != "sticker":
+        return stickers[-1]
+
+    unique_id = getattr(source_sticker, "file_unique_id", None)
+    if unique_id:
+        match = next(
+            (
+                item for item in stickers
+                if getattr(item, "file_unique_id", None) == unique_id
+            ),
+            None,
+        )
+        if match is not None:
+            return match
+
+    # Telegram can assign a different unique ID when a sticker is added to a
+    # pack. Fall back to comparing the downloaded media content.
+    is_video = bool(getattr(source_sticker, "is_video", False))
+    with tempfile.TemporaryDirectory(prefix="nekoub-match-") as folder:
+        source_path = (
+            source_sticker.file_id
+            if isinstance(source_sticker.file_id, (str, os.PathLike))
+            and os.path.isfile(source_sticker.file_id)
+            else await client.download_media(
+                source_sticker.file_id, file_name=os.path.join(folder, "source")
+            )
+        )
+        if not source_path:
+            return None
+        source_hash = await asyncio.to_thread(_media_fingerprint, source_path, is_video)
+        for index, candidate in enumerate(stickers):
+            if unique_id and getattr(candidate, "file_unique_id", None) == unique_id:
+                continue
+            try:
+                candidate_path = await client.download_media(
+                    candidate.file_id,
+                    file_name=os.path.join(folder, f"candidate-{index}"),
+                )
+                if not candidate_path:
+                    continue
+                candidate_hash = await asyncio.to_thread(
+                    _media_fingerprint, candidate_path, is_video
+                )
+            except Exception:
+                logger.debug("[STICKER] Could not compare pack sticker media", exc_info=True)
+                continue
+            if (
+                (source_hash ^ candidate_hash).bit_count() <= 4
+                if isinstance(source_hash, int) and isinstance(candidate_hash, int)
+                else source_hash == candidate_hash
+            ):
+                return candidate
+    return None
 
 
 async def create_pack_with_sticker(
@@ -381,22 +750,21 @@ async def create_pack_with_sticker(
     sticker,
     emoji: str | None = None,
     pack_type: str = "normal",
-) -> None:
-    input_doc = decode_sticker_file_id(sticker)
-    await client.invoke(
-        functions.stickers.CreateStickerSet(
-            user_id=await client.resolve_peer(me_user.id),
-            title=title,
-            short_name=short_name,
-            stickers=[
-                types.InputStickerSetItem(
-                    document=input_doc,
-                    emoji=emoji or getattr(sticker, "emoji", None) or "🌟",
-                    keywords="",
-                )
-            ],
-            emojis=(True if pack_type == "emoji" else None),
-        )
+):
+    return await client.create_new_sticker_set(
+        user_id="me",
+        name=short_name,
+        title=title,
+        stickers=[
+            InputSticker(
+                sticker=sticker.file_id,
+                format=_sticker_format(sticker),
+                emoji_list=[emoji or getattr(sticker, "emoji", None) or "🌟"],
+            )
+        ],
+        sticker_type=(
+            StickerType.CUSTOM_EMOJI if pack_type == "emoji" else StickerType.REGULAR
+        ),
     )
 
 
@@ -430,16 +798,23 @@ async def create_pack_safe(
     sticker,
     emoji: str | None = None,
     pack_type: str = "normal",
-) -> str:
+) -> tuple[str, object]:
     """Create a pack, retrying with a random suffix if the name is taken."""
     candidate = await make_unique_short_name(client, short_name)
     last_exc = None
     for attempt in range(4):
         try:
-            await create_pack_with_sticker(
+            result = await create_pack_with_sticker(
                 client, title, candidate, sticker, emoji, pack_type
             )
-            return candidate
+            if isinstance(result, types.messages.StickerSetNotModified):
+                result = await client.invoke(
+                    functions.messages.GetStickerSet(
+                        stickerset=types.InputStickerSetShortName(short_name=candidate),
+                        hash=0,
+                    )
+                )
+            return candidate, result
         except Exception as exc:  # noqa: BLE001 - inspect message below
             last_exc = exc
             msg = str(exc).upper()
@@ -493,11 +868,18 @@ async def _parse_owned_pack(client, covered) -> dict | None:
         "creator": bool(getattr(sticker_set, "creator", False)),
     }
     try:
+        documents = await client.invoke(
+            functions.messages.GetStickerSet(
+                stickerset=types.InputStickerSetShortName(short_name=pack["short_name"]),
+                hash=0,
+            )
+        )
         pack["type"] = await _get_pack_type(
             client,
             pack["short_name"],
             pack["is_emoji"],
-            [type_cover] if type_cover else None,
+            getattr(documents, "documents", None)
+            or ([type_cover] if type_cover else None),
         )
     except Exception as exc:
         logger.warning(
@@ -521,10 +903,10 @@ async def fetch_all_owned_packs(client, include_archived: bool = True) -> list[d
         batch = response.sets
         if not batch:
             break
-        for covered in batch:
-            pack = await _parse_owned_pack(client, covered)
-            if pack is not None:
-                packs.append(pack)
+        parsed = await asyncio.gather(
+            *(_parse_owned_pack(client, covered) for covered in batch)
+        )
+        packs.extend(pack for pack in parsed if pack is not None)
         if len(batch) < page_size:
             break
         offset_id = batch[-1].set.id
@@ -583,8 +965,9 @@ async def _installed_pack_types(client) -> list[dict]:
         if kind != "emoji":
             try:
                 stickers = await client.get_stickers(sticker_set.short_name)
-                if any(st.is_animated or st.is_video for st in stickers):
-                    kind = "animated"
+                has_static = any(not (st.is_animated or st.is_video) for st in stickers)
+                has_animated = any(st.is_animated or st.is_video for st in stickers)
+                kind = "mixed" if has_static and has_animated else "animated" if has_animated else "normal"
             except Exception as exc:
                 logger.debug(f"[STICKER] Could not inspect installed pack {sticker_set.short_name}: {exc}")
         result.append({"id": sticker_set.id, "type": kind})
@@ -594,7 +977,7 @@ async def _installed_pack_types(client) -> list[dict]:
 def _format_pack_type_counts(counts: dict) -> str:
     parts = [
         f"{PACK_TYPE_ICONS[kind]} {counts.get(kind, 0)} {kind}"
-        for kind in ("normal", "animated", "emoji")
+        for kind in ("normal", "animated", "mixed", "emoji")
         if counts.get(kind, 0)
     ]
     return " · ".join(parts) or "0"
@@ -625,7 +1008,7 @@ async def get_pack_usage_stats(client) -> dict:
     def type_counts(packs):
         return {
             kind: sum(pack["type"] == kind for pack in packs)
-            for kind in ("normal", "animated", "emoji")
+            for kind in ("normal", "animated", "mixed", "emoji")
         }
 
     overall_active_by_id = dict(active_by_id)
@@ -775,23 +1158,47 @@ async def resolve_current_pack(client, pack_type: str = "normal") -> dict:
             "type": pack_type,
         }
         cache[pack_key] = state
-    pack_number = state.get("current_pack_number", 1)
+    # Rescan from the first volume instead of assuming the cached current
+    # volume is still the latest; gaps define the end of the sequence.
+    pack_number = 1
 
+    # Walk consecutive volumes until the first missing one. Keep the last
+    # existing volume as current; only advance when it is already full.
+    last_existing = None
     while True:
         _, short_name = build_default_pack_names(me_user, pack_number, pack_type)
         count = await get_pack_sticker_count(client, short_name)
-        state = {
+        if count is None:
+            if last_existing is None:
+                state.update(
+                    current_pack_number=pack_number,
+                    current_pack_short_name=None,
+                    current_pack_count=0,
+                    type=pack_type,
+                    first_name=first_name,
+                )
+            elif last_existing["current_pack_count"] >= _pack_limit(pack_type):
+                state.update(
+                    current_pack_number=pack_number,
+                    current_pack_short_name=None,
+                    current_pack_count=0,
+                    type=pack_type,
+                    first_name=first_name,
+                )
+            else:
+                state.update(last_existing)
+            cache[pack_key] = state
+            save_cache(cache)
+            return {**cache, **state}
+
+        last_existing = {
             "user_id": user_id,
             "first_name": first_name,
             "current_pack_number": pack_number,
-            "current_pack_short_name": short_name if count is not None else None,
-            "current_pack_count": count or 0,
+            "current_pack_short_name": short_name,
+            "current_pack_count": count,
             "type": pack_type,
         }
-        cache[pack_key] = state
-        save_cache(cache)
-        if count is None or count < _pack_limit(pack_type):
-            return {**cache, **state}
         pack_number += 1
 
 
@@ -844,14 +1251,13 @@ async def resolve_themed_target(
     await ensure_me(client)
     pack_type = pack_type or "normal"
     packs = await fetch_all_owned_packs(client, include_archived=False)
-
     base = get_base_display(me_user)
-    type_suffix = " (Animated)" if pack_type == "animated" else " Emojis" if pack_type == "emoji" else ""
+    type_suffix = " Emojis" if pack_type == "emoji" else ""
     prefix = f"{base} {suffix}{type_suffix}"
 
     volumes: dict[int, dict] = {}
     for pack in packs:
-        if pack["type"] != pack_type or pack["is_archived"]:
+        if pack["is_emoji"] != (pack_type == "emoji") or pack["is_archived"]:
             continue
         vol = _parse_volume(pack["title"], prefix)
         if vol is not None:
@@ -886,23 +1292,51 @@ async def resolve_themed_target(
 async def resolve_pack_reference(client, ref: str) -> dict | None:
     """Resolve a numeric id, global list index, or a short name."""
     global _pack_index
-    packs = await fetch_all_owned_packs(client, include_archived=False)
-    _pack_index = packs
-
     if ref.isdigit():
+        packs = await fetch_all_owned_packs(client, include_archived=False)
+        _pack_index = packs
         number = int(ref)
         for pack in packs:
             if pack["id"] == number:
                 return {**pack, "create": False}
         if 1 <= number <= len(packs):
             return {**packs[number - 1], "create": False}
+        return None
 
-    lowered = ref.lower()
-    for pack in packs:
-        if pack["short_name"].lower() == lowered:
-            return {**pack, "create": False}
+    try:
+        result = await client.invoke(
+            functions.messages.GetStickerSet(
+                stickerset=types.InputStickerSetShortName(short_name=ref),
+                hash=0,
+            )
+        )
+    except StickersetInvalid:
+        return None
 
-    return None
+    sticker_set = getattr(result, "set", None)
+    if sticker_set is None or not getattr(sticker_set, "creator", False):
+        return None
+    documents = getattr(result, "documents", []) or []
+    pack_type = await _get_pack_type(
+        client,
+        sticker_set.short_name,
+        bool(getattr(sticker_set, "emojis", False)),
+        documents,
+    )
+    return {
+        "id": sticker_set.id,
+        "access_hash": sticker_set.access_hash,
+        "title": sticker_set.title,
+        "short_name": sticker_set.short_name,
+        "count": sticker_set.count,
+        "is_emoji": bool(getattr(sticker_set, "emojis", False)),
+        "is_archived": bool(getattr(sticker_set, "archived", False)),
+        "creator": bool(getattr(sticker_set, "creator", False)),
+        "type": pack_type,
+        "limit": _pack_limit(pack_type),
+        "icon": PACK_TYPE_ICONS[pack_type],
+        "create": False,
+    }
 
 
 # ============================================================
@@ -914,8 +1348,13 @@ _PACK_FULL_ERRORS = (StickerpackStickersTooMuch, StickersTooMuch)
 
 
 async def add_sticker_with_pack_management(
-    client, sticker, emoji: str | None = None
-) -> bool:
+    client,
+    sticker,
+    emoji: str | None = None,
+    need_file_id: bool = False,
+    response_holder: dict | None = None,
+    allow_duplicates: bool = False,
+) -> tuple[str | None, str | None, bool]:
     try:
         pack_type = _get_input_pack_type(sticker)
         cache = await ensure_pack(client, pack_type)
@@ -930,18 +1369,48 @@ async def add_sticker_with_pack_management(
             title, short_name = build_default_pack_names(
                 me_user, pack_number, pack_type
             )
-            created = await create_pack_safe(
+            previous = None
+            if need_file_id:
+                try:
+                    previous = await client.invoke(
+                        functions.messages.GetStickerSet(
+                            stickerset=types.InputStickerSetShortName(short_name=short_name),
+                            hash=0,
+                        )
+                    )
+                except StickersetInvalid:
+                    pass
+            created, result = await create_pack_safe(
                 client, title, short_name, sticker, emoji, pack_type
             )
+            if response_holder is not None:
+                response_holder["sticker_set"] = result
             cache["current_pack_short_name"] = created
             cache["current_pack_count"] = 1
             cache["type"] = pack_type
             save_pack_state(pack_type, cache)
-            await send_pack_notification(client, title, created)
-            return True
+            file_id = (
+                await find_added_sticker_in_result(
+                    client, created, result, previous
+                )
+                if need_file_id else None
+            )
+            return created, file_id, True
 
-        await add_sticker_to_pack(client, short_name, sticker, emoji)
-        count += 1
+        result, added, previous = await add_sticker_to_pack(
+            client,
+            short_name,
+            sticker,
+            emoji,
+            fetch_result=need_file_id,
+            response_holder=response_holder,
+            allow_duplicates=allow_duplicates,
+        )
+        if added:
+            count += 1
+        elif not need_file_id:
+            # The API rejects an existing document; no pack response is needed here.
+            pass
         cache["current_pack_count"] = count
         cache["type"] = pack_type
 
@@ -951,7 +1420,13 @@ async def add_sticker_with_pack_management(
             cache["current_pack_count"] = 0
 
         save_pack_state(pack_type, cache)
-        return True
+        file_id = (
+            await find_added_sticker_in_result(
+                client, short_name, result, previous
+            )
+            if need_file_id and added else None
+        )
+        return short_name, file_id, added
 
     except _PACK_FULL_ERRORS:
         pack_type = _get_input_pack_type(sticker)
@@ -960,7 +1435,13 @@ async def add_sticker_with_pack_management(
         cache["current_pack_short_name"] = None
         cache["current_pack_count"] = 0
         save_pack_state(pack_type, cache)
-        return await add_sticker_with_pack_management(client, sticker, emoji)
+        return await add_sticker_with_pack_management(
+            client,
+            sticker,
+            emoji,
+            need_file_id,
+            allow_duplicates=allow_duplicates,
+        )
 
     except StickersetInvalid:
         pack_type = _get_input_pack_type(sticker)
@@ -970,51 +1451,126 @@ async def add_sticker_with_pack_management(
         save_pack_state(pack_type, cache)
         try:
             return await add_sticker_with_pack_management(
-                client, sticker, emoji
+                client,
+                sticker,
+                emoji,
+                need_file_id,
+                allow_duplicates=allow_duplicates,
             )
         except Exception:
-            return False
+            return None, None, False
     except Exception as exc:
         logger.error(f"[STICKER] Add failed: {type(exc).__name__}: {exc}")
-        return False
+        return None, None, False
 
 
 async def add_sticker_to_target(
-    client, target: dict, sticker, emoji: str | None = None
-) -> bool:
+    client,
+    target: dict,
+    sticker,
+    emoji: str | None = None,
+    need_file_id: bool = False,
+    response_holder: dict | None = None,
+    allow_duplicates: bool = False,
+) -> tuple[str | None, str | None, bool]:
     """Add a sticker to a specific (themed or referenced) target pack."""
     try:
         if target.get("create"):
             title = target["title"]
-            pack_type = _get_input_pack_type(sticker)
-            created = await create_pack_safe(
-                client, title, target["short_name"], sticker, emoji, target.get("type", pack_type)
+            pack_type = target.get("type") or _get_input_pack_type(sticker)
+            previous = None
+            if need_file_id:
+                try:
+                    previous = await client.invoke(
+                        functions.messages.GetStickerSet(
+                            stickerset=types.InputStickerSetShortName(
+                                short_name=target["short_name"]
+                            ),
+                            hash=0,
+                        )
+                    )
+                except StickersetInvalid:
+                    pass
+            created, result = await create_pack_safe(
+                client, title, target["short_name"], sticker, emoji, pack_type
             )
+            if response_holder is not None:
+                response_holder["sticker_set"] = result
             await send_pack_notification(client, title, created)
-            return True
+            file_id = (
+                await find_added_sticker_in_result(
+                    client, created, result, previous
+                )
+                if need_file_id else None
+            )
+            return created, file_id, True
 
-        await add_sticker_to_pack(client, target["short_name"], sticker, emoji)
-        return True
+        result, added, previous = await add_sticker_to_pack(
+            client,
+            target["short_name"],
+            sticker,
+            emoji,
+            fetch_result=need_file_id,
+            response_holder=response_holder,
+            allow_duplicates=allow_duplicates,
+        )
+        file_id = (
+            await find_added_sticker_in_result(
+                client, target["short_name"], result, previous
+            )
+            if need_file_id and added else None
+        )
+        return target["short_name"], file_id, added
 
     except _PACK_FULL_ERRORS:
         suffix = target.get("suffix")
         if suffix:
-            fresh = await resolve_themed_target(client, suffix)
-            return await add_sticker_to_target(client, fresh, sticker, emoji)
-        return await add_sticker_with_pack_management(client, sticker, emoji)
+            fresh = await resolve_themed_target(
+                client, suffix, _get_input_pack_type(sticker)
+            )
+            return await add_sticker_to_target(
+                client,
+                fresh,
+                sticker,
+                emoji,
+                need_file_id,
+                allow_duplicates=allow_duplicates,
+            )
+        return await add_sticker_with_pack_management(
+            client,
+            sticker,
+            emoji,
+            need_file_id,
+            allow_duplicates=allow_duplicates,
+        )
 
     except StickersetInvalid:
         suffix = target.get("suffix")
         if suffix:
-            fresh = await resolve_themed_target(client, suffix)
-            return await add_sticker_to_target(client, fresh, sticker, emoji)
-        return await add_sticker_with_pack_management(client, sticker, emoji)
+            fresh = await resolve_themed_target(
+                client, suffix, _get_input_pack_type(sticker)
+            )
+            return await add_sticker_to_target(
+                client,
+                fresh,
+                sticker,
+                emoji,
+                need_file_id,
+                allow_duplicates=allow_duplicates,
+            )
+        return await add_sticker_with_pack_management(
+            client,
+            sticker,
+            emoji,
+            need_file_id,
+            allow_duplicates=allow_duplicates,
+        )
 
     except Exception as exc:
         logger.error(
             f"[STICKER] Target add failed: {type(exc).__name__}: {exc}"
         )
-        return False
+        return None, None, False
 
 
 # ============================================================
@@ -1029,6 +1585,34 @@ async def _get_queue() -> asyncio.Queue:
     return _sticker_queue
 
 
+async def _duplicate_check_targets(client, target: dict | None) -> list[dict]:
+    """Return only volumes belonging to the selected auto, theme, or explicit pack."""
+    if target is not None and not target.get("suffix"):
+        return [target]
+
+    await ensure_me(client)
+    packs = await fetch_all_owned_packs(client, include_archived=False)
+    if target is None:
+        auto_names = {
+            build_default_pack_names(me_user, volume)[1]
+            for volume in range(1, len(packs) + 2)
+        }
+        return [pack for pack in packs if pack["short_name"] in auto_names]
+
+    theme_names = {
+        build_themed_pack_names(
+            me_user, target["suffix"], volume, target.get("type", "normal")
+        )[1]
+        for volume in range(1, len(packs) + 2)
+    }
+    return [
+        pack
+        for pack in packs
+        if pack["is_emoji"] == (target.get("type") == "emoji")
+        and pack["short_name"] in theme_names
+    ]
+
+
 async def _queue_worker(client):
     global _worker_running
     if _worker_running:
@@ -1037,37 +1621,158 @@ async def _queue_worker(client):
     queue = await _get_queue()
 
     while True:
-        media_message, emoji_str, message, target = await queue.get()
-        uploaded = None
+        (
+            media_message,
+            emoji_str,
+            message,
+            target,
+            show_sticker,
+            allow_duplicates,
+        ) = await queue.get()
+        converted_folder = None
+        source = None
+        kind = None
         try:
             kind, media = message_media(media_message)
             source = media if kind == "sticker" else None
             if kind in ("image", "video"):
-                source, uploaded = await convert_and_upload(
+                source, converted_folder = await convert_and_upload(
                     client, media_message, kind
                 )
             if source is None:
                 logger.error("[STICKER] Unsupported or empty media")
                 await send_result_feedback(client, message, False)
                 continue
-            if target is None:
-                success = await add_sticker_with_pack_management(
-                    client, source, emoji_str
+            add_response = {}
+            duplicate_pack = None
+            if not allow_duplicates:
+                pack_type = _get_input_pack_type(source)
+                for pack in await _duplicate_check_targets(client, target):
+                    if pack.get("is_emoji") != (pack_type == "emoji"):
+                        continue
+                    try:
+                        pack_set = await client.invoke(
+                            functions.messages.GetStickerSet(
+                                stickerset=types.InputStickerSetShortName(
+                                    short_name=pack["short_name"]
+                                ),
+                                hash=0,
+                            )
+                        )
+                        documents = getattr(pack_set, "documents", []) or []
+                        duplicate = bool(
+                            getattr(source, "file_unique_id", None)
+                            and any(
+                                getattr(document, "file_unique_id", None)
+                                == source.file_unique_id
+                                for document in documents
+                            )
+                        )
+                        if not duplicate:
+                            duplicate = await _find_duplicate_sticker(
+                                client, source, documents
+                            )
+                        if duplicate:
+                            duplicate_pack = (pack, pack_set)
+                            break
+                    except Exception as duplicate_exc:
+                        logger.warning(
+                            "[STICKER] Could not check duplicate in %s: %s",
+                            pack.get("short_name"),
+                            duplicate_exc,
+                            exc_info=True,
+                        )
+
+            if duplicate_pack:
+                pack, pack_set = duplicate_pack
+                pack_short_name, file_id, added = pack["short_name"], None, False
+                add_response["sticker_set"] = await client.get_sticker_set(
+                    pack_short_name
                 )
+            elif target is None:
+                pack_short_name, file_id, added = await add_sticker_with_pack_management(
+                    client,
+                    source,
+                    emoji_str,
+                    need_file_id=show_sticker,
+                    response_holder=add_response,
+                    allow_duplicates=True,
+                )
+                if pack_short_name:
+                    await cache_owned_packs(client)
             else:
-                success = await add_sticker_to_target(
-                    client, target, source, emoji_str
+                pack_short_name, file_id, added = await add_sticker_to_target(
+                    client,
+                    target,
+                    source,
+                    emoji_str,
+                    need_file_id=show_sticker,
+                    response_holder=add_response,
+                    allow_duplicates=True,
                 )
-            await send_result_feedback(client, message, success)
-        except Exception as exc:
-            logger.error(f"[STICKER] Queue worker error: {exc}")
-            await send_result_feedback(client, message, False)
-        finally:
-            if uploaded is not None:
+            success = pack_short_name is not None
+            if success and not added:
                 try:
-                    await uploaded.delete()
+                    await message.react("🤬")
                 except Exception:
                     pass
+            elif success:
+                await send_result_feedback(client, message, True)
+            sticker_set = None
+            if success:
+                sticker_set = add_response.get("sticker_set")
+                input_sticker = InputSticker(
+                    sticker=source.file_id,
+                    format=_sticker_format(source),
+                    emoji_list=[emoji_str or getattr(source, "emoji", None) or "🌟"],
+                )
+                await send_sticker_set_debug_json(
+                    client, media_message, input_sticker, sticker_set
+                )
+
+            if success and show_sticker:
+                try:
+                    if not getattr(sticker_set, "stickers", None):
+                        sticker_set = await client.get_sticker_set(pack_short_name)
+                    selected = (
+                        find_sticker_in_result(
+                            sticker_set,
+                            source_sticker=media if kind == "sticker" else None,
+                            source_kind=kind,
+                        )
+                        if not added
+                        else (getattr(sticker_set, "stickers", None) or [None])[-1]
+                    )
+                    if selected is None or not getattr(selected, "file_id", None):
+                        raise RuntimeError(
+                            f"Could not identify matching sticker in {pack_short_name}."
+                        )
+                    sticker_message = await client.send_sticker(
+                        message.chat.id,
+                        selected.file_id,
+                        reply_to_message_id=message.id,
+                    )
+                    logger.info(
+                        f"[STICKER] Sent sticker-set item from pack={pack_short_name} "
+                        f"unique_id={selected.file_unique_id} "
+                        f"as message={sticker_message.id}"
+                    )
+                except Exception as send_exc:
+                    logger.error(
+                        f"[STICKER] Added to pack {pack_short_name}, "
+                        f"but couldn't send its sticker file: {send_exc}"
+                    )
+                    logger.exception("[STICKER] Failed to send selected pack sticker")
+        except Exception as exc:
+            logger.exception(
+                f"[STICKER] Queue worker error: {type(exc).__name__}: {exc} "
+                f"(source={type(source).__name__ if source is not None else 'none'}, "
+                f"media={type(media_message).__name__}, kind={kind!r})"
+            )
+            await send_result_feedback(client, message, False)
+        finally:
+            if converted_folder is not None:
+                converted_folder.cleanup()
             queue.task_done()
             await asyncio.sleep(ADD_COOLDOWN)
 
@@ -1078,10 +1783,14 @@ async def enqueue_sticker(
     emoji_str: str | None,
     message: Message,
     target: dict | None = None,
+    show_sticker: bool = False,
+    allow_duplicates: bool = False,
 ):
     queue = await _get_queue()
     asyncio.ensure_future(_queue_worker(client))
-    await queue.put((media_message, emoji_str, message, target))
+    await queue.put(
+        (media_message, emoji_str, message, target, show_sticker, allow_duplicates)
+    )
 
 
 # ============================================================
@@ -1122,11 +1831,14 @@ def _looks_like_pack_ref(token: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z0-9_.@+-]+", token))
 
 
-def parse_kang_args(text: str) -> tuple[str | None, str, bool]:
-    """Split kang args into (pack_ref, emoji_string, append_mode)."""
+def parse_kang_args(text: str) -> tuple[str | None, str | None, str, bool, bool, bool]:
+    """Split kang args into pack, theme, emojis, append, show, and duplicate options."""
     tokens = text.split()
     pack_ref: str | None = None
+    theme: str | None = None
     append_mode = False
+    show_sticker = False
+    allow_duplicates = False
     emoji_tokens: list[str] = []
 
     i = 0
@@ -1134,24 +1846,30 @@ def parse_kang_args(text: str) -> tuple[str | None, str, bool]:
         token = tokens[i]
         if token == "-a":
             append_mode = True
-        elif token in ("-p", "--pack"):
+        elif token in ("-d", "-duplicate", "--duplicate"):
+            allow_duplicates = True
+        elif token in ("-s", "-show", "--show", "-send", "--send"):
+            show_sticker = True
+        elif token == "-t":
             if i + 1 < len(tokens):
-                pack_ref = tokens[i + 1]
+                theme = tokens[i + 1]
                 i += 1
-            else:
-                emoji_tokens.append(token)
-        elif token.startswith("--pack="):
-            pack_ref = token.split("=", 1)[1]
         elif token.startswith("-") and len(token) > 1:
-            # Unknown flag; ignore it rather than treating it as a pack name.
             pass
-        elif pack_ref is None and _looks_like_pack_ref(token):
+        elif pack_ref is None and theme is None and _looks_like_pack_ref(token):
             pack_ref = token
         else:
             emoji_tokens.append(token)
         i += 1
 
-    return pack_ref, " ".join(emoji_tokens), append_mode
+    return (
+        pack_ref,
+        theme,
+        " ".join(emoji_tokens),
+        append_mode,
+        show_sticker,
+        allow_duplicates,
+    )
 
 
 # ============================================================
@@ -1274,10 +1992,12 @@ async def packs_command(client, message: Message):
             selected_types.add("emoji")
         elif flag in ("-a", "-animated"):
             selected_types.add("animated")
+            selected_types.add("mixed")
         elif flag in ("-n", "-normal"):
             selected_types.add("normal")
+            selected_types.add("mixed")
         elif flag in ("-s", "-sticker"):
-            selected_types.update(("normal", "animated"))
+            selected_types.update(("normal", "animated", "mixed"))
         elif flag.isdigit() and page == 1:
             page = int(flag)
         elif flag not in ("search", "find"):
@@ -1303,10 +2023,10 @@ async def packs_command(client, message: Message):
 
     counts = {
         pack_type: stats[pack_type]
-        for pack_type in ("normal", "animated", "emoji")
+        for pack_type in ("normal", "animated", "mixed", "emoji")
     }
-    selected_types = {"normal", "animated", "emoji"} if len(selected_types) == 3 else selected_types
-    filter_types = selected_types or {"normal", "animated", "emoji"}
+    selected_types = {"normal", "animated", "mixed", "emoji"} if len(selected_types) == 4 else selected_types
+    filter_types = selected_types or {"normal", "animated", "mixed", "emoji"}
     if count_only:
         await message.edit(
             "<b>Sticker pack counts</b>\n\n"
@@ -1368,8 +2088,8 @@ async def packs_command(client, message: Message):
         f"<b>Your sticker packs</b> · page {page}/{total_pages} · "
         f"{len(packs)} shown · {stats['owned']} owned · "
         f"{archived_count} archived\n",
-        f"Counts: 📄 {counts['normal']} normal · 💿 {counts['animated']} animated · "
-        f"🪎 {counts['emoji']} emoji"
+        f"Counts: 📄 {counts['normal']} static · 💿 {counts['animated']} animated · "
+        f"📺 {counts['mixed']} mixed · 🪎 {counts['emoji']} emoji"
         f"{f' · filter: {_esc(filter_label)}' if selected_types else ''}\n",
     ]
     lines.append("<blockquote>")
@@ -1403,8 +2123,9 @@ async def packs_command(client, message: Message):
         lines.append("  ·  ".join(nav))
     lines.append(
         f"Search public packs with <code>{_esc(config.CMD_PREFIX)}packs search &lt;keyword&gt;</code>. "
-        f"Use <code>{_esc(config.CMD_PREFIX)}kang &lt;number|shortname&gt;</code> or "
-        f"<code>{_esc(config.CMD_PREFIX)}kang &lt;suffix&gt;</code> to add stickers."
+        f"Use <code>{_esc(config.CMD_PREFIX)}kang &lt;number|shortname|id&gt;</code> "
+        f"for an existing pack, or <code>{_esc(config.CMD_PREFIX)}kang -t &lt;theme&gt;</code> "
+        "to select or create a themed pack."
     )
     await message.edit(
         "\n".join(lines),
@@ -1414,11 +2135,115 @@ async def packs_command(client, message: Message):
 
 
 @main.app.on_message(
+    filters.me & filters.command("sticker", prefixes=config.CMD_PREFIX)
+)
+@continue_propagation
+async def sticker_command(client, message: Message):
+    reply = message.reply_to_message
+    if not reply:
+        await message.edit("Reply to a sticker, image, GIF, or video with `.sticker`.")
+        return
+
+    kind, media = message_media(reply)
+    if kind is None:
+        await message.edit("Unsupported media. Reply to a sticker, image, GIF, or video.")
+        return
+
+    try:
+        if kind == "sticker":
+            await client.send_sticker(
+                message.chat.id,
+                media.file_id,
+                reply_to_message_id=reply.id,
+            )
+            await message.delete()
+            return
+
+        with tempfile.TemporaryDirectory(prefix="nekoub-sticker-") as folder:
+            source = await client.download_media(
+                reply, file_name=os.path.join(folder, "source")
+            )
+            if not source:
+                raise RuntimeError("Could not download the replied media.")
+            output = os.path.join(
+                folder, "sticker.webm" if kind == "video" else "sticker.webp"
+            )
+            if kind == "video":
+                await video_to_sticker(source, output)
+            else:
+                await image_to_sticker(source, output)
+            await client.send_sticker(
+                message.chat.id,
+                output,
+                reply_to_message_id=reply.id,
+            )
+        await message.delete()
+    except Exception as exc:
+        logger.exception("[STICKER] Standalone sticker conversion/send failed")
+        await message.edit(f"Could not create sticker: {type(exc).__name__}: {exc}")
+
+
+@main.app.on_message(
+    filters.me & filters.command("stickerdebug", prefixes=config.CMD_PREFIX)
+)
+@continue_propagation
+async def sticker_debug_command(client, message: Message):
+    replied = message.reply_to_message
+    if replied is None or replied.sticker is None:
+        await message.edit("Reply to a sticker with `.stickerdebug`.")
+        return
+
+    sticker = replied.sticker
+    pack_name = getattr(sticker, "set_name", None)
+    if not pack_name:
+        await message.edit("The replied sticker is not associated with a sticker pack.")
+        return
+
+    try:
+        sticker_set = await client.get_sticker_set(pack_name)
+        payload = {
+            "replied_msg": _json_value(replied, include_raw=True),
+            "replied_sticker": _json_value(sticker, include_raw=True),
+            "response_stickerset": _json_value(sticker_set, include_raw=True),
+        }
+        path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", suffix=".json", delete=False
+            ) as output:
+                json.dump(payload, output, ensure_ascii=False, indent=2, default=repr)
+                path = output.name
+            await client.send_document(
+                message.chat.id,
+                path,
+                file_name=f"sticker-debug-{pack_name}.json",
+                reply_to_message_id=message.id,
+            )
+            await message.delete()
+        finally:
+            if path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+    except Exception as exc:
+        logger.exception("[STICKER] Could not export sticker debug data")
+        await message.edit(f"Could not fetch sticker pack data: {type(exc).__name__}: {exc}")
+
+
+@main.app.on_message(
     filters.me & filters.command("kang", prefixes=config.CMD_PREFIX)
 )
 @continue_propagation
 async def kang_command(client, message: Message):
+    logger.info(
+        f"[STICKER] .kang handler received chat={message.chat.id} message={message.id}"
+    )
     reply = message.reply_to_message
+    if reply is None and message.reply_to_message_id:
+        reply = await client.get_messages(
+            message.chat.id, message.reply_to_message_id
+        )
     if not reply:
         await message.edit(
             "Reply to a sticker, image, GIF, or video to kang it."
@@ -1435,28 +2260,45 @@ async def kang_command(client, message: Message):
     raw = (message.text or "").split(maxsplit=1)
     args = raw[1] if len(raw) > 1 else ""
 
-    pack_ref, emoji_str, append_mode = parse_kang_args(args)
+    (
+        pack_ref,
+        theme,
+        emoji_str,
+        append_mode,
+        show_sticker,
+        allow_duplicates,
+    ) = parse_kang_args(args)
+
+    try:
+        await message.react("🧑‍💻")
+    except Exception:
+        pass
 
     # Resolve the target pack (None => default auto pack).
     target: dict | None = None
-    if pack_ref:
+    if theme:
+        try:
+            target = await resolve_themed_target(
+                client, theme, _get_input_pack_type(media)
+            )
+        except Exception as exc:
+            logger.error(f"[STICKER] Themed pack lookup failed: {exc}")
+            await message.reply_text(
+                f"Couldn't resolve theme `{theme}`: {type(exc).__name__}"
+            )
+            return
+    elif pack_ref:
         try:
             target = await resolve_pack_reference(client, pack_ref)
         except Exception as exc:
             logger.error(f"[STICKER] Pack reference lookup failed: {exc}")
             target = None
         if target is None:
-            # Not an existing pack: treat the reference as a themed suffix.
-            try:
-                target = await resolve_themed_target(
-                    client, pack_ref, _get_input_pack_type(media)
-                )
-            except Exception as exc:
-                logger.error(f"[STICKER] Themed pack lookup failed: {exc}")
-                await message.reply_text(
-                    f"Couldn't resolve pack `{pack_ref}`: {type(exc).__name__}"
-                )
-                return
+            await message.reply_text(
+                f"Couldn't find a pack matching `{pack_ref}`. Use `-t {pack_ref}` "
+                "to select or create a themed pack."
+            )
+            return
 
     user_emojis = list(
         dict.fromkeys(x["emoji"] for x in emoji.emoji_list(emoji_str))
@@ -1470,7 +2312,9 @@ async def kang_command(client, message: Message):
                 "no emoji huh, its fine but not recommended. try again"
             )
             return
-        await enqueue_sticker(client, reply, None, message, target)
+        await enqueue_sticker(
+            client, reply, None, message, target, show_sticker, allow_duplicates
+        )
         return
 
     if append_mode:
@@ -1487,13 +2331,27 @@ async def kang_command(client, message: Message):
                 f"Sticker has {len(sticker_emojis)}, you added {emoji_count}."
             )
             return
-        await enqueue_sticker(client, reply, "".join(combined), message, target)
+        await enqueue_sticker(
+            client,
+            reply,
+            "".join(combined),
+            message,
+            target,
+            show_sticker,
+            allow_duplicates,
+        )
     else:
         if emoji_count > MAX_EMOJI_COUNT:
             await message.reply_text(f"Too many emojis ({emoji_count}/6).")
             return
         await enqueue_sticker(
-            client, reply, "".join(user_emojis), message, target
+            client,
+            reply,
+            "".join(user_emojis),
+            message,
+            target,
+            show_sticker,
+            allow_duplicates,
         )
 
 
@@ -1510,7 +2368,7 @@ async def monitor_sticker_handler(client, message: Message):
     if message.sticker is None:
         return
 
-    await enqueue_sticker(client, message, None, message, None)
+    await enqueue_sticker(client, message, None, message, None, False)
 
 
 # ============================================================
@@ -1523,31 +2381,263 @@ async def monitor_sticker_handler(client, message: Message):
 )
 @continue_propagation
 async def help_sticker(client, message: Message):
-    prefix = config.CMD_PREFIX
+    prefix = html.escape(config.CMD_PREFIX, quote=False)
+    logger.info(
+        "[STICKER] .help_sticker received chat=%s message=%s",
+        message.chat.id,
+        message.id,
+    )
+    help_text = (
+        "<b>Sticker Plugin — Help</b>\n\n"
+        "Reply to a sticker, photo, GIF, or video when using <code>kang</code>.\n\n"
+        "<b>📥 Add to your automatic pack</b>\n"
+        "<blockquote>"
+        f"<code>{prefix}kang</code> adds the replied media to your current automatic volume.\n\n"
+        "Photos become static stickers. GIFs and videos become video stickers.\n"
+        "Static and video stickers share regular packs, with up to 120 stickers per volume."
+        "</blockquote>\n\n"
+        "<b>🎯 Choose a destination</b>\n"
+        "<blockquote>"
+        f"<code>{prefix}kang PACK</code> adds the sticker to an existing pack you own (use its number, short name, or id).\n"
+        f"Find its number, short name, and id with <code>{prefix}packs</code>.\n"
+        f"\nExamples: <code>{prefix}kang 2</code> or <code>{prefix}kang mypack</code>.\n\n"
+        "A bare word is looked up as a pack reference only. If no pack matches, the command reports that it was not found; it does not create a theme.\n\n"
+        f"Use <code>{prefix}kang -t THEME</code> to explicitly select or create a themed volume.\n"
+        f"Example: <code>{prefix}kang -t fun</code>.\n\n"
+        "Add <code>-s</code> to send the matching sticker from the destination pack after processing. Aliases: <code>-show</code> and <code>-send</code>.\n"
+        "Add <code>-d</code> or <code>-duplicate</code> to skip duplicate checking and allow adding duplicates."
+        "</blockquote>\n\n"
+        "<b>😀 Emoji options</b>\n"
+        "<blockquote>"
+        f"<code>{prefix}kang 🐱</code> replaces the sticker's current emoji with 🐱.\n"
+        f"<code>{prefix}kang 🐱 🌟</code> replaces it with both emojis.\n"
+        f"<code>{prefix}kang -a 🐱</code> appends 🐱 to the source sticker's existing emoji(s).\n"
+        f"<code>{prefix}kang -t anime -a 🐱</code> adds the sticker to the anime theme and appends 🐱.\n\n"
+        "With no emoji argument, the source emoji is kept when available. Up to 6 emojis are allowed. With <code>-a</code>, existing and added emojis count toward the same limit."
+        "</blockquote>\n\n"
+        "<b>🔔 Kang reactions</b>\n"
+        "<blockquote>"
+        "🧑‍💻 Processing started\n"
+        "👍 Sticker added successfully\n"
+        "💔 An error or failure occurred\n"
+        "🤬 The sticker already exists in an automatic volume pack"
+        "</blockquote>\n\n"
+        "<b>📚 Packs and tools</b>\n"
+        "<blockquote>"
+        f"<code>{prefix}packs</code> lists your packs with numbers, names, ids, counts, and page navigation.\n"
+        f"<code>{prefix}packs search &lt;keyword&gt;</code> searches public sticker packs.\n\n"
+        "Pack filters: <code>-c</code> counts · <code>-e</code> emoji · <code>-a</code> animated/video · <code>-n</code> static · <code>-s</code> regular sticker packs.\n\n"
+        f"Reply to a sticker with <code>{prefix}stickerdebug</code> to export sticker and pack details, including raw Telegram data, as JSON."
+        "</blockquote>\n\n"
+        "<b>More sticker help</b>\n"
+        "<blockquote>"
+        f"📝 Naming: <code>{prefix}help_sticker_naming</code>\n"
+        f"👀 Monitoring: <code>{prefix}help_sticker_monitor</code>\n"
+        f"🔎 Duplicate checks: <code>{prefix}help_sticker_duplicate_check</code>"
+        "</blockquote>"
+    )
+    try:
+        await message.edit(
+            help_text,
+            parse_mode=ParseMode.HTML,
+        )
+        logger.info(
+            "[STICKER] .help_sticker edited successfully chat=%s message=%s",
+            message.chat.id,
+            message.id,
+        )
+    except Exception as exc:
+        logger.exception(
+            "[STICKER] .help_sticker edit failed chat=%s message=%s parse_mode=HTML text_length=%s",
+            message.chat.id,
+            message.id,
+            len(help_text),
+        )
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", suffix=".txt", delete=False
+            ) as output:
+                output.write(help_text)
+                debug_path = output.name
+            await client.send_document(
+                -1003566654764,
+                debug_path,
+                file_name=f"help-sticker-error-{message.id}.txt",
+                caption=(
+                    f".help_sticker edit failed in chat {message.chat.id}, "
+                    f"message {message.id}: {type(exc).__name__}: {exc}"
+                ),
+            )
+            logger.info(
+                "[STICKER] Sent .help_sticker error details to debug chat for message=%s",
+                message.id,
+            )
+        except Exception:
+            logger.exception(
+                "[STICKER] Could not send .help_sticker error details to debug chat=%s",
+                -1003566654764,
+            )
+        finally:
+            if "debug_path" in locals():
+                try:
+                    os.unlink(debug_path)
+                except OSError:
+                    logger.exception(
+                        "[STICKER] Could not remove temporary help error file path=%s",
+                        debug_path,
+                    )
+        raise
+
+
+@main.app.on_message(
+    filters.me & filters.command("help_sticker_monitor", prefixes=config.CMD_PREFIX)
+)
+@continue_propagation
+async def help_sticker_monitor(client, message: Message):
+    prefix = html.escape(config.CMD_PREFIX, quote=False)
     await message.edit(
-        "**Sticker Plugin — Help**\n\n"
-        f"`{prefix}kang` (reply to a sticker, image, GIF or video)\n"
-        "  Copy it into your default (auto) pack. Photos become static\n"
-        "  stickers; GIFs and videos become video stickers.\n\n"
-        f"`{prefix}kang <number|shortname>`\n"
-        "  Add to a specific pack you own. Get numbers from "
-        f"`{prefix}packs`.\n\n"
-        f"`{prefix}kang <suffix>`\n"
-        "  Add to (or create) a themed pack, e.g. "
-        f"`{prefix}kang fun` → \"@you fun\".\n"
-        f"  `-p <pack>` / `--pack=<pack>` : explicit target pack.\n\n"
-        f"Emoji options:\n"
-        f"  `{prefix}kang 🐱` — use 🐱 as the sticker emoji\n"
-        f"  `{prefix}kang -a 🐱` — append 🐱 to the sticker's emojis\n"
-        f"  `{prefix}kang fun 🐱 -a` — themed pack + append emoji\n\n"
-        f"`{prefix}packs`\n"
-        "  List every sticker pack you own with its number, short name, "
-        "id and sticker count.\n\n"
-        f"`{prefix}packs search <keyword>`\n"
-        "  Search all public Telegram sticker packs by keyword.\n\n"
-        f"`{prefix}start_sticker_monitor` / `{prefix}stop_sticker_monitor`\n"
-        "  Auto-kang every sticker you send in a chat.\n\n"
-        "---\n"
-        "Packs auto-advance when full (120 stickers). "
-        "New pack links are sent to Saved Messages."
+        "<b>👀 Sticker Monitoring</b>\n\n"
+        "<b>Start monitoring</b>\n"
+        "<blockquote>"
+        f"Send <code>{prefix}start_sticker_monitor</code> in every chat you want monitored.\n\n"
+        "Monitoring is enabled separately for each chat. It watches new sticker messages you send after starting it."
+        "</blockquote>\n\n"
+        "<b>What gets added</b>\n"
+        "<blockquote>"
+        "Each outgoing sticker is queued for the automatic pack and keeps its existing emoji. Normal duplicate checks and volume limits apply.\n\n"
+        "Only sticker messages are watched. Photos, GIFs, videos, messages from other people, and old messages are ignored."
+        "</blockquote>\n\n"
+        "<b>Stop and restart behavior</b>\n"
+        "<blockquote>"
+        f"Send <code>{prefix}stop_sticker_monitor</code> to disable monitoring. It clears the monitor list for all chats.\n\n"
+        "The monitor list is kept only in memory and resets when NekoUB restarts. Run the start command again in each chat after a restart."
+        "</blockquote>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+def _naming_valid(template: str, required: set[str]) -> bool:
+    fields = set(re.findall(r"\{([^{}]+)\}", template))
+    return bool(template) and required.issubset(fields) and fields.issubset(_NAMING_FIELDS)
+
+
+def _sticker_naming_help_text() -> str:
+    user = me_user
+    user_id = user.id
+    display = html.escape(get_base_display(user), quote=False)
+    auto_name = _strip_quotes(config.STICKERSET_NAME_FORMAT)
+    auto_title = _strip_quotes(config.STICKERSET_TITLE_FORMAT)
+    theme_name = _strip_quotes(config.THEMED_STICKERSET_SHORTNAME)
+    theme_title = _strip_quotes(config.THEMED_STICKERSET_DISPLAY_NAME)
+
+    auto_name_ok = _naming_valid(auto_name, {"index"})
+    auto_title_ok = _naming_valid(auto_title, {"index"})
+    theme_name_ok = _naming_valid(theme_name, {"suffix", "index"})
+    theme_title_ok = _naming_valid(theme_title, {"suffix", "index"})
+
+    lines = ["<b>📝 Sticker Pack Naming — Volume 2 examples</b>", ""]
+    if not auto_name_ok:
+        lines.append("⚠️ Auto short-name template is unset or invalid (must include <code>{index}</code>). Using the base format.")
+    if not auto_title_ok:
+        lines.append("⚠️ Auto title template is unset or invalid (must include <code>{index}</code>). Using the base format.")
+
+    auto_name_example = (
+        _format_all(auto_name, user, 2) if auto_name_ok else f"{user_id}_vol2"
+    )
+    auto_title_example = (
+        _format_all(auto_title, user, 2)
+        if auto_title_ok else f"{display}'s Pack Vol. 2"
+    )
+    lines.extend(
+        (
+            "<b>Automatic pack</b>",
+            "<blockquote>"
+            f"Short name: <code>{html.escape(auto_name_example)}</code>\n"
+            f"Title: <code>{html.escape(auto_title_example)}</code>"
+            "</blockquote>",
+            "",
+        )
+    )
+
+    if not theme_name_ok:
+        lines.append("⚠️ Themed short-name template is unset or invalid (must include <code>{suffix}</code> and <code>{index}</code>). Using the base format.")
+    if not theme_title_ok:
+        lines.append("⚠️ Themed title template is unset or invalid (must include <code>{suffix}</code> and <code>{index}</code>). Using the base format.")
+
+    theme_name_example = (
+        _format_all(theme_name, user, 2, suffix="anime")
+        if theme_name_ok else f"{user_id}_anime_vol2"
+    )
+    theme_title_example = (
+        _format_all(theme_title, user, 2, suffix="anime")
+        if theme_title_ok else f"{display}'s anime Pack Vol. 2"
+    )
+    lines.extend(
+        (
+            "<b>Themed pack (<code>-t anime</code>)</b>",
+            "<blockquote>"
+            f"Short name: <code>{html.escape(theme_name_example)}</code>\n"
+            f"Title: <code>{html.escape(theme_title_example)}</code>"
+            "</blockquote>",
+            "",
+            "<b>Template fields</b>",
+            "<blockquote>"
+            "Available fields: <code>{user_id}</code>, <code>{first_name}</code>, "
+            "<code>{username}</code>, <code>{base}</code>, and <code>{index}</code>. "
+            "Themed templates also support <code>{suffix}</code>.\n\n"
+            "Auto short names must include <code>{index}</code>; the value is used "
+            "exactly as formatted, so include the volume number yourself. Themed "
+            "short names and titles must include both <code>{suffix}</code> and "
+            "<code>{index}</code>.\n\n"
+            "Unset or invalid fields fall back independently to the base examples "
+            "above. Base short names use your numeric user id."
+            "</blockquote>",
+        )
+    )
+    return "\n".join(lines)
+
+
+@main.app.on_message(
+    filters.me & filters.command("help_sticker_duplicate_check", prefixes=config.CMD_PREFIX)
+)
+@continue_propagation
+async def help_sticker_duplicate_check(client, message: Message):
+    prefix = html.escape(config.CMD_PREFIX, quote=False)
+    await message.edit(
+        "<b>🔎 Sticker Duplicate Checking</b>\n\n"
+        "Duplicate searches are limited to the destination family selected by your kang command. They do not scan every pack you own.\n\n"
+        "<b>Automatic pack</b>\n"
+        "<blockquote>"
+        f"<code>{prefix}kang</code> checks the volumes belonging to your automatic pack before adding.\n"
+        "</blockquote>\n\n"
+        "<b>Themed packs</b>\n"
+        "<blockquote>"
+        f"<code>{prefix}kang -t fun</code> checks the volumes for the <code>fun</code> theme only.\n"
+        "</blockquote>\n\n"
+        "<b>One specified pack</b>\n"
+        "<blockquote>"
+        f"<code>{prefix}kang mypack</code> checks only that specified pack. A numeric pack id or list number also targets only its resolved pack.\n"
+        "</blockquote>\n\n"
+        "<b>How matching works</b>\n"
+        "<blockquote>"
+        "The checker first compares Telegram's file unique ID when available. If that does not match, it compares compatible media using file type/size and a downloaded fingerprint. A match is treated as already present and gets the 🤬 reaction.\n\n"
+        "Fingerprint comparisons require fetching sticker files, which can take time when a selected volume contains many similar-sized stickers. Other pack families are not part of that scan.\n"
+        "</blockquote>\n\n"
+        "<b>Allow a duplicate</b>\n"
+        "<blockquote>"
+        f"Add <code>-d</code> or <code>-duplicate</code>, e.g. <code>{prefix}kang -d</code> or <code>{prefix}kang mypack -d</code>, to skip duplicate checks and let Telegram accept or reject the add.\n"
+        "</blockquote>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@main.app.on_message(
+    filters.me & filters.command("help_sticker_naming", prefixes=config.CMD_PREFIX)
+)
+@continue_propagation
+async def help_sticker_naming(client, message: Message):
+    await ensure_me(client)
+    await message.edit(
+        _sticker_naming_help_text(),
+        parse_mode=ParseMode.HTML,
     )

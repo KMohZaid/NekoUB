@@ -19,14 +19,36 @@ class ConversionError(Exception):
 def _ffmpeg() -> str:
     override = getattr(config, "FFMPEG_BINARY", "")
     if override:
-        return override
+        found = shutil.which(override)
+        if found:
+            return found
+        configured = Path(override).expanduser()
+        if configured.is_file() and configured.stat().st_mode & 0o111:
+            return str(configured)
+        raise ConversionError(
+            f"Configured ffmpeg binary is unavailable: {override}"
+        )
+
     found = shutil.which("ffmpeg")
     if found:
         return found
     local = Path.home() / ".local" / "bin" / "ffmpeg"
-    if local.exists():
+    if local.is_file() and local.stat().st_mode & 0o111:
         return str(local)
-    return "ffmpeg"
+    try:
+        import imageio_ffmpeg
+
+        bundled = imageio_ffmpeg.get_ffmpeg_exe()
+        if Path(bundled).is_file():
+            return bundled
+    except (ImportError, RuntimeError) as exc:
+        logger_message = str(exc)
+    else:
+        logger_message = ""
+    raise ConversionError(
+        "ffmpeg is required to convert GIF/video media. Install ffmpeg or set "
+        f"FFMPEG_BINARY.{f' {logger_message}' if logger_message else ''}"
+    )
 
 
 async def _run_ffmpeg(args: list[str]) -> None:
@@ -41,19 +63,12 @@ async def _run_ffmpeg(args: list[str]) -> None:
         raise ConversionError(" ".join(lines[-3:]) or "ffmpeg failed")
 
 
-def _square(image: Image.Image) -> Image.Image:
+def _sticker_size(image: Image.Image) -> Image.Image:
     image = ImageOps.exif_transpose(image).convert("RGBA")
-    image.thumbnail((STICKER_SIDE, STICKER_SIDE), Image.LANCZOS)
-    canvas = Image.new("RGBA", (STICKER_SIDE, STICKER_SIDE), (0, 0, 0, 0))
-    canvas.paste(
-        image,
-        (
-            (STICKER_SIDE - image.width) // 2,
-            (STICKER_SIDE - image.height) // 2,
-        ),
-        image,
-    )
-    return canvas
+    width, height = image.size
+    scale = STICKER_SIDE / max(width, height)
+    size = (round(width * scale), round(height * scale))
+    return image.resize(size, Image.Resampling.LANCZOS)
 
 
 async def image_to_sticker(src: str, dst: str) -> None:
@@ -61,7 +76,12 @@ async def image_to_sticker(src: str, dst: str) -> None:
 
     def convert() -> None:
         with Image.open(src) as image:
-            _square(image).save(dst, "WEBP", quality=90, method=6)
+            sticker = _sticker_size(image)
+            for quality in (90, 80, 70, 60, 50, 40):
+                sticker.save(dst, "WEBP", quality=quality, method=6)
+                if Path(dst).stat().st_size <= 512 * 1024:
+                    return
+            raise ConversionError("Converted WEBP exceeds Telegram's 512 KB sticker limit")
 
     await asyncio.to_thread(convert)
 

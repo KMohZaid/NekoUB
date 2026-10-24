@@ -76,10 +76,12 @@ DEBUG_LOG_LEVEL = os.getenv("DEBUG_LOG_LEVEL", "INFO").upper()
 
 # Sticker set name/title format
 # Placeholders: {user_id}, {first_name}, {username}, {base}, {suffix}, {index}
-# Base defaults to "@<username>" (or first name); per-command suffixes give
-# titles like "@username fun".
+# STICKERSET_NAME_FORMAT is used exactly as formatted; no volume or user-id
+# suffix is added automatically. Base defaults to "@<username>" (or first name).
 STICKERSET_NAME_FORMAT = os.getenv("STICKERSET_NAME_FORMAT", "")
 STICKERSET_TITLE_FORMAT = os.getenv("STICKERSET_TITLE_FORMAT", "")
+THEMED_STICKERSET_SHORTNAME = os.getenv("THEMED_STICKERSET_SHORTNAME", "")
+THEMED_STICKERSET_DISPLAY_NAME = os.getenv("THEMED_STICKERSET_DISPLAY_NAME", "")
 # Optional override for the base pack name/prefix (empty => @username).
 STICKERSET_BASE = os.getenv("STICKERSET_BASE", "")
 

@@ -113,13 +113,20 @@ overridden at runtime with `.ai model` and `.ai sys`.
 STICKERSET_BASE=
 STICKERSET_NAME_FORMAT=
 STICKERSET_TITLE_FORMAT=
+THEMED_STICKERSET_SHORTNAME=
+THEMED_STICKERSET_DISPLAY_NAME=
 ```
 
 - `STICKERSET_BASE` - override the pack base name. Empty uses `@<username>`
   (falling back to the first name).
-- `STICKERSET_NAME_FORMAT` / `STICKERSET_TITLE_FORMAT` - templates for pack
-  short names / titles. Placeholders: `{user_id}`, `{first_name}`, `{username}`,
-  `{base}`, `{suffix}`, `{index}`.
+- `STICKERSET_NAME_FORMAT` / `STICKERSET_TITLE_FORMAT` - templates for regular
+  auto-pack short names / titles. The formatted short name is used exactly as
+  given; no volume or user-id suffix is appended. Include `{index}` yourself if
+  you need distinct volume names, and ensure the result is globally unique.
+- `THEMED_STICKERSET_SHORTNAME` / `THEMED_STICKERSET_DISPLAY_NAME` - optional
+  templates used only for themed packs explicitly selected with `.kang -t <theme>`. If empty,
+  themed packs retain the current default naming behavior. Templates support
+  `{user_id}`, `{first_name}`, `{username}`, `{base}`, `{suffix}`, and `{index}`.
 
 ## 🎬 Media & TTS
 
@@ -190,8 +197,10 @@ DEBUG_LOG_LEVEL=INFO
 ```
 
 - `DEBUG_CHAT_ID` - a chat/group id to forward the bot's logs to (negative for
-  groups). Leave empty to disable. Logs written before the client connects are
-  buffered and flushed once it is online. A "🟢 NekoUB online (restarted /
+  groups). Leave empty to disable log forwarding. `.kang` uses this chat for
+  temporary sticker uploads and deletes each upload after processing. Logs
+  written before the client connects are buffered and flushed once it is online.
+  A "🟢 NekoUB online (restarted /
   server rebooted)" notice is always sent on startup, regardless of the level.
 - `DEBUG_LOG_LEVEL` - minimum level to forward: `DEBUG`, `INFO`, `WARNING` or
   `ERROR` (recommended — sends only failures).

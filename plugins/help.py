@@ -313,26 +313,37 @@ CATEGORIES: dict[str, dict] = {
         "desc": "Kang stickers into your own packs.",
         "commands": [
             {
-                "cmd": "kang",
+                "cmd": "sticker",
                 "args": "",
-                "desc": "Copy the replied sticker, image, GIF or video into "
-                "your default auto pack. Photos become static stickers; GIFs "
-                "and videos become video stickers. Add emojis to override the "
-                "sticker's emoji.",
-                "ex": ["{p}kang", "{p}kang 🐱", "{p}kang -a 🐱 (append emoji)"],
+                "desc": "Make the replied sticker, photo, GIF, or video into "
+                "a sticker and send it directly in chat without adding it to a pack.",
+                "ex": ["{p}sticker"],
             },
             {
                 "cmd": "kang",
-                "args": "<pack>",
-                "desc": "Add the replied sticker, image, GIF or video to a "
-                "specific pack. `<pack>` can be a number from `.packs`, a "
-                "short name, a numeric id, or a suffix to create/reuse a "
-                "themed pack.",
+                "args": "",
+                "desc": "Reply to a sticker, photo, GIF or video to add it to "
+                "your automatic volume pack. Photos become static stickers; GIFs "
+                "and videos become video stickers. Emoji arguments replace the "
+                "source emoji unless -a is used to append. Add -s to send the "
+                "matching sticker from the pack after processing.",
+                "ex": ["{p}kang", "{p}kang 🐱", "{p}kang -a 🐱", "{p}kang -s"],
+            },
+            {
+                "cmd": "kang",
+                "args": "<number|shortname|id>",
+                "desc": "Add the replied media to an existing pack you own. "
+                "Use a number from `.packs`, its short name, or id. A bare "
+                "word is only looked up as an existing pack; if it is not found, "
+                "the command reports pack not found and does not create a theme. "
+                "Use `-t <theme>` to explicitly select or create a themed pack. "
+                "Add `-s` to send the matching destination-pack sticker.",
                 "ex": [
                     "{p}kang 1",
-                    "{p}kang fun",
-                    "{p}kang fun 🐱",
-                    "{p}kang oppeace_fun_123 🐱",
+                    "{p}kang mypack 🐱",
+                    "{p}kang -t fun",
+                    "{p}kang -t anime 🐱 -a",
+                    "{p}kang oppeace_fun_123 -s",
                 ],
             },
             {
@@ -340,8 +351,9 @@ CATEGORIES: dict[str, dict] = {
                 "args": "[page] [-c] [-e] [-a] [-n] [-s]",
                 "desc": "List your sticker packs 10 at a time with numbered "
                 "pages. Use `.packs <page>` to navigate; numbers stay global "
-                "for `.kang`. Filters: `-e` emoji, `-a` animated, `-n` normal, "
-                "`-s` normal + animated stickers. `-c` shows owned, active, "
+                "for `.kang`. Filters: `-e` emoji, `-a` animated, `-n` static, "
+                "`-s` static + animated sticker packs (📺 marks mixed packs). "
+                "`-c` shows owned, active, "
                 "archived and total counts. Combine filters; no filter shows all. "
                 "Alias: mypacks.",
                 "ex": [
@@ -363,7 +375,7 @@ CATEGORIES: dict[str, dict] = {
             {
                 "cmd": "start_sticker_monitor",
                 "args": "",
-                "desc": "Auto-kang every sticker you send in this chat.",
+                "desc": "Monitor only new sticker messages you send in this chat and add them to your automatic pack. Ignores photos, GIFs, videos, and stickers sent by others; resets on restart.",
                 "ex": ["{p}start_sticker_monitor"],
             },
             {
@@ -375,8 +387,32 @@ CATEGORIES: dict[str, dict] = {
             {
                 "cmd": "help_sticker",
                 "args": "",
-                "desc": "Show the sticker plugin's detailed help.",
+                "desc": "Show sticker help, kang targets and emoji options, reactions, pack commands, and links to naming and monitoring help.",
                 "ex": ["{p}help_sticker"],
+            },
+            {
+                "cmd": "help_sticker_naming",
+                "args": "",
+                "desc": "Show automatic and themed volume-2 naming examples, template fields, validation requirements, and base-format fallbacks.",
+                "ex": ["{p}help_sticker_naming"],
+            },
+            {
+                "cmd": "help_sticker_monitor",
+                "args": "",
+                "desc": "Explain which messages monitoring handles, how to start/stop it, and its restart behavior.",
+                "ex": ["{p}help_sticker_monitor"],
+            },
+            {
+                "cmd": "help_sticker_duplicate_check",
+                "args": "",
+                "desc": "Explain target-specific duplicate scans and the -d/-duplicate bypass.",
+                "ex": ["{p}help_sticker_duplicate_check"],
+            },
+            {
+                "cmd": "stickerdebug",
+                "args": "",
+                "desc": "Reply to a sticker to export its sticker and pack data, including raw Telegram objects, as JSON.",
+                "ex": ["{p}stickerdebug"],
             },
         ],
     },
