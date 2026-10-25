@@ -339,16 +339,24 @@ def _media_fingerprint(path: str, is_video: bool) -> int | str:
     return sum(1 << i for i, value in enumerate(coeffs) if value > median)
 
 
-async def _find_duplicate_sticker(client, sticker, documents) -> bool:
+async def _find_duplicate_sticker(
+    client, sticker, documents, fingerprint_cache: dict | None = None
+) -> bool:
     is_video = bool(getattr(sticker, "is_video", False))
-    with tempfile.TemporaryDirectory(prefix="nekoub-dedupe-") as folder:
-        try:
+    folder = tempfile.TemporaryDirectory(prefix="nekoub-dedupe-")
+    try:
+        source_hash = (
+            fingerprint_cache.get("_source_hash")
+            if fingerprint_cache is not None
+            else None
+        )
+        if source_hash is None:
             source_path = (
                 sticker.file_id
                 if isinstance(sticker.file_id, (str, os.PathLike))
                 and os.path.isfile(sticker.file_id)
                 else await client.download_media(
-                    sticker.file_id, file_name=os.path.join(folder, "source")
+                    sticker.file_id, file_name=os.path.join(folder.name, "source")
                 )
             )
             if not source_path:
@@ -356,25 +364,41 @@ async def _find_duplicate_sticker(client, sticker, documents) -> bool:
             source_hash = await asyncio.to_thread(
                 _media_fingerprint, source_path, is_video
             )
-        except Exception:
-            logger.warning("[STICKER] Could not fingerprint input for duplicate check", exc_info=True)
-            return False
+            if fingerprint_cache is not None:
+                fingerprint_cache["_source_hash"] = source_hash
+    except Exception:
+        logger.warning("[STICKER] Could not fingerprint input for duplicate check", exc_info=True)
+        return False
 
+    try:
         for index, document in enumerate(documents):
             if getattr(document, "mime_type", None) != getattr(sticker, "mime_type", None):
                 continue
             if getattr(document, "size", None) != getattr(sticker, "file_size", None):
                 continue
             try:
-                candidate_path = await client.download_media(
-                    sticker_set_document_file_id(document),
-                    file_name=os.path.join(folder, f"candidate-{index}"),
+                candidate_unique_id = getattr(document, "file_unique_id", None)
+                cache_key = (
+                    candidate_unique_id,
+                    getattr(document, "mime_type", None),
+                    getattr(document, "size", None),
+                    is_video,
                 )
-                if not candidate_path:
-                    continue
-                candidate_hash = await asyncio.to_thread(
-                    _media_fingerprint, candidate_path, is_video
-                )
+                cached = fingerprint_cache.get(cache_key) if fingerprint_cache is not None else None
+                if cached is not None:
+                    candidate_hash = cached
+                else:
+                    candidate_path = await client.download_media(
+                        sticker_set_document_file_id(document),
+                        file_name=os.path.join(folder.name, f"candidate-{index}"),
+                    )
+                    if not candidate_path:
+                        continue
+                    candidate_hash = await asyncio.to_thread(
+                        _media_fingerprint, candidate_path, is_video
+                    )
+                    if fingerprint_cache is not None and candidate_unique_id:
+                        fingerprint_cache[cache_key] = candidate_hash
             except Exception:
                 logger.debug(
                     "[STICKER] Could not fingerprint existing pack item", exc_info=True
@@ -386,6 +410,8 @@ async def _find_duplicate_sticker(client, sticker, documents) -> bool:
                 else source_hash == candidate_hash
             ):
                 return True
+    finally:
+        folder.cleanup()
     return False
 
 
@@ -1718,18 +1744,22 @@ async def refresh_sticker_index(client, *, force: bool = False) -> bool:
 
 
 async def _ensure_sticker_index(client, required_short_names: set[str]) -> bool:
+    """Use a fresh covered cache, but never block a kang on a cold rebuild."""
     await ensure_me(client)
-    if sticker_index.snapshot_is_usable(me_user.id, max_age=7 * 86400):
-        covered = sticker_index.packs_usable(required_short_names, max_age=3600)
-        if covered:
-            if not sticker_index.snapshot_is_usable(me_user.id, max_age=3600):
-                loop = asyncio.get_running_loop()
-                if not _index_refresh_lock.locked():
-                    loop.create_task(refresh_sticker_index(client, force=True))
-                return False
-            return True
-        return False
-    return await refresh_sticker_index(client, force=True) and sticker_index.packs_usable(required_short_names, max_age=3600)
+    usable = (
+        sticker_index.snapshot_is_usable(me_user.id, max_age=3600)
+        and sticker_index.packs_usable(required_short_names, max_age=3600)
+    )
+    if usable:
+        return True
+
+    task = getattr(main, "_sticker_index_refresh_task", None)
+    if task is None or task.done():
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(refresh_sticker_index(client, force=True))
+        setattr(main, "_sticker_index_refresh_task", task)
+        logger.info("[STICKER] Scheduling background duplicate-index refresh")
+    return False
 
 
 async def _index_scheduler_loop() -> None:
@@ -1885,7 +1915,7 @@ async def _queue_worker(client):
                 cache_candidate = None
                 cached_complete = (
                     cache_ready
-                    and sticker_index.packs_usable(candidate_names, max_age=7 * 86400)
+                    and sticker_index.packs_usable(candidate_names, max_age=3600)
                     and not sticker_index.has_unverified(
                         candidate_names, getattr(source, "mime_type", None),
                         getattr(source, "file_size", None),
@@ -1961,6 +1991,7 @@ async def _queue_worker(client):
                     cached_complete = False
                 if not cached_complete:
                     # Cache uncertainty is not a negative result; use the established live scan.
+                    fingerprint_cache: dict[tuple[str | None, int | str], dict] = {}
                     for pack in packs_to_check:
                         if pack.get("is_emoji") != (pack_type == "emoji"):
                             continue
@@ -1984,16 +2015,12 @@ async def _queue_worker(client):
                             )
                             if not duplicate:
                                 duplicate = await _find_duplicate_sticker(
-                                    client, source, documents
+                                    client, source, documents,
+                                    fingerprint_cache=fingerprint_cache,
                                 )
                             if duplicate:
                                 duplicate_pack = (pack, pack_set)
                                 break
-                            # Warm this pack's metadata/fingerprints for subsequent checks.
-                            index_pack, records = await _fetch_indexed_pack(
-                                client, pack, pack_set
-                            )
-                            sticker_index.replace_pack(index_pack, records)
                         except Exception as duplicate_exc:
                             logger.warning(
                                 "[STICKER] Could not check duplicate in %s: %s",
