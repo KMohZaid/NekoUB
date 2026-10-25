@@ -59,8 +59,7 @@ _pack_index: list[dict] = []  # last fetched list of owned packs (for .kang <num
 
 
 def load_cache() -> dict:
-    # TODO: migrate to a proper DB (sqlite/tinydb) when adding multi-pack
-    #       tracking, per-chat settings, or sticker metadata.
+    # TODO: Make proper use of the database to store user preferences.
     if CACHE_PATH.exists():
         try:
             return json.loads(CACHE_PATH.read_text())
