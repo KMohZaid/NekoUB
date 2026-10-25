@@ -17,7 +17,7 @@ from datetime import datetime
 from pyrogram.enums import ParseMode
 
 import config
-from userbot.utils import get_logger
+from utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -26,7 +26,7 @@ MAX_LINE = 3000
 MAX_MESSAGE = 3500
 POLL_SECONDS = 2
 # Never forward these loggers (avoids loops / connection+HTTP spam).
-SKIP_LOGGERS = ("pyrogram", "httpx", "httpcore", "userbot.telegram_logging")
+SKIP_LOGGERS = ("pyrogram", "httpx", "httpcore", "utils.telegram_logging")
 
 
 class _Formatter(logging.Formatter):

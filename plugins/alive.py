@@ -7,7 +7,7 @@ from pyrogram import __version__ as pyrogram_version
 
 import config
 import main
-from userbot.utils import get_logger, continue_propagation
+from utils import get_logger, continue_propagation
 
 logger = get_logger(__name__)
 

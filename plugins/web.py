@@ -7,14 +7,14 @@ from pyrogram.types import Message
 
 import config
 import main
-from userbot.utils import (
+from utils import (
     continue_propagation,
     get_logger,
     is_user_premium,
     split_text_into_chunks,
 )
-from userbot.websearch import fetch_text
-from userbot.websearch import search as _shared_search
+from utils.websearch import fetch_text
+from utils.websearch import search as _shared_search
 
 logger = get_logger(__name__)
 

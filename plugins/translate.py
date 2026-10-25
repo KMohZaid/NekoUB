@@ -7,7 +7,7 @@ from pyrogram.types import Message
 
 import config
 import main
-from userbot.utils import continue_propagation, get_logger
+from utils import continue_propagation, get_logger
 
 logger = get_logger(__name__)
 
@@ -27,7 +27,7 @@ def groq_keys() -> list[str]:
     if getattr(config, "GROQ_API_KEY", ""):
         keys.insert(0, config.GROQ_API_KEY)
     if not keys:
-        from userbot.synckeys import load_keys
+        from utils.synckeys import load_keys
 
         keys = load_keys("groq")
     return keys

@@ -260,11 +260,12 @@ NekoUB/
 ├── run.sh                     # Quick start script
 ├── generate_session_string.py # Session string generator
 ├── .env                       # Your credentials (create from .env.example)
-├── userbot/
-│   ├── utils.py               # Helpers & colored logging
-│   ├── media.py               # Image/video -> sticker conversion (.kang)
-│   ├── websearch.py           # Web search / page reader (.web, .read)
-│   └── synckeys.py            # Reuse synckey Groq keys (.tr voice)
+├── utils/                     # Shared utilities used across multiple plugins
+│   ├── __init__.py             # Common helpers & colored logging
+│   ├── media.py                # Image/video -> sticker conversion (.kang)
+│   ├── websearch.py            # Web search / page reader (.web, .read)
+│   ├── synckeys.py             # Reuse synckey Groq keys (.tr voice)
+│   └── telegram_logging.py     # Optional Telegram log forwarding
 ├── plugins/                   # Public plugins (tracked in git)
 │   ├── ai.py                  # .ai chat/search
 │   ├── alive.py               # .alive

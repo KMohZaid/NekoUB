@@ -10,7 +10,7 @@ from pyrogram import Client
 from pyrogram.enums import ParseMode
 
 import config
-from userbot.utils import get_logger
+from utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -261,7 +261,7 @@ def main():
 
     # Forward logs to a Telegram chat when DEBUG_CHAT_ID is configured.
     try:
-        from userbot.telegram_logging import install as install_log_forwarder
+        from utils.telegram_logging import install as install_log_forwarder
 
         install_log_forwarder(app.loop, app)
     except Exception as exc:

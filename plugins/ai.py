@@ -10,13 +10,13 @@ from pyrogram.types import Message
 
 import config
 import main
-from userbot.utils import (
+from utils import (
     continue_propagation,
     get_logger,
     is_user_premium,
     split_text_into_chunks,
 )
-from userbot.websearch import search as web_search
+from utils.websearch import search as web_search
 
 logger = get_logger(__name__)
 

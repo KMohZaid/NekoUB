@@ -28,8 +28,8 @@ from pyrogram.types import Message
 import config
 import main
 from plugins import sticker_index
-from userbot.media import image_to_sticker, video_to_sticker
-from userbot.utils import continue_propagation, get_logger
+from utils.media import image_to_sticker, video_to_sticker
+from utils import continue_propagation, get_logger
 
 logger = get_logger(__name__)
 

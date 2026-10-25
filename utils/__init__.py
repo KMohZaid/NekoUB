@@ -1,3 +1,5 @@
+"""Shared utilities used across multiple plugins and core modules."""
+
 import logging
 import sys
 import os

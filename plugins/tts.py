@@ -15,8 +15,8 @@ from pyrogram.types import Message
 
 import config
 import main
-from userbot.media import _ffmpeg
-from userbot.utils import (
+from utils.media import _ffmpeg
+from utils import (
     continue_propagation,
     get_logger,
     is_user_premium,
