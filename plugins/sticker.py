@@ -870,8 +870,13 @@ async def create_pack_safe(
 
 async def get_pack_sticker_count(client, pack_short_name: str) -> int | None:
     try:
-        stickers = await client.get_stickers(pack_short_name)
-        return len(stickers)
+        sticker_set = await client.invoke(
+            functions.messages.GetStickerSet(
+                stickerset=types.InputStickerSetShortName(short_name=pack_short_name),
+                hash=0,
+            )
+        )
+        return len(getattr(sticker_set, "documents", None) or [])
     except (StickersetInvalid, StickersEmpty):
         return None
 
@@ -1005,9 +1010,17 @@ async def _installed_pack_types(client) -> list[dict]:
         kind = "emoji" if getattr(sticker_set, "emojis", False) else "normal"
         if kind != "emoji":
             try:
-                stickers = await client.get_stickers(sticker_set.short_name)
-                has_static = any(not (st.is_animated or st.is_video) for st in stickers)
-                has_animated = any(st.is_animated or st.is_video for st in stickers)
+                pack = await client.invoke(
+                    functions.messages.GetStickerSet(
+                        stickerset=types.InputStickerSetShortName(
+                            short_name=sticker_set.short_name
+                        ),
+                        hash=0,
+                    )
+                )
+                stickers = getattr(pack, "documents", None) or []
+                has_static = any(not _is_animated_document(st) for st in stickers)
+                has_animated = any(_is_animated_document(st) for st in stickers)
                 kind = "mixed" if has_static and has_animated else "animated" if has_animated else "normal"
             except Exception as exc:
                 logger.debug(f"[STICKER] Could not inspect installed pack {sticker_set.short_name}: {exc}")
