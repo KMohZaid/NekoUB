@@ -308,7 +308,7 @@ def find_match(unique_id: str | None, fingerprint, is_video: bool, mime_type: st
 
 def metadata_unchanged(previous: dict, document: dict) -> bool:
     return all(previous.get(key) == document.get(key) for key in (
-        "document_id", "file_unique_id", "mime_type", "size", "is_video"
+        "document_id", "mime_type", "size", "is_video"
     ))
 
 

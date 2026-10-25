@@ -12,7 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import emoji
-from pyrogram import enums, filters
+from pyrogram import enums, filters, types as pyrogram_types
 from pyrogram.enums import ParseMode, StickerFormat, StickerType
 from pyrogram.types import InputSticker
 from pyrogram.errors import (
@@ -1500,6 +1500,11 @@ async def add_sticker_with_pack_management(
     except StickersetInvalid:
         pack_type = _get_input_pack_type(sticker)
         cache = await ensure_pack(client, pack_type)
+        stale_name = cache.get("current_pack_short_name")
+        logger.warning(
+            "[STICKER] Current pack %s is invalid; resetting %s pack state",
+            stale_name, pack_type,
+        )
         cache["current_pack_short_name"] = None
         cache["current_pack_count"] = 0
         save_pack_state(pack_type, cache)
@@ -1512,9 +1517,17 @@ async def add_sticker_with_pack_management(
                 allow_duplicates=allow_duplicates,
             )
         except Exception:
+            logger.exception(
+                "[STICKER] Retry after invalid pack failed (pack=%s, type=%s)",
+                stale_name, pack_type,
+            )
             return None, None, False
     except Exception as exc:
-        logger.error(f"[STICKER] Add failed: {type(exc).__name__}: {exc}")
+        logger.exception(
+            "[STICKER] Add failed (pack=%s, type=%s, sticker=%s): %s: %s",
+            locals().get("short_name"), locals().get("pack_type"),
+            getattr(sticker, "file_unique_id", None), type(exc).__name__, exc,
+        )
         return None, None, False
 
 
@@ -1621,8 +1634,10 @@ async def add_sticker_to_target(
         )
 
     except Exception as exc:
-        logger.error(
-            f"[STICKER] Target add failed: {type(exc).__name__}: {exc}"
+        logger.exception(
+            "[STICKER] Target add failed (pack=%s, type=%s, sticker=%s): %s: %s",
+            target.get("short_name"), target.get("type"),
+            getattr(sticker, "file_unique_id", None), type(exc).__name__, exc,
         )
         return None, None, False
 
@@ -1662,9 +1677,12 @@ def _document_cache_identity(document) -> dict | None:
         document_id = getattr(raw, "id", None)
     if document_id is None:
         return None
+    unique_id = getattr(document, "file_unique_id", None)
+    if unique_id is None:
+        raise ValueError(f"Sticker document {document_id} has no parsed file_unique_id")
     return {
         "document_id": str(document_id),
-        "file_unique_id": getattr(document, "file_unique_id", None),
+        "file_unique_id": unique_id,
         "mime_type": getattr(document, "mime_type", None),
         "size": getattr(document, "size", getattr(document, "file_size", None)),
         "is_video": _document_is_video(document),
@@ -1696,7 +1714,13 @@ async def _fetch_indexed_pack(client, pack: dict, pack_set=None) -> tuple[dict, 
                 hash=0,
             )
         )
-    documents = getattr(pack_set, "documents", None) or []
+    if isinstance(pack_set, types.messages.StickerSet):
+        pack_set = await pyrogram_types.StickerSet._parse(client, pack_set)
+    elif isinstance(pack_set, types.StickerSet):
+        pack_set = await pyrogram_types.StickerSet._parse(client, pack_set)
+    else:
+        raise TypeError(f"Unsupported sticker set response: {type(pack_set).__name__}")
+    documents = getattr(pack_set, "stickers", None) or []
     previous = sticker_index.get_pack_records(pack["short_name"])
     records = []
     for index, document in enumerate(documents):
@@ -2079,12 +2103,17 @@ async def _queue_worker(client):
                     )
             success = pack_short_name is not None
             if success and not added:
-                try:
-                    await message.react("🤬")
-                except Exception:
-                    pass
+                await _send_reaction(client, message, "🤬", context="duplicate")
             elif success:
                 await send_result_feedback(client, message, True)
+            else:
+                logger.error(
+                    "[STICKER] Kang add returned no pack (chat=%s, message=%s, "
+                    "source_message=%s, target=%s)",
+                    message.chat.id, message.id, media_message.id,
+                    (target or {}).get("short_name", "auto"),
+                )
+                await send_result_feedback(client, message, False)
             sticker_set = None
             if success:
                 sticker_set = add_response.get("sticker_set")
@@ -2165,23 +2194,40 @@ async def enqueue_sticker(
 # ============================================================
 
 
+async def _send_reaction(client, message: Message, reaction: str, *, context: str) -> bool:
+    try:
+        if hasattr(message, "react"):
+            await message.react(reaction)
+        elif hasattr(client, "send_reaction"):
+            await client.send_reaction(message.chat.id, message.id, reaction)
+        else:
+            raise RuntimeError("Reaction API is unavailable")
+        logger.debug(
+            "[STICKER] Reaction sent: %s (context=%s, chat=%s, message=%s)",
+            reaction, context, message.chat.id, message.id,
+        )
+        return True
+    except Exception:
+        logger.warning(
+            "[STICKER] Reaction failed: %s (context=%s, chat=%s, message=%s)",
+            reaction, context, message.chat.id, message.id, exc_info=True,
+        )
+        return False
+
+
 async def send_result_feedback(client, message: Message, success: bool) -> None:
     reaction = "👍" if success else "💔"
     fallback_text = "Done" if success else "Fail"
 
+    if await _send_reaction(client, message, reaction, context="result"):
+        return
     try:
-        if hasattr(message, "react"):
-            await message.react(reaction)
-            return
-        if hasattr(client, "send_reaction"):
-            await client.send_reaction(message.chat.id, message.id, reaction)
-            return
-        raise RuntimeError("Reaction API is unavailable")
+        await message.reply_text(fallback_text)
     except Exception:
-        try:
-            await message.reply_text(fallback_text)
-        except Exception:
-            pass
+        logger.warning(
+            "[STICKER] Feedback reply failed (chat=%s, message=%s)",
+            message.chat.id, message.id, exc_info=True,
+        )
 
 
 # ============================================================
@@ -2636,10 +2682,8 @@ async def kang_command(client, message: Message):
         allow_duplicates,
     ) = parse_kang_args(args)
 
-    try:
-        await message.react("🧑‍💻")
-    except Exception:
-        pass
+    if not await _send_reaction(client, message, "👨‍💻", context="start"):
+        await _send_reaction(client, message, "👀", context="start-fallback")
 
     # Resolve the target pack (None => default auto pack).
     target: dict | None = None
@@ -2787,7 +2831,7 @@ async def help_sticker(client, message: Message):
         "</blockquote>\n\n"
         "<b>🔔 Kang reactions</b>\n"
         "<blockquote>"
-        "🧑‍💻 Processing started\n"
+        "👨‍💻 Processing started (👀 fallback if unavailable)\n"
         "👍 Sticker added successfully\n"
         "💔 An error or failure occurred\n"
         "🤬 The sticker already exists in an automatic volume pack"
