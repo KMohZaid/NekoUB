@@ -238,6 +238,14 @@ def reload_plugins():
             sys.modules.pop(module_name, None)
     loaded_plugins.clear()
     loaded_plugin_handlers.clear()
+    if plugin_manager is not None:
+        loaded_plugins.update(
+            {
+                active.source_path.stem: active.module
+                for active in plugin_manager.active.values()
+                if active.source_path is not None and active.module is not None
+            }
+        )
 
     try:
         load_all_plugins(skip_paths=managed_paths)

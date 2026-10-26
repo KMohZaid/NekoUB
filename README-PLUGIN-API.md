@@ -1,6 +1,6 @@
 # Managed plugin API
 
-This is the initial authoring API for managed public plugins. Plugin modules must declare handlers instead of registering them through `main.app` at import time. The manager owns activation and records handlers for rollback and reload.
+Public plugin authors can declare handlers on a typed `Plugin` class instead of registering through `main.app` at import time. The manager owns managed activation and records handlers for rollback and reload. Existing public modules are being migrated in stages; `private_plugins/` is not discovered or imported.
 
 ## Typed plugin template
 
@@ -56,7 +56,7 @@ Pass Kurigram filter expressions directly, for example `F.text & F.me` or `F.rep
 
 `Example` values support `{cmd}` for the prefixed command and `{prefix}` for the configured prefix. `Option` declarations drive command parsing and help. Available option fields include `name`, `short`, `type`, `required`, `default`, `action`, `append`, and `help`.
 
-The parser supports long options, short options, boolean clusters, typed values, repeatable append options, and `--` end-of-options. Parser errors are returned before handler invocation. Commands without declared options do not get framework parsing.
+The parser supports long options, short options, boolean clusters, typed values, repeatable append options, and `--` end-of-options. Parser errors are returned before handler invocation. Commands without declared option schemas receive a `ParsedOptions` value whose `positional` field contains the raw argument tail as one string, preserving free-form command text.
 
 ## Context helpers
 
@@ -66,4 +66,4 @@ The parser supports long options, short options, boolean clusters, typed values,
 
 ## Loader boundary
 
-Only `plugins/` is discovered. The current integration does not scan or import `private_plugins/`. A managed module must declare exactly one `Plugin` subclass. Legacy public modules still load through their existing import-side-effect path during migration. The demo plugin demonstrates the new API but is not a replacement for migrating all current public plugins.
+Only direct `*.py` files in `plugins/` are discovered. `private_plugins/` is intentionally excluded. A managed module must declare exactly one `Plugin` subclass. Migrated command modules include `alive`, `eval`, `exec`, `help`, `id`, `info`, `json`, `kill`, `ping`, `reload`, `save`, and `spam`. Other public modules remain on the legacy import-side-effect path until their event and state behavior can be preserved. Bot decorators are declarations only: this application starts a userbot and currently rejects activation of bot handlers. The demo plugin demonstrates managed callbacks and event handlers.

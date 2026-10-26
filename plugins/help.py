@@ -22,31 +22,6 @@ CATEGORIES: dict[str, dict] = {
         "title": "Core",
         "desc": "Basic bot commands.",
         "commands": [
-            {
-                "cmd": "alive",
-                "args": "",
-                "desc": "Show userbot status, uptime, plugins and system info.",
-                "ex": ["{p}alive"],
-            },
-            {
-                "cmd": "ping",
-                "args": "",
-                "desc": "Check bot latency (round-trip time in ms).",
-                "ex": ["{p}ping"],
-            },
-            {
-                "cmd": "reload",
-                "args": "",
-                "desc": "Hot-reload all plugins without restarting the bot. "
-                "Auto-deletes after 10s.",
-                "ex": ["{p}reload"],
-            },
-            {
-                "cmd": "help",
-                "args": "",
-                "desc": "Show this help menu. Aliases: commands, cmds, menu.",
-                "ex": ["{p}help", "{p}help stickers", "{p}help kang", "{p}help all"],
-            },
         ],
     },
     "ai": {
@@ -135,51 +110,6 @@ CATEGORIES: dict[str, dict] = {
         "title": "Utility",
         "desc": "Tools, info and message helpers.",
         "commands": [
-            {
-                "cmd": "exec",
-                "args": "<command>",
-                "desc": "Run a shell command and show stdout/stderr/return code.",
-                "ex": ["{p}exec ls -la", "{p}exec uptime"],
-            },
-            {
-                "cmd": "eval",
-                "args": "<python>",
-                "desc": "Evaluate Python code. `await` is supported.",
-                "ex": ['{p}eval print("hello")'],
-            },
-            {
-                "cmd": "kill",
-                "args": "",
-                "desc": "Stop all currently running .exec / .eval tasks.",
-                "ex": ["{p}kill"],
-            },
-            {
-                "cmd": "info",
-                "args": "",
-                "desc": "Show info about this chat, or the sender of the "
-                "replied message (no phone numbers).",
-                "ex": ["{p}info", "{p}info (reply to a message)"],
-            },
-            {
-                "cmd": "id",
-                "args": "",
-                "desc": "Show chat ID, user ID, and media file IDs of the "
-                "replied message.",
-                "ex": ["{p}id", "{p}id (reply to media)"],
-            },
-            {
-                "cmd": "json",
-                "args": "",
-                "desc": "Export the replied message as a JSON file.",
-                "ex": ["{p}json (reply to a message)"],
-            },
-            {
-                "cmd": "save",
-                "args": "",
-                "desc": "Save the replied message to Saved Messages "
-                "(forward, falls back to copy).",
-                "ex": ["{p}save (reply to a message)"],
-            },
             {
                 "cmd": "sg",
                 "args": "",
@@ -274,38 +204,6 @@ CATEGORIES: dict[str, dict] = {
         "title": "Fun / Spam",
         "desc": "Repeat sending. Use responsibly.",
         "commands": [
-            {
-                "cmd": "spam",
-                "args": "[flags] <count> <text>",
-                "desc": "Send a message repeatedly, or copy the replied "
-                "message. Flags: `-c/-count <n>`, `-d/-delay <10s|5m|1h>`, "
-                "`-del/-delete` (auto-delete after 2.5s), `-r/-reply`, "
-                "`-ignore/-nolimit` (bypass max count).",
-                "ex": [
-                    "{p}spam 10 Hello World",
-                    "{p}spam -d 5s 3 Hi",
-                    "{p}spam -del -c 5 Test",
-                    "{p}spam -r 5 Hi (reply to a message)",
-                ],
-            },
-            {
-                "cmd": "spam_stop",
-                "args": "",
-                "desc": "Stop the active spam in this chat.",
-                "ex": ["{p}spam_stop"],
-            },
-            {
-                "cmd": "spam_stat",
-                "args": "",
-                "desc": "Show progress of the active spam in this chat.",
-                "ex": ["{p}spam_stat"],
-            },
-            {
-                "cmd": "spam_help",
-                "args": "",
-                "desc": "Show detailed spam help.",
-                "ex": ["{p}spam_help"],
-            },
         ],
     },
     "stickers": {

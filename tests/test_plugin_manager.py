@@ -142,6 +142,68 @@ class PluginManagerTests(unittest.TestCase):
                 else:
                     sys.modules[name] = previous
 
+    def test_help_lists_managed_commands_once(self):
+        plugins_dir = Path(__file__).resolve().parents[1] / "plugins"
+        previous_config = sys.modules.get("config")
+        previous_main = sys.modules.get("main")
+        previous_utils = sys.modules.get("utils")
+        config_module = ModuleType("config")
+        config_module.CMD_PREFIX = "."
+        main_module = ModuleType("main")
+        main_module.loaded_plugins = {}
+        main_module.plugin_manager = None
+        utils_module = ModuleType("utils")
+        utils_module.get_logger = lambda name: Mock()
+        sys.modules.update(config=config_module, main=main_module, utils=utils_module)
+        try:
+            from importlib.util import module_from_spec, spec_from_file_location
+
+            spec = spec_from_file_location(
+                "test_plugins.help_dedupe", plugins_dir / "help.py"
+            )
+            module = module_from_spec(spec)
+            sys.modules[spec.name] = module
+            spec.loader.exec_module(module)
+            managed_names = {
+                "alive", "ping", "reload", "help", "exec", "eval", "kill",
+                "info", "id", "json", "save", "spam", "spam_stop", "spam_stat",
+                "spam_help",
+            }
+            listed_names = {
+                command["cmd"]
+                for category in module.CATEGORIES.values()
+                for command in category["commands"]
+            }
+            self.assertTrue(managed_names.isdisjoint(listed_names))
+            main_module.plugin_manager = Mock()
+            main_module.plugin_manager.command_help.return_value = [
+                {
+                    "plugin": "ping",
+                    "trigger": "ping",
+                    "prefix": ".",
+                    "prefixes": (".",),
+                    "options": (),
+                    "description": "Check latency.",
+                    "aliases": (),
+                    "examples": (),
+                }
+            ]
+            self.assertEqual(
+                module._total_commands(),
+                sum(len(cat["commands"]) for cat in module.CATEGORIES.values()) + 1,
+            )
+            self.assertEqual(module.render_all().count("`.ping`"), 1)
+        finally:
+            for name, previous in (
+                ("config", previous_config),
+                ("main", previous_main),
+                ("utils", previous_utils),
+            ):
+                if previous is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = previous
+
     def test_simple_command_plugins_declare_managed_handlers(self):
         plugins_dir = Path(__file__).resolve().parents[1] / "plugins"
         modules = {}
