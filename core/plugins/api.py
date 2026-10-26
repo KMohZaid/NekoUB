@@ -196,24 +196,29 @@ def _wrap_handler(
             context.parse_mode = command_options.parse_mode
         handler_args = args
         if command_options is not None and declaration.event == "command":
-            try:
-                parsed = parse_options(
-                    getattr(update, "text", None) or getattr(update, "caption", "") or "",
-                    command_options.options,
-                    (command_options.trigger, *command_options.aliases),
-                    prefixes=(
-                        command_prefixes
-                        if command_options.prefixes == "."
-                        else command_options.prefixes
-                    ),
-                )
-            except OptionParseError as error:
-                await context.send(
-                    error.as_html(), reply_to=update, parse_mode=ParseMode.HTML
-                )
-                from pyrogram import ContinuePropagation
+            if command_options.options:
+                try:
+                    parsed = parse_options(
+                        getattr(update, "text", None) or getattr(update, "caption", "") or "",
+                        command_options.options,
+                        (command_options.trigger, *command_options.aliases),
+                        prefixes=(
+                            command_prefixes
+                            if command_options.prefixes == "."
+                            else command_options.prefixes
+                        ),
+                    )
+                except OptionParseError as error:
+                    await context.send(
+                        error.as_html(), reply_to=update, parse_mode=ParseMode.HTML
+                    )
+                    from pyrogram import ContinuePropagation
 
-                raise ContinuePropagation
+                    raise ContinuePropagation
+            else:
+                from .errors import ParsedOptions
+
+                parsed = ParsedOptions(values={}, positional=())
             handler_args = (parsed, *args)
         from pyrogram import ContinuePropagation
 

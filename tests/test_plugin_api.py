@@ -70,6 +70,27 @@ class PluginApiTests(unittest.TestCase):
                 parse_options(text, schema, "find")
             self.assertIn(expected, str(raised.exception))
 
+    def test_command_without_options_receives_empty_parsed_options(self):
+        class NoOptionsPlugin(Plugin):
+            id = "no_options"
+            parsed = None
+
+            @h.command("ping")
+            async def ping(self, client, update, ctx, args):
+                self.parsed = args
+
+        plugin = NoOptionsPlugin()
+        declaration = plugin.declarations()[0]
+        callback = _wrap_handler(plugin, declaration)
+        update = type("Message", (), {"text": ".ping"})()
+        with self.assertRaises(Exception) as raised:
+            import asyncio
+
+            asyncio.run(callback(object(), update))
+        self.assertEqual(type(raised.exception).__name__, "ContinuePropagation")
+        self.assertEqual(plugin.parsed.values, {})
+        self.assertEqual(plugin.parsed.positional, ())
+
     def test_managed_handler_receives_context_update_args_and_continues(self):
         class HandlerPlugin(Plugin):
             id = "handler"
