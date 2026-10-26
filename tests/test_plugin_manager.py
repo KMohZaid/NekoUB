@@ -209,15 +209,25 @@ class PluginManagerTests(unittest.TestCase):
         modules = {}
         previous_config = sys.modules.get("config")
         previous_utils = sys.modules.get("utils")
+        previous_httpx = sys.modules.get("httpx")
         config_module = ModuleType("config")
         config_module.CMD_PREFIX = "."
         config_module.STICKERSET_BASE = ""
+        config_module.GROQ_API_KEYS = []
+        config_module.GROQ_API_KEY = ""
+        config_module.GROQ_API_URL = ""
+        config_module.TRANSCRIBE_MODEL = ""
+        config_module.TRANSLATE_TARGET = "en"
+        config_module.TRANSLATE_API_URL = ""
         sys.modules["config"] = config_module
+        httpx_module = ModuleType("httpx")
+        httpx_module.AsyncClient = Mock()
+        sys.modules["httpx"] = httpx_module
         utils_module = ModuleType("utils")
         utils_module.get_logger = lambda name: Mock()
         sys.modules["utils"] = utils_module
         try:
-            for plugin_id in ("ping", "id", "info", "alive"):
+            for plugin_id in ("ping", "id", "info", "alive", "translate"):
                 path = plugins_dir / f"{plugin_id}.py"
                 from importlib.util import module_from_spec, spec_from_file_location
 
@@ -235,6 +245,10 @@ class PluginManagerTests(unittest.TestCase):
                 sys.modules.pop("utils", None)
             else:
                 sys.modules["utils"] = previous_utils
+            if previous_httpx is None:
+                sys.modules.pop("httpx", None)
+            else:
+                sys.modules["httpx"] = previous_httpx
         for plugin_id, module in modules.items():
             plugin_class = next(
                 value

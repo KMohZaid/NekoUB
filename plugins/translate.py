@@ -2,12 +2,12 @@ import tempfile
 from pathlib import Path
 
 import httpx
-from pyrogram import filters
+from pyrogram import Client
 from pyrogram.types import Message
 
 import config
-import main
-from utils import continue_propagation, get_logger
+from core.plugins import Example, ParsedOptions, Plugin, PluginContext, handlers as h
+from utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -98,62 +98,80 @@ async def translate_text(
     return translated, detected
 
 
-@main.app.on_message(
-    filters.me
-    & filters.command(["tr", "translate"], prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
-async def translate_command(client, message: Message):
-    parts = (message.text or "").split(maxsplit=1)
-    args = parts[1].strip() if len(parts) > 1 else ""
+class TranslatePlugin(Plugin):
+    id = "translate"
+    category = "Utility"
+    description = "Translate text, replied messages, and voice notes."
 
-    target = config.TRANSLATE_TARGET
-    text = args
-    tokens = args.split(maxsplit=1)
-    if tokens and tokens[0].lower() in KNOWN_LANGS:
-        target = tokens[0].lower()
-        text = tokens[1] if len(tokens) > 1 else ""
+    @h.command(
+        "tr",
+        aliases=("translate",),
+        description=description,
+        examples=(
+            Example("{cmd} Hello"),
+            Example("{cmd} es Hello"),
+            Example("{cmd} hi (reply)"),
+        ),
+        prefixes=config.CMD_PREFIX,
+        parse_mode="markdown",
+    )
+    async def translate_command(
+        self,
+        client: Client,
+        message: Message,
+        ctx: PluginContext["TranslatePlugin"],
+        parsed: ParsedOptions,
+    ) -> None:
+        parts = (message.text or "").split(maxsplit=1)
+        args = parts[1].strip() if len(parts) > 1 else ""
 
-    reply = message.reply_to_message
-    transcript = ""
-    if not text and reply:
-        if reply.voice or reply.audio or reply.video_note:
-            if not groq_keys():
-                await message.edit(
-                    "Transcribing voice notes needs a Groq key. Set "
-                    f"`GROQ_API_KEY` in .env (model: `{config.TRANSCRIBE_MODEL}`)."
-                )
-                return
-            await message.edit("🎙️ Transcribing...")
-            transcript = await transcribe(client, reply) or ""
-            if not transcript:
-                await message.edit("Could not transcribe the audio.")
-                return
-            text = transcript
-        else:
-            text = reply.text or reply.caption or ""
+        target = config.TRANSLATE_TARGET
+        text = args
+        tokens = args.split(maxsplit=1)
+        if tokens and tokens[0].lower() in KNOWN_LANGS:
+            target = tokens[0].lower()
+            text = tokens[1] if len(tokens) > 1 else ""
 
-    if not text:
-        await message.edit(
-            "Provide text or reply to a message/voice note.\n"
-            f"`{config.CMD_PREFIX}tr [lang] <text>`"
-        )
-        return
+        reply = message.reply_to_message
+        transcript = ""
+        if not text and reply:
+            if reply.voice or reply.audio or reply.video_note:
+                if not groq_keys():
+                    await message.edit(
+                        "Transcribing voice notes needs a Groq key. Set "
+                        f"`GROQ_API_KEY` in .env (model: `{config.TRANSCRIBE_MODEL}`)."
+                    )
+                    return
+                await message.edit("🎙️ Transcribing...")
+                transcript = await transcribe(client, reply) or ""
+                if not transcript:
+                    await message.edit("Could not transcribe the audio.")
+                    return
+                text = transcript
+            else:
+                text = reply.text or reply.caption or ""
 
-    await message.edit("🌐 Translating...")
-    try:
-        translated, detected = await translate_text(text, target)
-    except Exception as exc:
-        logger.error(f"[TRANSLATE] Failed: {exc}")
-        await message.edit(f"Translation failed: {type(exc).__name__}")
-        return
+        if not text:
+            await message.edit(
+                "Provide text or reply to a message/voice note.\n"
+                f"`{config.CMD_PREFIX}tr [lang] <text>`"
+            )
+            return
 
-    if not translated:
-        await message.edit("Could not translate that text.")
-        return
+        await message.edit("🌐 Translating...")
+        try:
+            translated, detected = await translate_text(text, target)
+        except Exception as exc:
+            logger.error(f"[TRANSLATE] Failed: {exc}")
+            await message.edit(f"Translation failed: {type(exc).__name__}")
+            return
 
-    header = f"**Translated to {target}**"
-    if detected and detected != target:
-        header += f" (from {detected})"
-    prefix = f"**Transcript:** {transcript}\n\n" if transcript else ""
-    await message.edit(f"{prefix}{header}:\n\n{translated}")
+        if not translated:
+            await message.edit("Could not translate that text.")
+            return
+
+        header = f"**Translated to {target}**"
+        if detected and detected != target:
+            header += f" (from {detected})"
+        prefix = f"**Transcript:** {transcript}\n\n" if transcript else ""
+        await message.edit(f"{prefix}{header}:\n\n{translated}")
