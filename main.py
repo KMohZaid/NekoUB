@@ -6,17 +6,21 @@ import sys
 import threading
 from pathlib import Path
 
-from pyrogram import Client
 from pyrogram.enums import ParseMode
 
 import config
+from core.plugins import Plugin
+from core.plugins.client import PluginClient
+from core.plugins.manager import PluginManager
 from utils import get_logger
 
 logger = get_logger(__name__)
 
 # Global variables
-app = None
+app: PluginClient | None = None
 loaded_plugins = {}
+loaded_plugin_handlers = {}  # Track legacy public plugin handlers by module.
+plugin_manager = None
 running_tasks = {}  # Track running exec/eval tasks for .kill command
 
 
@@ -77,7 +81,7 @@ def get_parse_mode():
 
 
 def load_plugin(plugin_path: Path) -> bool:
-    """Load a single plugin from file path."""
+    """Load a public legacy plugin or activate a managed plugin declaration."""
     try:
         plugin_name = plugin_path.stem
 
@@ -87,11 +91,10 @@ def load_plugin(plugin_path: Path) -> bool:
 
         # Determine the module prefix based on parent directory
         parent_dir = plugin_path.parent.name
-        module_prefix = (
-            parent_dir
-            if parent_dir in ["plugins", "private_plugins"]
-            else "plugins"
-        )
+        if parent_dir == "private_plugins":
+            logger.warning("Private plugin loading is disabled")
+            return False
+        module_prefix = "plugins"
 
         # Load the module
         spec = importlib.util.spec_from_file_location(
@@ -104,6 +107,19 @@ def load_plugin(plugin_path: Path) -> bool:
 
         # Execute the module
         spec.loader.exec_module(module)
+
+        managed_classes = [
+            value
+            for value in vars(module).values()
+            if isinstance(value, type)
+            and issubclass(value, Plugin)
+            and value is not Plugin
+            and value.__module__ == module.__name__
+        ]
+        if managed_classes:
+            if plugin_manager is None:
+                raise RuntimeError("Managed plugin manager is not initialized")
+            plugin_manager.activate_module(module, plugin_path)
 
         # Store the loaded module
         loaded_plugins[plugin_name] = module
@@ -118,22 +134,16 @@ def load_plugin(plugin_path: Path) -> bool:
         return False
 
 
-def load_all_plugins():
-    """Load all plugins from the plugins and private_plugins directories."""
+def load_all_plugins(*, skip_paths: set[Path] | None = None):
+    """Load public plugins, optionally skipping already managed source files."""
+    skip_paths = {path.resolve() for path in (skip_paths or set())}
     global loaded_plugins
-    loaded_plugins.clear()
 
-    # Load from both plugins and private_plugins directories
-    plugin_dirs = [
-        ("plugins", Path(__file__).parent / "plugins"),
-        ("private_plugins", Path(__file__).parent / "private_plugins"),
-    ]
+    # Discover public plugins only. private_plugins is intentionally excluded.
+    plugin_dirs = [("plugins", Path(__file__).parent / "plugins")]
 
     public_loaded = 0
     public_total = 0
-    private_loaded = 0
-    private_total = 0
-
     for dir_type, plugins_dir in plugin_dirs:
         if not plugins_dir.exists():
             if dir_type == "plugins":
@@ -144,20 +154,21 @@ def load_all_plugins():
         all_files = list(plugins_dir.glob("*.py"))
 
         # Filter out __init__.py and other excluded files
-        plugin_files = [f for f in all_files if not f.stem.startswith("__")]
+        plugin_files = [
+            f for f in all_files
+            if not f.stem.startswith("_") and f.suffix == ".py"
+        ]
 
         loaded_count = 0
         for plugin_file in plugin_files:
+            if plugin_file.resolve() in skip_paths:
+                continue
             if load_plugin(plugin_file):
                 loaded_count += 1
 
         # Track separately
-        if dir_type == "plugins":
-            public_loaded = loaded_count
-            public_total = len(plugin_files)
-        else:
-            private_loaded = loaded_count
-            private_total = len(plugin_files)
+        public_loaded = loaded_count
+        public_total = len(plugin_files)
 
         if plugin_files:
             logger.info(
@@ -165,52 +176,47 @@ def load_all_plugins():
             )
 
     # Log totals
-    total_loaded = public_loaded + private_loaded
-    total_files = public_total + private_total
-    logger.info(
-        f"Total: {total_loaded}/{total_files} plugins ({public_loaded} public, {private_loaded} private)"
-    )
+    logger.info("Loaded %s/%s public plugins", public_loaded, public_total)
 
 
 def reload_plugins():
-    """Reload all plugins."""
-    # Remove old handlers by clearing each group
-    if app and hasattr(app, "dispatcher"):
-        try:
-            # Clear handlers from each group
-            for group in list(app.dispatcher.groups.keys()):
-                if group in app.dispatcher.groups:
-                    app.dispatcher.groups[group].clear()
-            logger.info("Cleared all handler groups")
-        except Exception as e:
-            logger.error(f"Error clearing handler groups: {e}")
+    """Reload managed plugins without duplicating legacy registrations."""
+    managed_paths: set[Path] = {
+        Path(getattr(module, "__file__", "")).resolve()
+        for module in loaded_plugins.values()
+        if getattr(module, "__file__", None)
+    }
+    if plugin_manager is not None:
+        for plugin_id in list(plugin_manager.active):
+            active = plugin_manager.active[plugin_id]
+            if active.source_path is not None:
+                managed_paths.add(active.source_path.resolve())
+            try:
+                plugin_manager.reload(plugin_id)
+            except Exception as e:
+                logger.error(
+                    "Failed to reload managed plugin %s: %s",
+                    plugin_id,
+                    e,
+                    exc_info=True,
+                )
 
-    # Remove loaded modules from sys.modules
-    modules_to_remove = []
-    for module_name in list(sys.modules.keys()):
-        if module_name.startswith("plugins.") or module_name.startswith(
-            "private_plugins."
-        ):
-            modules_to_remove.append(module_name)
-
-    for module_name in modules_to_remove:
-        try:
-            del sys.modules[module_name]
-            logger.debug(f"Removed module: {module_name}")
-        except Exception as e:
-            logger.error(f"Error removing module {module_name}: {e}")
-
-    # Load plugins again
+    # Legacy modules register at import time, but their handlers are not yet
+    # tracked by module. Avoid re-importing them and installing duplicates.
+    if loaded_plugins:
+        logger.warning(
+            "Legacy public plugins cannot be hot-reloaded safely; restart to reload them"
+        )
     try:
-        load_all_plugins()
-        logger.info("Plugins reloaded successfully")
+        load_all_plugins(skip_paths=managed_paths)
+        logger.info("Managed plugins reloaded successfully")
     except Exception as e:
-        logger.error(f"Error loading plugins: {e}", exc_info=True)
+        logger.error("Error loading plugins: %s", e, exc_info=True)
 
 
 def main():
     """Main entry point."""
-    global app
+    global app, plugin_manager
 
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
@@ -230,9 +236,9 @@ def main():
     # Get parse mode
     parse_mode = get_parse_mode()
 
-    # Create Pyrogram client with custom settings
+    # Create Kurigram client with custom settings
     if config.SESSION_STRING:
-        app = Client(
+        app = PluginClient(
             config.CLIENT_NAME,
             api_id=config.API_ID,
             api_hash=config.API_HASH,
@@ -242,7 +248,7 @@ def main():
             parse_mode=parse_mode,
         )
     else:
-        app = Client(
+        app = PluginClient(
             config.CLIENT_NAME,
             api_id=config.API_ID,
             api_hash=config.API_HASH,
@@ -250,6 +256,14 @@ def main():
             workers=config.WORKERS,
             parse_mode=parse_mode,
         )
+
+    # Initialize the managed public plugin manager.
+    plugin_manager = PluginManager(
+        app,
+        Path(__file__).parent / "plugins",
+        prefix=config.CMD_PREFIX,
+        config={key: value for key, value in vars(config).items() if key.isupper()},
+    )
 
     # Make app globally accessible for plugins
     sys.modules[__name__].app = app
@@ -267,7 +281,7 @@ def main():
     except Exception as exc:
         logger.error(f"Could not install Telegram log forwarder: {exc}")
 
-    # Load all plugins
+    # Load public plugins only. Existing private plugins are intentionally excluded.
     load_all_plugins()
 
     # Start the client
