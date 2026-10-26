@@ -37,6 +37,8 @@ class StickerIndexTests(unittest.TestCase):
         )
         self.assertTrue(sticker_index.snapshot_is_usable(42, path=self.path))
         self.assertFalse(sticker_index.snapshot_is_usable(43, path=self.path))
+        self.assertTrue(sticker_index.packs_indexed({"owner_pack_vol1"}, path=self.path))
+        self.assertFalse(sticker_index.packs_indexed({"missing_pack"}, path=self.path))
         self.assertIsNotNone(
             sticker_index.find_match(
                 "unique-1", None, False, "image/webp", 100,
@@ -106,6 +108,36 @@ class StickerIndexTests(unittest.TestCase):
                 {"owner_pack_vol1"}, path=self.path,
             )
         )
+
+    def test_pack_match_counts_detects_stale_inventory(self):
+        sticker_index.replace_snapshot(
+            [(self.pack, [self.record()])], user_id=42, path=self.path
+        )
+        self.assertTrue(
+            sticker_index.packs_match_counts(
+                {"owner_pack_vol1": 1}, path=self.path
+            )
+        )
+        self.assertFalse(
+            sticker_index.packs_match_counts(
+                {"owner_pack_vol1": 2}, path=self.path
+            )
+        )
+        self.assertFalse(
+            sticker_index.packs_match_counts(
+                {"missing_pack": 0}, path=self.path
+            )
+        )
+
+    def test_empty_snapshot_pack_is_indexed(self):
+        empty_pack = {**self.pack, "id": 456, "short_name": "empty_pack"}
+        sticker_index.replace_snapshot(
+            [(self.pack, [self.record()]), (empty_pack, [])],
+            user_id=42,
+            path=self.path,
+        )
+        self.assertTrue(sticker_index.packs_indexed({"empty_pack"}, path=self.path))
+        self.assertTrue(sticker_index.packs_usable({"empty_pack"}, path=self.path))
 
     def test_incomplete_stickers_are_detected(self):
         record = self.record(verified=False, fingerprint=None, fingerprint_kind=None)

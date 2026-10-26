@@ -204,6 +204,45 @@ def get_pack_records(short_name: str, *, path: Path = INDEX_PATH) -> dict[str, d
         return {}
 
 
+def packs_indexed(short_names: set[str], *, path: Path = INDEX_PATH) -> bool:
+    """Return whether every requested pack is present in the last complete snapshot."""
+    if not short_names or not path.exists():
+        return False
+    try:
+        with _database(path) as connection:
+            metadata = dict(connection.execute("SELECT key,value FROM metadata"))
+            placeholders = ",".join("?" for _ in short_names)
+            rows = connection.execute(
+                f"SELECT short_name FROM packs WHERE short_name IN ({placeholders})",
+                tuple(short_names),
+            ).fetchall()
+        return (
+            metadata.get("complete") == "1"
+            and len({row["short_name"] for row in rows}) == len(short_names)
+        )
+    except (OSError, sqlite3.Error):
+        return False
+
+
+def packs_match_counts(pack_counts: dict[str, int], *, path: Path = INDEX_PATH) -> bool:
+    """Return whether cached sticker counts match the owned-pack inventory."""
+    if not pack_counts or not path.exists():
+        return not pack_counts
+    try:
+        with _database(path) as connection:
+            placeholders = ",".join("?" for _ in pack_counts)
+            rows = connection.execute(
+                f"""SELECT p.short_name,COUNT(s.document_id) AS sticker_count
+                    FROM packs p LEFT JOIN stickers s USING(pack_id)
+                    WHERE p.short_name IN ({placeholders}) GROUP BY p.pack_id""",
+                tuple(pack_counts),
+            ).fetchall()
+        actual = {row["short_name"]: row["sticker_count"] for row in rows}
+        return actual == pack_counts
+    except (OSError, sqlite3.Error):
+        return False
+
+
 def packs_usable(short_names: set[str], *, max_age: float = 7 * 86400,
                  path: Path = INDEX_PATH) -> bool:
     if not short_names or not path.exists():
@@ -242,7 +281,7 @@ def has_unverified(short_names: set[str], mime_type: str | None, size: int | Non
         return True
 
 
-def snapshot_is_usable(user_id: int, *, max_age: float = 7 * 86400,
+def snapshot_is_usable(user_id: int, *, max_age: float | None = 7 * 86400,
                        path: Path = INDEX_PATH) -> bool:
     if not path.exists():
         return False
@@ -252,7 +291,10 @@ def snapshot_is_usable(user_id: int, *, max_age: float = 7 * 86400,
         return (
             metadata.get("user_id") == str(user_id)
             and metadata.get("complete") == "1"
-            and time.time() - float(metadata.get("refreshed_at", "0")) <= max_age
+            and (
+                max_age is None
+                or time.time() - float(metadata.get("refreshed_at", "0")) <= max_age
+            )
         )
     except (OSError, sqlite3.Error, ValueError):
         return False
