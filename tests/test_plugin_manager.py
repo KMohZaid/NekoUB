@@ -1,6 +1,8 @@
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import Mock
 
 from core.plugins import Example, Plugin, handlers as h
@@ -99,6 +101,47 @@ class PluginManagerTests(unittest.TestCase):
         self.manager.reload("demo")
         self.assertEqual(self.manager.active["demo"].source_path, plugin_path)
         self.assertEqual(self.client.register_managed_handler.call_count, 2)
+
+    def test_simple_command_plugins_declare_managed_handlers(self):
+        plugins_dir = Path(__file__).resolve().parents[1] / "plugins"
+        modules = {}
+        previous_config = sys.modules.get("config")
+        previous_utils = sys.modules.get("utils")
+        config_module = ModuleType("config")
+        config_module.CMD_PREFIX = "."
+        config_module.STICKERSET_BASE = ""
+        sys.modules["config"] = config_module
+        utils_module = ModuleType("utils")
+        utils_module.get_logger = lambda name: Mock()
+        sys.modules["utils"] = utils_module
+        try:
+            for plugin_id in ("ping", "id", "info", "alive"):
+                path = plugins_dir / f"{plugin_id}.py"
+                spec = __import__("importlib.util", fromlist=["spec_from_file_location"]).spec_from_file_location(
+                    f"test_plugins.{plugin_id}", path
+                )
+                module = __import__("importlib.util", fromlist=["module_from_spec"]).module_from_spec(spec)
+                sys.modules[spec.name] = module
+                spec.loader.exec_module(module)
+                modules[plugin_id] = module
+        finally:
+            if previous_config is None:
+                sys.modules.pop("config", None)
+            else:
+                sys.modules["config"] = previous_config
+            if previous_utils is None:
+                sys.modules.pop("utils", None)
+            else:
+                sys.modules["utils"] = previous_utils
+        for plugin_id, module in modules.items():
+            declaration = PluginManager(
+                self.client, Path(self.temp_dir.name), prefix="."
+            )._validate(next(
+                value() for value in vars(module).values()
+                if isinstance(value, type) and issubclass(value, Plugin) and value is not Plugin
+            ))
+            self.assertEqual(declaration.plugin_id, plugin_id)
+            self.assertTrue(declaration.handlers[0].options.command)
 
     def test_load_all_discovers_only_direct_public_modules(self):
         (Path(self.temp_dir.name) / "demo.py").write_text(

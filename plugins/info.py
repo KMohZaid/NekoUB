@@ -1,10 +1,10 @@
-from pyrogram import filters
+from pyrogram import Client
 from pyrogram.types import Message, User, Chat
 from pyrogram.enums import ChatType
 
 import config
-import main
-from utils import get_logger, continue_propagation
+from core.plugins import Example, ParsedOptions, Plugin, PluginContext, handlers as h
+from utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -65,65 +65,79 @@ def format_chat_info(chat: Chat) -> str:
     return info
 
 
-@main.app.on_message(
-    filters.me & filters.command("info", prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
-async def info_command(client, message: Message):
-    """Get information about user, chat, or replied message.
+class InfoPlugin(Plugin):
+    id = "info"
+    category = "Utility"
+    description = "Show information about a chat, user, or replied message."
 
-    Usage:
-        .info - Get current chat info
-        .info (reply to message) - Get sender's info
-    """
-    try:
-        reply = message.reply_to_message
+    @h.command(
+        "info",
+        description=description,
+        examples=(Example("{cmd}"), Example("{cmd} (reply to a message)")),
+        prefixes=config.CMD_PREFIX,
+        parse_mode="markdown",
+    )
+    async def info_command(
+        self,
+        client: Client,
+        message: Message,
+        ctx: PluginContext["InfoPlugin"],
+        args: ParsedOptions,
+    ) -> None:
+        """Get information about user, chat, or replied message.
 
-        if reply:
-            # Get info about the user who sent the replied message
-            if reply.from_user:
-                user = await client.get_users(reply.from_user.id)
-                info_text = format_user_info(user)
+        Usage:
+            .info - Get current chat info
+            .info (reply to message) - Get sender's info
+        """
+        try:
+            reply = message.reply_to_message
 
-                # Add message info
-                info_text += f"\n**📨 Message Info**\n"
-                info_text += f"**Message ID:** `{reply.id}`\n"
-                if reply.date:
-                    info_text += f"**Date:** {reply.date}\n"
-                if reply.edit_date:
-                    info_text += f"**Edited:** {reply.edit_date}\n"
+            if reply:
+                # Get info about the user who sent the replied message
+                if reply.from_user:
+                    user = await client.get_users(reply.from_user.id)
+                    info_text = format_user_info(user)
 
-                # Add forward from chat info if message is forwarded
-                if reply.forward_from_chat:
-                    info_text += f"\n**🔄 Forwarded From Chat:**\n"
-                    info_text += (
-                        f"**Chat ID:** `{reply.forward_from_chat.id}`\n"
+                    # Add message info
+                    info_text += f"\n**📨 Message Info**\n"
+                    info_text += f"**Message ID:** `{reply.id}`\n"
+                    if reply.date:
+                        info_text += f"**Date:** {reply.date}\n"
+                    if reply.edit_date:
+                        info_text += f"**Edited:** {reply.edit_date}\n"
+
+                    # Add forward from chat info if message is forwarded
+                    if reply.forward_from_chat:
+                        info_text += f"\n**🔄 Forwarded From Chat:**\n"
+                        info_text += (
+                            f"**Chat ID:** `{reply.forward_from_chat.id}`\n"
+                        )
+                        if reply.forward_from_chat.title:
+                            info_text += (
+                                f"**Chat Title:** {reply.forward_from_chat.title}\n"
+                            )
+                        if reply.forward_from_chat.username:
+                            info_text += f"**Username:** @{reply.forward_from_chat.username}\n"
+                        if reply.forward_from_chat.type:
+                            info_text += (
+                                f"**Type:** {reply.forward_from_chat.type.name}\n"
+                            )
+
+                    await message.edit(info_text)
+                else:
+                    await message.edit(
+                        "❌ Could not get user information from replied message"
                     )
-                    if reply.forward_from_chat.title:
-                        info_text += (
-                            f"**Chat Title:** {reply.forward_from_chat.title}\n"
-                        )
-                    if reply.forward_from_chat.username:
-                        info_text += f"**Username:** @{reply.forward_from_chat.username}\n"
-                    if reply.forward_from_chat.type:
-                        info_text += (
-                            f"**Type:** {reply.forward_from_chat.type.name}\n"
-                        )
-
-                await message.edit(info_text)
             else:
-                await message.edit(
-                    "❌ Could not get user information from replied message"
-                )
-        else:
-            # Get current chat info
-            chat = await client.get_chat(message.chat.id)
-            info_text = format_chat_info(chat)
-            await message.edit(info_text)
+                # Get current chat info
+                chat = await client.get_chat(message.chat.id)
+                info_text = format_chat_info(chat)
+                await message.edit(info_text)
 
-        logger.info("Info command executed")
+            logger.info("Info command executed")
 
-    except Exception as e:
-        error_msg = f"❌ Error getting info:\n{str(e)}"
-        await message.edit(error_msg)
-        logger.error(f"Error in info command: {e}")
+        except Exception as e:
+            error_msg = f"❌ Error getting info:\n{str(e)}"
+            await message.edit(error_msg)
+            logger.error(f"Error in info command: {e}")

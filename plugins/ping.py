@@ -1,40 +1,54 @@
 import time
-from pyrogram import filters
+from pyrogram import Client
 from pyrogram.types import Message
 
 import config
-import main
-from utils import get_logger, continue_propagation
+from core.plugins import Example, ParsedOptions, Plugin, PluginContext, handlers as h
+from utils import get_logger
 
 logger = get_logger(__name__)
 
 
-@main.app.on_message(
-    filters.me & filters.command("ping", prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
-async def ping_command(client, message: Message):
-    """Check bot latency.
+class PingPlugin(Plugin):
+    id = "ping"
+    category = "Core"
+    description = "Check userbot latency."
 
-    Usage: .ping
-    """
-    try:
-        # Record start time
-        start_time = time.time()
+    @h.command(
+        "ping",
+        description="Check userbot latency.",
+        examples=(Example("{cmd}"),),
+        prefixes=config.CMD_PREFIX,
+        parse_mode="markdown",
+    )
+    async def ping_command(
+        self,
+        client: Client,
+        message: Message,
+        ctx: PluginContext["PingPlugin"],
+        args: ParsedOptions,
+    ) -> None:
+        """Check bot latency.
 
-        # Edit message (this creates round-trip to Telegram)
-        await message.edit("🏓 Pong!")
+        Usage: .ping
+        """
+        try:
+            # Record start time
+            start_time = time.time()
 
-        # Calculate latency
-        end_time = time.time()
-        latency_ms = round((end_time - start_time) * 1000, 2)
+            # Edit message (this creates round-trip to Telegram)
+            await message.edit("🏓 Pong!")
 
-        # Update with latency info
-        await message.edit(f"🏓 **Pong!**\n⚡ **Latency:** `{latency_ms}ms`")
+            # Calculate latency
+            end_time = time.time()
+            latency_ms = round((end_time - start_time) * 1000, 2)
 
-        logger.info(f"Ping command executed - Latency: {latency_ms}ms")
+            # Update with latency info
+            await message.edit(f"🏓 **Pong!**\n⚡ **Latency:** `{latency_ms}ms`")
 
-    except Exception as e:
-        error_msg = f"❌ Error in ping command: {str(e)}"
-        await message.edit(error_msg)
-        logger.error(f"Error in ping command: {e}")
+            logger.info(f"Ping command executed - Latency: {latency_ms}ms")
+
+        except Exception as e:
+            error_msg = f"❌ Error in ping command: {str(e)}"
+            await message.edit(error_msg)
+            logger.error(f"Error in ping command: {e}")
