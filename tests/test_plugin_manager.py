@@ -227,7 +227,7 @@ class PluginManagerTests(unittest.TestCase):
         utils_module.get_logger = lambda name: Mock()
         sys.modules["utils"] = utils_module
         try:
-            for plugin_id in ("ping", "id", "info", "alive", "translate"):
+            for plugin_id in ("ping", "id", "info", "alive", "translate", "sangmata"):
                 path = plugins_dir / f"{plugin_id}.py"
                 from importlib.util import module_from_spec, spec_from_file_location
 
