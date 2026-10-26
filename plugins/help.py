@@ -1,9 +1,16 @@
-# NOTE: Telegram only renders inline keyboards on messages sent by bots. A
-# userbot sends as a regular user account, so buttons are silently ignored;
-# this menu navigates with plain text commands instead.
+import html
+import re
 
-from pyrogram import Client
-from pyrogram.types import Message
+from pyrogram import Client, filters as F
+from pyrogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InlineQuery,
+    InlineQueryResultArticle,
+    InputTextMessageContent,
+    CallbackQuery,
+    Message,
+)
 
 import config
 import main
@@ -385,6 +392,30 @@ CATEGORIES: dict[str, dict] = {
 }
 
 
+def _html(text: str) -> str:
+    """Convert the help renderer's Markdown subset to escaped Telegram HTML."""
+    escaped = html.escape(text, quote=False)
+    escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
+    escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
+    escaped = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<i>\1</i>", escaped)
+    return escaped
+
+
+def _help_keyboard(current: str = "root") -> InlineKeyboardMarkup:
+    rows = []
+    for index, key in enumerate(CATEGORIES):
+        category = CATEGORIES[key]
+        rows.append(
+            [InlineKeyboardButton(
+                f"{index + 1}. {category['emoji']} {category['title']}",
+                callback_data=f"help.category:{key}",
+            )]
+        )
+    if current != "root":
+        rows.append([InlineKeyboardButton("Help home", callback_data="help.root")])
+    return InlineKeyboardMarkup(rows)
+
+
 def _prefix() -> str:
     return config.CMD_PREFIX
 
@@ -581,6 +612,76 @@ class HelpPlugin(Plugin):
     category = "Core"
     description = "Show help for public and managed commands."
 
+    @h.bot_callback_query(filters=F.regex(r"^help\."), public=True)
+    async def help_callback(
+        self,
+        bot: Client,
+        callback: CallbackQuery,
+        ctx: PluginContext["HelpPlugin"],
+    ) -> None:
+        action = callback.data.removeprefix("help.")
+        if action == "root":
+            content = render_root()
+        elif action.startswith("category:"):
+            category = action.partition(":")[2]
+            content = render_category(category)
+        elif action.startswith("detail:"):
+            _, category, index = action.split(":", 2)
+            content = render_detail(category, int(index))
+        else:
+            await callback.answer("Unknown help page.", show_alert=True)
+            return
+        await callback.answer()
+        await callback.message.edit_text(
+            _html(content),
+            parse_mode="html",
+            reply_markup=_help_keyboard(action),
+        )
+
+    @h.bot_inline_query(filters=F.regex(r"^(?:help(?:\s|$)|help\.)"), public=True)
+    async def help_inline_query(
+        self,
+        bot: Client,
+        query: InlineQuery,
+        ctx: PluginContext["HelpPlugin"],
+    ) -> None:
+        text = query.query.partition(" ")[2].strip()
+        rendered = render(text)
+        await query.answer(
+            [
+                InlineQueryResultArticle(
+                    title="NekoUB help",
+                    description="Open help menu" if not text else f"Help: {text}",
+                    input_message_content=InputTextMessageContent(
+                        _html(rendered), parse_mode="html"
+                    ),
+                    reply_markup=_help_keyboard("root"),
+                )
+            ],
+            cache_time=0,
+            is_personal=True,
+        )
+
+    @h.bot_command(
+        "help",
+        description="Open the NekoUB inline help menu.",
+        prefixes="/",
+        filters=F.private,
+    )
+    async def bot_help_command(
+        self,
+        bot: Client,
+        message: Message,
+        ctx: PluginContext["HelpPlugin"],
+        args: ParsedOptions,
+    ) -> None:
+        await message.reply_text(
+            "Choose a help page:",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("Open help", switch_inline_query="help")]]
+            ),
+        )
+
     @h.command(
         "help",
         aliases=("commands", "cmds", "menu"),
@@ -592,7 +693,6 @@ class HelpPlugin(Plugin):
             Example("{cmd} all"),
         ),
         prefixes=config.CMD_PREFIX,
-        parse_mode="markdown",
     )
     async def help_command(
         self,
@@ -609,7 +709,7 @@ class HelpPlugin(Plugin):
         try:
             parts = (message.text or "").split(maxsplit=1)
             help_args = parts[1] if len(parts) > 1 else ""
-            await ctx.edit(render(help_args), message=message)
+            await ctx.edit(_html(render(help_args)), message=message)
         except Exception as exc:
             logger.error(f"[HELP] Failed to render menu: {exc}")
             await ctx.edit(

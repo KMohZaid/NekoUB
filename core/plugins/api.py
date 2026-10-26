@@ -92,6 +92,7 @@ class HandlerOptions:
     handler_kwargs: Mapping[str, Any] = field(default_factory=dict)
     command: CommandOptions | None = None
     bot: bool = False
+    public: bool = False
 
 
 def command(
@@ -106,6 +107,7 @@ def command(
     parse_mode: str = "html",
     prefixes: str | tuple[str, ...] = ".",
     bot: bool = False,
+    public: bool = False,
     **handler_kwargs: Any,
 ) -> Callable[[Callback], Callback]:
     """Declare a command; the plugin manager installs it later."""
@@ -126,6 +128,7 @@ def command(
             handler_kwargs=handler_kwargs,
             command=metadata,
             bot=bot,
+            public=public,
         ),
     )
 
@@ -135,11 +138,17 @@ def _event_decorator(
     *,
     filters: Any = None,
     bot: bool = False,
+    public: bool = False,
     **handler_kwargs: Any,
 ) -> Callable[[Callback], Callback]:
     return _declare(
         event,
-        HandlerOptions(filters=filters, handler_kwargs=handler_kwargs, bot=bot),
+        HandlerOptions(
+            filters=filters,
+            handler_kwargs=handler_kwargs,
+            bot=bot,
+            public=public,
+        ),
     )
 
 
@@ -183,9 +192,41 @@ def _wrap_handler(
 
     @wraps(original)
     async def invoke(client: Client, update: Any, *args: Any, **kwargs: Any) -> Any:
+        from pyrogram import ContinuePropagation
+
         is_bot_handler = declaration.options.bot or declaration.event.startswith("bot_")
         if is_bot_handler and not getattr(client, "is_bot", False):
             raise RuntimeError("Bot handler was attached to a non-bot client")
+        if declaration.event in {
+            "callback_query", "inline_query", "bot_callback_query", "bot_inline_query"
+        } and not declaration.options.public:
+            owner_client = user_client or (None if is_bot_handler else client)
+            owner = getattr(owner_client, "me", None) if owner_client else None
+            if owner is None and owner_client is not None:
+                try:
+                    owner = await owner_client.get_me()
+                except Exception:
+                    owner = None
+            sender = getattr(update, "from_user", None)
+            is_owner = bool(owner and sender and owner.id == sender.id)
+            if not is_owner:
+                if "inline_query" in declaration.event:
+                    from pyrogram.types import InlineQueryResultArticle, InputTextMessageContent
+
+                    await update.answer(
+                        [InlineQueryResultArticle(
+                            title="Owner only",
+                            input_message_content=InputTextMessageContent(
+                                "You can't perform this action."
+                            ),
+                            description="You can't perform this action.",
+                        )],
+                        cache_time=0,
+                        is_personal=True,
+                    )
+                else:
+                    await update.answer("You can't perform this action.", show_alert=True)
+                raise ContinuePropagation
         context = PluginContext(
             client=(
                 user_client
@@ -303,18 +344,26 @@ class HandlerCollection:
 
     @staticmethod
     def bot_callback_query(
-        *, filters: Any = None, **handler_kwargs: Any
+        *, filters: Any = None, public: bool = False, **handler_kwargs: Any
     ) -> Callable[[Callback], Callback]:
         return _event_decorator(
-            "bot_callback_query", filters=filters, bot=True, **handler_kwargs
+            "bot_callback_query",
+            filters=filters,
+            bot=True,
+            public=public,
+            **handler_kwargs,
         )
 
     @staticmethod
     def bot_inline_query(
-        *, filters: Any = None, **handler_kwargs: Any
+        *, filters: Any = None, public: bool = False, **handler_kwargs: Any
     ) -> Callable[[Callback], Callback]:
         return _event_decorator(
-            "bot_inline_query", filters=filters, bot=True, **handler_kwargs
+            "bot_inline_query",
+            filters=filters,
+            bot=True,
+            public=public,
+            **handler_kwargs,
         )
 
 

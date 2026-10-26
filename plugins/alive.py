@@ -1,6 +1,6 @@
-import time
+import html
 import platform
-from datetime import datetime
+import time
 from pyrogram import Client, __version__ as pyrogram_version
 from pyrogram.types import Message
 
@@ -45,7 +45,6 @@ class AlivePlugin(Plugin):
         description=description,
         examples=(Example("{cmd}"),),
         prefixes=config.CMD_PREFIX,
-        parse_mode="markdown",
     )
     async def alive_command(
         self,
@@ -63,31 +62,33 @@ class AlivePlugin(Plugin):
             me = await client.get_me()
             username = f"@{me.username}" if me.username else "No username"
 
-            # Build alive message with neko theme
-            alive_msg = "**╔═══════════════════╗**\n"
-            alive_msg += "**║   NekoUB Userbot   ║**\n"
-            alive_msg += "**╚═══════════════════╝**\n\n"
+            # Build an HTML status message with a monospaced banner.
+            banner = (
+                "╔═══════════════════╗\n"
+                "║   NekoUB Userbot   ║\n"
+                "╚═══════════════════╝"
+            )
+            alive_msg = f"<pre>{banner}</pre>\n\n"
+            alive_msg += "<b>🐱 Nya~ I'm alive and ready!</b>\n\n"
 
-            alive_msg += "**🐱 Nya~ I'm alive and ready!**\n\n"
+            alive_msg += "<b>┌─ Owner Info ─┐</b>\n"
+            alive_msg += f"│ 👤 <b>Name:</b> {html.escape(me.first_name)}\n"
+            alive_msg += f"│ 🆔 <b>ID:</b> <code>{me.id}</code>\n"
+            alive_msg += f"│ 📝 <b>Username:</b> {html.escape(username)}\n"
+            alive_msg += "└───────────────┘\n\n"
 
-            alive_msg += "**┌─ Owner Info ─┐**\n"
-            alive_msg += f"**│** 👤 **Name:** {me.first_name}\n"
-            alive_msg += f"**│** 🆔 **ID:** `{me.id}`\n"
-            alive_msg += f"**│** 📝 **Username:** {username}\n"
-            alive_msg += "**└───────────────┘**\n\n"
+            alive_msg += "<b>┌─ System Info ─┐</b>\n"
+            alive_msg += f"│ ⏰ <b>Uptime:</b> {get_uptime()}\n"
+            alive_msg += f"│ 🔌 <b>Plugins:</b> {len(main.loaded_plugins)}\n"
+            alive_msg += f"│ 📚 <b>Pyrogram:</b> {pyrogram_version}\n"
+            alive_msg += f"│ 🐍 <b>Python:</b> {platform.python_version()}\n"
+            alive_msg += f"│ 💻 <b>Platform:</b> {html.escape(platform.system())}\n"
+            alive_msg += "└───────────────┘\n\n"
 
-            alive_msg += "**┌─ System Info ─┐**\n"
-            alive_msg += f"**│** ⏰ **Uptime:** {get_uptime()}\n"
-            alive_msg += f"**│** 🔌 **Plugins:** {len(main.loaded_plugins)}\n"
-            alive_msg += f"**│** 📚 **Pyrogram:** {pyrogram_version}\n"
-            alive_msg += f"**│** 🐍 **Python:** {platform.python_version()}\n"
-            alive_msg += f"**│** 💻 **Platform:** {platform.system()}\n"
-            alive_msg += "**└───────────────┘**\n\n"
+            alive_msg += f"<b>✨ Prefix:</b> <code>{html.escape(config.CMD_PREFIX)}</code>\n"
+            alive_msg += "<b>💝 Made with love by NekoUB</b>"
 
-            alive_msg += f"**✨ Prefix:** `{config.CMD_PREFIX}`\n"
-            alive_msg += "**💝 Made with love by NekoUB**"
-
-            await message.edit(alive_msg)
+            await message.edit(alive_msg, parse_mode="html")
 
             logger.info("Alive command executed")
 

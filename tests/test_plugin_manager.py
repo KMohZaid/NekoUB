@@ -191,10 +191,21 @@ class PluginManagerTests(unittest.TestCase):
                 value for value in vars(module).values()
                 if isinstance(value, type) and issubclass(value, Plugin) and value is not Plugin
             )
+            bot_client = Mock()
+            bot_client.is_bot = True
             declaration = PluginManager(
-                self.client, Path(self.temp_dir.name), prefix="."
+                self.client,
+                Path(self.temp_dir.name),
+                prefix=".",
+                bot_client=bot_client,
             )._validate(plugin_class())
-            command = declaration.handlers[0].options.command
+            command = next(
+                handler.options.command
+                for handler in declaration.handlers
+                if handler.event == "command"
+                and handler.options.command is not None
+                and not handler.options.bot
+            )
             self.assertEqual(command.aliases, ("commands", "cmds", "menu"))
         finally:
             for name, previous in (

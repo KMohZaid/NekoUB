@@ -301,7 +301,7 @@ class PluginManager:
             raise ValueError(f"Plugin {plugin.id!r} declares no handlers")
         if plugin.id in self.registry.plugins and plugin.id not in self.active:
             raise ValueError(f"Duplicate plugin id: {plugin.id}")
-        names: set[str] = set()
+        names: set[tuple[str, str]] = set()
         for item in declaration.handlers:
             if item.event not in HANDLER_TYPES:
                 raise ValueError(f"Unsupported handler event {item.event!r}")
@@ -334,10 +334,11 @@ class PluginManager:
                     or command.trigger.startswith("-")
                 ):
                     raise ValueError(f"Invalid command trigger {command.trigger!r}")
+                command_client = "bot" if options.bot or item.event.startswith("bot_") else "user"
                 for name in (command.trigger, *command.aliases):
                     if not name or not name.replace("_", "a").isalnum():
                         raise ValueError(f"Invalid command name or alias {name!r}")
-                    key = name.casefold()
+                    key = (command_client, name.casefold())
                     if key in names:
                         raise ValueError(f"Duplicate command or alias {name!r}")
                     names.add(key)
