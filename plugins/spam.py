@@ -1,12 +1,13 @@
 import asyncio
 import re
 
-from pyrogram import filters
+from pyrogram import Client
 from pyrogram.types import Message
 
 import config
 import main
-from utils import continue_propagation, get_logger
+from core.plugins import Example, ParsedOptions, Plugin, PluginContext, handlers as h
+from utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -137,237 +138,252 @@ def parse_spam_args(text):
     return result
 
 
-@main.app.on_message(
-    filters.me
-    & filters.command(
-        ["spam", "spam_stop", "spam_help", "spam_stat"],
+class SpamPlugin(Plugin):
+    id = "spam"
+    category = "Fun / Spam"
+    description = "Send repeated messages with delay and count controls."
+
+    @h.command(
+        "spam",
+        aliases=("spam_stop", "spam_help", "spam_stat"),
+        description=description,
+        examples=(
+            Example("{cmd} 10 Hello World"),
+            Example("{cmd} -d 5s 3 Hi"),
+            Example("{cmd} -del -c 5 Test"),
+        ),
         prefixes=config.CMD_PREFIX,
+        parse_mode="markdown",
     )
-)
-@continue_propagation
-async def spam_command(client, message: Message):
-    """Unified spam command with flags.
+    async def spam_command(
+        self,
+        client: Client,
+        message: Message,
+        ctx: PluginContext["SpamPlugin"],
+        args: ParsedOptions,
+    ) -> None:
+        """Unified spam command with flags.
 
-    Usage:
-        .spam [flags] <count> <text>
-        .spam [flags] (reply to message)
-    Flags:
-        -c, -count <num>     : Specify count (optional, can use direct number)
-        -d, -delay <time>    : Delay between messages (10s, 5m, 1h)
-        -del, -delete        : Auto-delete sent messages after 2.5s
-        -r, -reply           : Send as reply to replied message
+        Usage:
+            .spam [flags] <count> <text>
+            .spam [flags] (reply to message)
+        Flags:
+            -c, -count <num>     : Specify count (optional, can use direct number)
+            -d, -delay <time>    : Delay between messages (10s, 5m, 1h)
+            -del, -delete        : Auto-delete sent messages after 2.5s
+            -r, -reply           : Send as reply to replied message
 
-    Examples:
-        .spam 10 Hello World
-        .spam -d 5s 10 Hello
-        .spam -del -c 10 -d 2s Test
-        .spam -r 5 Hi (reply to message)
-        .spam_stop
-        .spam_help
-        .spam_stat
-    """
-    global spam_active, spam_stats
+        Examples:
+            .spam 10 Hello World
+            .spam -d 5s 10 Hello
+            .spam -del -c 10 -d 2s Test
+            .spam -r 5 Hi (reply to message)
+            .spam_stop
+            .spam_help
+            .spam_stat
+        """
+        global spam_active, spam_stats
 
-    try:
-        cmd = message.command[0]
+        try:
+            cmd = message.command[0].split("@", 1)[0].casefold()
 
-        # Handle spam_stat
-        if cmd == "spam_stat":
-            chat_id = message.chat.id
-            if chat_id in spam_stats:
-                current = spam_stats[chat_id]["current"]
-                total = spam_stats[chat_id]["total"]
-                await message.edit(f"📊 Spam Progress: {current}/{total}")
-            else:
-                await message.edit("ℹ️ No active spam in this chat")
+            # Handle spam_stat
+            if cmd == "spam_stat":
+                chat_id = message.chat.id
+                if chat_id in spam_stats:
+                    current = spam_stats[chat_id]["current"]
+                    total = spam_stats[chat_id]["total"]
+                    await message.edit(f"📊 Spam Progress: {current}/{total}")
+                else:
+                    await message.edit("ℹ️ No active spam in this chat")
 
-            await asyncio.sleep(3)
+                await asyncio.sleep(3)
+                await message.delete()
+                return
+
+            # Handle spam_stop
+            if cmd == "spam_stop":
+                chat_id = message.chat.id
+                if chat_id in spam_active:
+                    spam_active[chat_id].cancel()
+                    del spam_active[chat_id]
+                    if chat_id in spam_stats:
+                        del spam_stats[chat_id]
+                    await message.edit("✅ Spam stopped")
+                    logger.info("Spam stopped by user")
+                else:
+                    await message.edit("ℹ️ No active spam to stop")
+
+                await asyncio.sleep(2)
+                await message.delete()
+                return
+
+            # Handle spam_help
+            if cmd == "spam_help":
+                help_text = f"""**📨 Spam Command Help**
+
+    **Usage:**
+    `.spam [flags] <count> <text>`
+    `.spam [flags]` (reply to message)
+
+    **Flags:**
+    `-c, -count <num>` - Specify count
+    `-d, -delay <time>` - Delay (10s, 5m, 1h)
+    `-del, -delete` - Auto-delete after 2.5s
+    `-r, -reply` - Reply to replied message
+    `-ignore, -nolimit` - Bypass max count limit
+
+    **Examples:**
+    • `.spam 10 Hello World`
+    • `.spam -d 5s 10 Test`
+    • `.spam -del -c 10 -d 2s Message`
+    • `.spam -r 5 Hi` (reply mode)
+    • `.spam -c 5` (copy replied message)
+    • `.spam -ignore 1000 Spam` (bypass limit)
+
+    **Other Commands:**
+    • `.spam_stop` - Stop active spam
+    • `.spam_stat` - Show spam progress
+    • `.spam_help` - Show this help
+
+    **Note:** Max count is **{config.MAX_SPAM_COUNT}** (use `-ignore` to bypass)"""
+
+                await message.edit(help_text)
+                await asyncio.sleep(30)
+                await message.delete()
+                return
+
+            # Handle spam command
+            args = parse_spam_args(message.text)
+
+            if args is None:
+                await message.edit(
+                    "Usage: `.spam [flags] <count> <text>` or use `.spam_help`"
+                )
+                return
+
+            # Validate count
+            if args["count"] is None:
+                await message.edit("Error: No count provided")
+                return
+
+            # Check limit unless -ignore flag is set
+            if not args["ignore_limit"] and args["count"] > config.MAX_SPAM_COUNT:
+                await message.edit(
+                    f"Error: Maximum spam count is {config.MAX_SPAM_COUNT}\nUse `-ignore` flag to bypass"
+                )
+                return
+
+            if args["count"] < 1:
+                await message.edit("Error: Count must be at least 1")
+                return
+
+            # Get message source
+            reply = message.reply_to_message
+            copy_mode = False
+
+            if args["message_text"] is None:
+                if not reply:
+                    await message.edit(
+                        "Error: No text provided and no message to reply to"
+                    )
+                    return
+                copy_mode = True
+
+            # Delete command message
             await message.delete()
-            return
 
-        # Handle spam_stop
-        if cmd == "spam_stop":
+            # Cancel previous spam in this chat if active
             chat_id = message.chat.id
             if chat_id in spam_active:
                 spam_active[chat_id].cancel()
-                del spam_active[chat_id]
-                if chat_id in spam_stats:
-                    del spam_stats[chat_id]
-                await message.edit("✅ Spam stopped")
-                logger.info("Spam stopped by user")
-            else:
-                await message.edit("ℹ️ No active spam to stop")
+                logger.info("Cancelled previous spam task")
 
-            await asyncio.sleep(2)
-            await message.delete()
-            return
+            # Start spamming
+            async def spam_loop():
+                try:
+                    count = args["count"]
+                    delay = args["delay"]
+                    delete_after = args["delete_after"]
+                    reply_mode = args["reply_mode"]
 
-        # Handle spam_help
-        if cmd == "spam_help":
-            help_text = f"""**📨 Spam Command Help**
+                    # Initialize stats
+                    spam_stats[chat_id] = {"current": 0, "total": count}
 
-**Usage:**
-`.spam [flags] <count> <text>`
-`.spam [flags]` (reply to message)
-
-**Flags:**
-`-c, -count <num>` - Specify count
-`-d, -delay <time>` - Delay (10s, 5m, 1h)
-`-del, -delete` - Auto-delete after 2.5s
-`-r, -reply` - Reply to replied message
-`-ignore, -nolimit` - Bypass max count limit
-
-**Examples:**
-• `.spam 10 Hello World`
-• `.spam -d 5s 10 Test`
-• `.spam -del -c 10 -d 2s Message`
-• `.spam -r 5 Hi` (reply mode)
-• `.spam -c 5` (copy replied message)
-• `.spam -ignore 1000 Spam` (bypass limit)
-
-**Other Commands:**
-• `.spam_stop` - Stop active spam
-• `.spam_stat` - Show spam progress
-• `.spam_help` - Show this help
-
-**Note:** Max count is **{config.MAX_SPAM_COUNT}** (use `-ignore` to bypass)"""
-
-            await message.edit(help_text)
-            await asyncio.sleep(30)
-            await message.delete()
-            return
-
-        # Handle spam command
-        args = parse_spam_args(message.text)
-
-        if args is None:
-            await message.edit(
-                "Usage: `.spam [flags] <count> <text>` or use `.spam_help`"
-            )
-            return
-
-        # Validate count
-        if args["count"] is None:
-            await message.edit("Error: No count provided")
-            return
-
-        # Check limit unless -ignore flag is set
-        if not args["ignore_limit"] and args["count"] > config.MAX_SPAM_COUNT:
-            await message.edit(
-                f"Error: Maximum spam count is {config.MAX_SPAM_COUNT}\nUse `-ignore` flag to bypass"
-            )
-            return
-
-        if args["count"] < 1:
-            await message.edit("Error: Count must be at least 1")
-            return
-
-        # Get message source
-        reply = message.reply_to_message
-        copy_mode = False
-
-        if args["message_text"] is None:
-            if not reply:
-                await message.edit(
-                    "Error: No text provided and no message to reply to"
-                )
-                return
-            copy_mode = True
-
-        # Delete command message
-        await message.delete()
-
-        # Cancel previous spam in this chat if active
-        chat_id = message.chat.id
-        if chat_id in spam_active:
-            spam_active[chat_id].cancel()
-            logger.info("Cancelled previous spam task")
-
-        # Start spamming
-        async def spam_loop():
-            try:
-                count = args["count"]
-                delay = args["delay"]
-                delete_after = args["delete_after"]
-                reply_mode = args["reply_mode"]
-
-                # Initialize stats
-                spam_stats[chat_id] = {"current": 0, "total": count}
-
-                # Helper to delete a message after delay
-                async def delete_msg_later(msg, delay_sec):
-                    await asyncio.sleep(delay_sec)
-                    try:
-                        await msg.delete()
-                    except Exception as e:
-                        logger.debug(f"Failed to delete message: {e}")
-
-                if copy_mode:
-                    logger.info(
-                        f"Spamming {count} messages (copy mode) with {delay}s delay"
-                    )
-                    for i in range(count):
-                        if chat_id not in spam_active:
-                            logger.info(f"Spam stopped at {i + 1}/{count}")
-                            break
+                    # Helper to delete a message after delay
+                    async def delete_msg_later(msg, delay_sec):
+                        await asyncio.sleep(delay_sec)
                         try:
-                            sent = await reply.copy(message.chat.id)
-                            spam_stats[chat_id]["current"] = i + 1
-                            if delete_after:
-                                asyncio.create_task(
-                                    delete_msg_later(sent, delete_after)
-                                )
-                            if i < count - 1:
-                                await asyncio.sleep(delay)
+                            await msg.delete()
                         except Exception as e:
-                            logger.error(
-                                f"Error copying spam message {i + 1}/{count}: {e}"
-                            )
-                            break
-                else:
-                    logger.info(
-                        f"Spamming {count} messages with {delay}s delay: {args['message_text'][:50]}..."
-                    )
-                    for i in range(count):
-                        if chat_id not in spam_active:
-                            logger.info(f"Spam stopped at {i + 1}/{count}")
-                            break
-                        try:
-                            # Send message
-                            if reply_mode and reply:
-                                sent = await reply.reply(args["message_text"])
-                            else:
-                                sent = await client.send_message(
-                                    message.chat.id, args["message_text"]
+                            logger.debug(f"Failed to delete message: {e}")
+
+                    if copy_mode:
+                        logger.info(
+                            f"Spamming {count} messages (copy mode) with {delay}s delay"
+                        )
+                        for i in range(count):
+                            if chat_id not in spam_active:
+                                logger.info(f"Spam stopped at {i + 1}/{count}")
+                                break
+                            try:
+                                sent = await reply.copy(message.chat.id)
+                                spam_stats[chat_id]["current"] = i + 1
+                                if delete_after:
+                                    asyncio.create_task(
+                                        delete_msg_later(sent, delete_after)
+                                    )
+                                if i < count - 1:
+                                    await asyncio.sleep(delay)
+                            except Exception as e:
+                                logger.error(
+                                    f"Error copying spam message {i + 1}/{count}: {e}"
                                 )
+                                break
+                    else:
+                        logger.info(
+                            f"Spamming {count} messages with {delay}s delay: {args['message_text'][:50]}..."
+                        )
+                        for i in range(count):
+                            if chat_id not in spam_active:
+                                logger.info(f"Spam stopped at {i + 1}/{count}")
+                                break
+                            try:
+                                # Send message
+                                if reply_mode and reply:
+                                    sent = await reply.reply(args["message_text"])
+                                else:
+                                    sent = await client.send_message(
+                                        message.chat.id, args["message_text"]
+                                    )
 
-                            spam_stats[chat_id]["current"] = i + 1
+                                spam_stats[chat_id]["current"] = i + 1
 
-                            if delete_after:
-                                asyncio.create_task(
-                                    delete_msg_later(sent, delete_after)
+                                if delete_after:
+                                    asyncio.create_task(
+                                        delete_msg_later(sent, delete_after)
+                                    )
+
+                                if i < count - 1:
+                                    await asyncio.sleep(delay)
+                            except Exception as e:
+                                logger.error(
+                                    f"Error sending spam message {i + 1}/{count}: {e}"
                                 )
+                                break
 
-                            if i < count - 1:
-                                await asyncio.sleep(delay)
-                        except Exception as e:
-                            logger.error(
-                                f"Error sending spam message {i + 1}/{count}: {e}"
-                            )
-                            break
+                    logger.info(f"Spam completed: {count} messages sent")
 
-                logger.info(f"Spam completed: {count} messages sent")
+                finally:
+                    if chat_id in spam_active:
+                        del spam_active[chat_id]
+                    if chat_id in spam_stats:
+                        del spam_stats[chat_id]
 
-            finally:
-                if chat_id in spam_active:
-                    del spam_active[chat_id]
-                if chat_id in spam_stats:
-                    del spam_stats[chat_id]
+            task = asyncio.create_task(spam_loop())
+            spam_active[chat_id] = task
 
-        task = asyncio.create_task(spam_loop())
-        spam_active[chat_id] = task
-
-    except Exception as e:
-        error_msg = f"Error in spam command: {str(e)}"
-        await message.edit(error_msg)
-        logger.error(error_msg)
+        except Exception as e:
+            error_msg = f"Error in spam command: {str(e)}"
+            await message.edit(error_msg)
+            logger.error(error_msg)
