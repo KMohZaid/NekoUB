@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import tempfile
 import unittest
@@ -33,6 +34,35 @@ class PluginManagerTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp_dir.cleanup()
+
+    def test_log_forwarder_uses_current_event_loop(self):
+        loop = asyncio.new_event_loop()
+        self.addCleanup(loop.close)
+        client = Mock()
+        previous_config = sys.modules.get("config")
+        previous_utils = sys.modules.get("utils")
+        config_module = ModuleType("config")
+        config_module.DEBUG_CHAT_ID = 0
+        config_module.DEBUG_LOG_LEVEL = "INFO"
+        utils_module = ModuleType("utils")
+        utils_module.get_logger = lambda name: Mock()
+        sys.modules.update(config=config_module, utils=utils_module)
+        try:
+            from importlib.util import module_from_spec, spec_from_file_location
+
+            path = Path(__file__).resolve().parents[1] / "utils" / "telegram_logging.py"
+            spec = spec_from_file_location("test_telegram_logging", path)
+            module = module_from_spec(spec)
+            spec.loader.exec_module(module)
+            self.assertIsNone(module.install(loop, client))
+            self.assertEqual(len(asyncio.all_tasks(loop)), 0)
+        finally:
+            sys.modules.pop("utils.telegram_logging", None)
+            for name, previous in (("config", previous_config), ("utils", previous_utils)):
+                if previous is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = previous
 
     def test_activation_tracks_handler_ownership(self):
         self.manager.activate(ManagedPlugin())

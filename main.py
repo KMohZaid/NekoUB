@@ -317,7 +317,7 @@ def main():
     try:
         from utils.telegram_logging import install as install_log_forwarder
 
-        install_log_forwarder(app.loop, app)
+        install_log_forwarder(asyncio.get_event_loop(), app)
     except Exception as exc:
         logger.error(f"Could not install Telegram log forwarder: {exc}")
 
