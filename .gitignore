@@ -49,6 +49,9 @@ ENV/
 *.log
 logs/
 
+# Local untracked files
+.ignore/
+
 # Sticker cache
 .sticker_cache.json
 .sticker_index.sqlite3*
