@@ -9,6 +9,7 @@ from typing import Any, Callable, Mapping, Sequence, TypeVar
 
 from pyrogram import Client
 from pyrogram.enums import ParseMode
+
 from pyrogram.handlers import (
     CallbackQueryHandler,
     EditedMessageHandler,
@@ -17,7 +18,7 @@ from pyrogram.handlers import (
 )
 from pyrogram.types import CallbackQuery, InlineQuery, Message
 
-from .context import PluginContext
+from .context import PluginContext, resolve_parse_mode
 from .errors import OptionParseError, parse_options
 from .registry import HandlerDeclaration
 
@@ -80,8 +81,11 @@ class CommandOptions:
     category: str | None = None
     examples: tuple[Example, ...] = ()
     options: tuple[Option, ...] = ()
-    parse_mode: str = "html"
+    parse_mode: ParseMode | str = ParseMode.HTML
     prefixes: str | tuple[str, ...] = "."
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "parse_mode", resolve_parse_mode(self.parse_mode))
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +108,7 @@ def command(
     examples: Sequence[Example] = (),
     options: Sequence[Option] = (),
     filters: Any = None,
-    parse_mode: str = "html",
+    parse_mode: ParseMode | str = ParseMode.HTML,
     prefixes: str | tuple[str, ...] = ".",
     bot: bool = False,
     public: bool = False,
@@ -244,7 +248,7 @@ def _wrap_handler(
         )
         if command_options is not None:
             context.command = command_options
-            context.parse_mode = command_options.parse_mode
+            context.parse_mode = resolve_parse_mode(command_options.parse_mode)
         handler_args = args
         if command_options is not None and declaration.event == "command":
             raw_text = getattr(update, "text", None) or getattr(update, "caption", "") or ""

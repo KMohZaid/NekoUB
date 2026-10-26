@@ -2,6 +2,7 @@ import html
 import platform
 import time
 from pyrogram import Client, __version__ as pyrogram_version
+from pyrogram.enums import ParseMode
 from pyrogram.types import Message
 
 import config
@@ -88,7 +89,7 @@ class AlivePlugin(Plugin):
             alive_msg += f"<b>✨ Prefix:</b> <code>{html.escape(config.CMD_PREFIX)}</code>\n"
             alive_msg += "<b>💝 Made with love by NekoUB</b>"
 
-            await message.edit(alive_msg, parse_mode="html")
+            await message.edit(alive_msg, parse_mode=ParseMode.HTML)
 
             logger.info("Alive command executed")
 

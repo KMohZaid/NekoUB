@@ -1,12 +1,13 @@
 import unittest
 
-from core.plugins.context import _split_html
+from core.plugins.context import PluginContext, _split_html, resolve_parse_mode
 
 from core.plugins import Example, Option, Plugin, PluginRegistry, handlers as h
 from core.plugins.api import _wrap_handler
 from core.plugins.registry import HandlerDeclaration
 from core.plugins.errors import OptionParseError, parse_options
 from pyrogram import filters as F
+from pyrogram.enums import ParseMode
 
 
 class DemoPlugin(Plugin):
@@ -172,6 +173,36 @@ class PluginApiTests(unittest.TestCase):
     def test_html_splitter_closes_and_reopens_active_tags(self):
         chunks = _split_html("<b>abcd efgh</b>", 5)
         self.assertEqual(chunks, ["<b>abcd </b>", "<b>efgh</b>"])
+
+    def test_parse_mode_strings_resolve_to_kurigram_enums(self):
+        for value, expected in (
+            ("html", ParseMode.HTML),
+            ("HTML", ParseMode.HTML),
+            ("markdown", ParseMode.MARKDOWN),
+            ("md", ParseMode.MARKDOWN),
+            ("disabled", ParseMode.DISABLED),
+        ):
+            with self.subTest(value=value):
+                self.assertIs(resolve_parse_mode(value), expected)
+        self.assertIs(resolve_parse_mode(ParseMode.HTML), ParseMode.HTML)
+        self.assertEqual(resolve_parse_mode("custom"), "custom")
+
+    def test_context_edit_and_send_normalize_explicit_parse_modes(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        context = PluginContext(client=object(), update=object(), plugin=object())
+        message = type("Message", (), {"edit_text": AsyncMock()})()
+        asyncio.run(context.edit("<b>hello</b>", message=message, parse_mode="html"))
+        self.assertIs(message.edit_text.await_args.kwargs["parse_mode"], ParseMode.HTML)
+
+        context.update = type("Update", (), {"chat": type("Chat", (), {"id": 1})()})()
+        context.client = type("Client", (), {"send_message": AsyncMock()})()
+        asyncio.run(context.send("hello", parse_mode="markdown"))
+        self.assertIs(
+            context.client.send_message.await_args.kwargs["parse_mode"],
+            ParseMode.MARKDOWN,
+        )
 
     def test_options_strip_aliases_and_configured_prefixes(self):
         parsed = parse_options(

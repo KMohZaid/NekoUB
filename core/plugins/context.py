@@ -14,6 +14,23 @@ from pyrogram.types import Message
 PluginT = TypeVar("PluginT")
 
 
+def resolve_parse_mode(value: Any) -> ParseMode | Any:
+    """Convert supported string aliases to Kurigram parse mode enums."""
+    if isinstance(value, ParseMode):
+        return value
+    if isinstance(value, str):
+        aliases = {
+            "html": ParseMode.HTML,
+            "markdown": ParseMode.MARKDOWN,
+            "md": ParseMode.MARKDOWN,
+            "default": ParseMode.DEFAULT,
+            "disabled": ParseMode.DISABLED,
+            "none": ParseMode.DISABLED,
+        }
+        return aliases.get(value.strip().lower(), value)
+    return value
+
+
 @dataclass(slots=True)
 class PluginContext(Generic[PluginT]):
     """Framework helpers for one managed handler invocation."""
@@ -24,7 +41,7 @@ class PluginContext(Generic[PluginT]):
     bot: Client[Any] | None = None
     config: Mapping[str, Any] = field(default_factory=dict)
     command: Any = None
-    parse_mode: Any = ParseMode.HTML
+    parse_mode: ParseMode | str = ParseMode.HTML
 
     def get_config(self, key: str, default: Any = None) -> Any:
         """Return a plugin setting, falling back to ``default``."""
@@ -49,7 +66,10 @@ class PluginContext(Generic[PluginT]):
         **kwargs: Any,
     ) -> Any:
         """Send text, splitting oversized output when requested."""
-        parse_mode = kwargs.setdefault("parse_mode", self.parse_mode)
+        parse_mode = resolve_parse_mode(
+            kwargs.setdefault("parse_mode", self.parse_mode)
+        )
+        kwargs["parse_mode"] = parse_mode
         limit = 4096
         if _utf16_length(text) > limit and not split:
             raise ValueError(f"Message exceeds Telegram's {limit}-character text limit")
@@ -79,7 +99,9 @@ class PluginContext(Generic[PluginT]):
 
     async def edit(self, text: str, *, message: Message, **kwargs: Any) -> Any:
         """Edit an existing message using the default HTML parse mode."""
-        kwargs.setdefault("parse_mode", self.parse_mode)
+        kwargs["parse_mode"] = resolve_parse_mode(
+            kwargs.setdefault("parse_mode", self.parse_mode)
+        )
         return await message.edit_text(text, **kwargs)
 
     async def react_or_send(

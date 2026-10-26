@@ -2,6 +2,7 @@ import html
 import re
 
 from pyrogram import Client, filters as F
+from pyrogram.enums import ParseMode
 from pyrogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -634,7 +635,7 @@ class HelpPlugin(Plugin):
         await callback.answer()
         await callback.message.edit_text(
             _html(content),
-            parse_mode="html",
+            parse_mode=ParseMode.HTML,
             reply_markup=_help_keyboard(action),
         )
 
@@ -653,7 +654,7 @@ class HelpPlugin(Plugin):
                     title="NekoUB help",
                     description="Open help menu" if not text else f"Help: {text}",
                     input_message_content=InputTextMessageContent(
-                        _html(rendered), parse_mode="html"
+                        _html(rendered), parse_mode=ParseMode.HTML
                     ),
                     reply_markup=_help_keyboard("root"),
                 )
