@@ -117,10 +117,10 @@ class PluginManagerTests(unittest.TestCase):
         try:
             for plugin_id in ("ping", "id", "info", "alive"):
                 path = plugins_dir / f"{plugin_id}.py"
-                spec = __import__("importlib.util", fromlist=["spec_from_file_location"]).spec_from_file_location(
-                    f"test_plugins.{plugin_id}", path
-                )
-                module = __import__("importlib.util", fromlist=["module_from_spec"]).module_from_spec(spec)
+                from importlib.util import module_from_spec, spec_from_file_location
+
+                spec = spec_from_file_location(f"test_plugins.{plugin_id}", path)
+                module = module_from_spec(spec)
                 sys.modules[spec.name] = module
                 spec.loader.exec_module(module)
                 modules[plugin_id] = module
@@ -134,12 +134,16 @@ class PluginManagerTests(unittest.TestCase):
             else:
                 sys.modules["utils"] = previous_utils
         for plugin_id, module in modules.items():
+            plugin_class = next(
+                value
+                for value in vars(module).values()
+                if isinstance(value, type)
+                and issubclass(value, Plugin)
+                and value is not Plugin
+            )
             declaration = PluginManager(
                 self.client, Path(self.temp_dir.name), prefix="."
-            )._validate(next(
-                value() for value in vars(module).values()
-                if isinstance(value, type) and issubclass(value, Plugin) and value is not Plugin
-            ))
+            )._validate(plugin_class())
             self.assertEqual(declaration.plugin_id, plugin_id)
             self.assertTrue(declaration.handlers[0].options.command)
 
