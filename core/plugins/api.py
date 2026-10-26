@@ -196,6 +196,7 @@ def _wrap_handler(
             context.parse_mode = command_options.parse_mode
         handler_args = args
         if command_options is not None and declaration.event == "command":
+            raw_text = getattr(update, "text", None) or getattr(update, "caption", "") or ""
             if command_options.options:
                 try:
                     parsed = parse_options(
@@ -218,7 +219,10 @@ def _wrap_handler(
             else:
                 from .errors import ParsedOptions
 
-                parsed = ParsedOptions(values={}, positional=())
+                parsed = ParsedOptions(
+                    values={},
+                    positional=tuple(raw_text.split(maxsplit=1)[1:]),
+                )
             handler_args = (parsed, *args)
         from pyrogram import ContinuePropagation
 

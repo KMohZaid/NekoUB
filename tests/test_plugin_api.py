@@ -91,6 +91,25 @@ class PluginApiTests(unittest.TestCase):
         self.assertEqual(plugin.parsed.values, {})
         self.assertEqual(plugin.parsed.positional, ())
 
+    def test_no_schema_command_keeps_raw_argument_tail(self):
+        class RawArgsPlugin(Plugin):
+            id = "raw_args"
+            parsed = None
+
+            @h.command("exec")
+            async def execute(self, client, update, ctx, args):
+                self.parsed = args
+
+        plugin = RawArgsPlugin()
+        declaration = plugin.declarations()[0]
+        callback = _wrap_handler(plugin, declaration)
+        update = type("Message", (), {"text": ".exec echo hello world"})()
+        with self.assertRaises(Exception):
+            import asyncio
+
+            asyncio.run(callback(object(), update))
+        self.assertEqual(plugin.parsed.positional, ("echo hello world",))
+
     def test_managed_handler_receives_context_update_args_and_continues(self):
         class HandlerPlugin(Plugin):
             id = "handler"
