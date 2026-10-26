@@ -232,6 +232,10 @@ class PluginManager:
                     if isinstance(command.prefixes, str)
                     else list(command.prefixes)
                 )
+                if command.prefixes == "." and isinstance(self.prefix, str):
+                    example_prefix = self.prefix
+                else:
+                    example_prefix = prefixes[0] if prefixes else ""
                 prefix = prefixes[0] if prefixes else ""
                 commands.append(
                     {
@@ -243,7 +247,7 @@ class PluginManager:
                         "aliases": command.aliases,
                         "description": command.description,
                         "examples": tuple(
-                            example.render(command.trigger, prefix)
+                            example.render(command.trigger, example_prefix)
                             for example in command.examples
                         ),
                         "options": command.options,

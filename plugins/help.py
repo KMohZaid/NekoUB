@@ -2,12 +2,13 @@
 # userbot sends as a regular user account, so buttons are silently ignored;
 # this menu navigates with plain text commands instead.
 
-from pyrogram import filters
+from pyrogram import Client
 from pyrogram.types import Message
 
 import config
 import main
-from utils import continue_propagation, get_logger
+from core.plugins import Example, ParsedOptions, Plugin, PluginContext, handlers as h
+from utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -677,23 +678,42 @@ def render(args: str) -> str:
     return render_command_lookup(first)
 
 
-@main.app.on_message(
-    filters.me
-    & filters.command(
-        ["help", "commands", "cmds", "menu"], prefixes=config.CMD_PREFIX
-    )
-)
-@continue_propagation
-async def help_command(client, message: Message):
-    """Show the help menu.
+class HelpPlugin(Plugin):
+    id = "help"
+    category = "Core"
+    description = "Show help for public and managed commands."
 
-    Usage:
-        .help [<category>|all] [<n>]
-    """
-    try:
-        parts = (message.text or "").split(maxsplit=1)
-        args = parts[1] if len(parts) > 1 else ""
-        await message.edit(render(args))
-    except Exception as exc:
-        logger.error(f"[HELP] Failed to render menu: {exc}")
-        await message.edit(f"❌ Failed to render help: {type(exc).__name__}")
+    @h.command(
+        "help",
+        aliases=("commands", "cmds", "menu"),
+        description=description,
+        examples=(
+            Example("{cmd}"),
+            Example("{cmd} stickers"),
+            Example("{cmd} managed"),
+            Example("{cmd} all"),
+        ),
+        prefixes=config.CMD_PREFIX,
+        parse_mode="markdown",
+    )
+    async def help_command(
+        self,
+        client: Client,
+        message: Message,
+        ctx: PluginContext["HelpPlugin"],
+        args: ParsedOptions,
+    ) -> None:
+        """Show the help menu.
+
+        Usage:
+            .help [<category>|all] [<n>]
+        """
+        try:
+            parts = (message.text or "").split(maxsplit=1)
+            help_args = parts[1] if len(parts) > 1 else ""
+            await ctx.edit(render(help_args), message=message)
+        except Exception as exc:
+            logger.error(f"[HELP] Failed to render menu: {exc}")
+            await ctx.edit(
+                f"❌ Failed to render help: {type(exc).__name__}", message=message
+            )
