@@ -1,4 +1,4 @@
-git+https://github.com/TelegramPlayground/PyroTGFork.git@dev
+kurigram @ git+https://github.com/kurigram-org/kurigram.git@main
 python-dotenv
 tgcrypto
 colorama
@@ -9,3 +9,6 @@ watchfiles
 anyio
 todoist-api-python
 emoji
+edge-tts
+imageio-ffmpeg
+cryptography
