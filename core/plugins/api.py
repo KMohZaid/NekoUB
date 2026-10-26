@@ -8,6 +8,7 @@ from functools import wraps
 from typing import Any, Callable, Mapping, Sequence, TypeVar
 
 from pyrogram import Client
+from pyrogram.enums import ParseMode
 from pyrogram.handlers import (
     CallbackQueryHandler,
     EditedMessageHandler,
@@ -51,7 +52,11 @@ class Option:
     help: str = ""
 
     def __post_init__(self) -> None:
-        if not self.name or self.name.startswith("-") or not self.name.replace("_", "a").isalnum():
+        if (
+            not self.name
+            or self.name.startswith("-")
+            or not self.name.replace("_", "a").isalnum()
+        ):
             raise ValueError("Option name must be a non-empty long name without dashes")
         if self.required and self.default is not None:
             raise ValueError("Required options cannot also define a default")
@@ -126,7 +131,11 @@ def command(
 
 
 def _event_decorator(
-    event: str, *, filters: Any = None, bot: bool = False, **handler_kwargs: Any
+    event: str,
+    *,
+    filters: Any = None,
+    bot: bool = False,
+    **handler_kwargs: Any,
 ) -> Callable[[Callback], Callback]:
     return _declare(
         event,
@@ -172,16 +181,19 @@ def _wrap_handler(
 
     @wraps(original)
     async def invoke(client: Client, update: Any, *args: Any, **kwargs: Any) -> Any:
-        if declaration.options.bot and not getattr(client, "is_bot", False):
+        if (
+            declaration.options.bot or declaration.event.startswith("bot_")
+        ) and not getattr(client, "is_bot", False):
             raise RuntimeError("Bot handler was attached to a non-bot client")
         context = PluginContext(
             client=client,
             update=update,
             plugin=plugin,
-            config=config or {},
+            config=config if config is not None else {},
         )
         if command_options is not None:
             context.command = command_options
+            context.parse_mode = command_options.parse_mode
         handler_args = args
         if command_options is not None and declaration.event == "command":
             try:
@@ -196,7 +208,9 @@ def _wrap_handler(
                     ),
                 )
             except OptionParseError as error:
-                await context.send(error.as_html(), reply_to=update)
+                await context.send(
+                    error.as_html(), reply_to=update, parse_mode=ParseMode.HTML
+                )
                 from pyrogram import ContinuePropagation
 
                 raise ContinuePropagation
@@ -232,27 +246,52 @@ class HandlerCollection:
     """Collection of supported managed handler decorators."""
 
     command = staticmethod(command)
-    message = staticmethod(lambda **kwargs: _event_decorator("message", **kwargs))
-    edited_message = staticmethod(
-        lambda **kwargs: _event_decorator("edited_message", **kwargs)
-    )
-    callback_query = staticmethod(
-        lambda **kwargs: _event_decorator("callback_query", **kwargs)
-    )
-    inline_query = staticmethod(
-        lambda **kwargs: _event_decorator("inline_query", **kwargs)
-    )
-    bot_command = staticmethod(
-        lambda trigger, **kwargs: command(trigger, bot=True, prefixes="/", **kwargs)
-    )
-    bot_callback_query = staticmethod(
-        lambda **kwargs: _event_decorator(
-            "bot_callback_query", bot=True, **kwargs
+
+    @staticmethod
+    def message(
+        *, filters: Any = None, **handler_kwargs: Any
+    ) -> Callable[[Callback], Callback]:
+        return _event_decorator("message", filters=filters, **handler_kwargs)
+
+    @staticmethod
+    def edited_message(
+        *, filters: Any = None, **handler_kwargs: Any
+    ) -> Callable[[Callback], Callback]:
+        return _event_decorator("edited_message", filters=filters, **handler_kwargs)
+
+    @staticmethod
+    def callback_query(
+        *, filters: Any = None, **handler_kwargs: Any
+    ) -> Callable[[Callback], Callback]:
+        return _event_decorator("callback_query", filters=filters, **handler_kwargs)
+
+    @staticmethod
+    def inline_query(
+        *, filters: Any = None, **handler_kwargs: Any
+    ) -> Callable[[Callback], Callback]:
+        return _event_decorator("inline_query", filters=filters, **handler_kwargs)
+
+    @staticmethod
+    def bot_command(
+        trigger: str, *, prefixes: str | tuple[str, ...] = "/", **kwargs: Any
+    ) -> Callable[[Callback], Callback]:
+        return command(trigger, bot=True, prefixes=prefixes, **kwargs)
+
+    @staticmethod
+    def bot_callback_query(
+        *, filters: Any = None, **handler_kwargs: Any
+    ) -> Callable[[Callback], Callback]:
+        return _event_decorator(
+            "bot_callback_query", filters=filters, bot=True, **handler_kwargs
         )
-    )
-    bot_inline_query = staticmethod(
-        lambda **kwargs: _event_decorator("bot_inline_query", bot=True, **kwargs)
-    )
+
+    @staticmethod
+    def bot_inline_query(
+        *, filters: Any = None, **handler_kwargs: Any
+    ) -> Callable[[Callback], Callback]:
+        return _event_decorator(
+            "bot_inline_query", filters=filters, bot=True, **handler_kwargs
+        )
 
 
 handlers = HandlerCollection()

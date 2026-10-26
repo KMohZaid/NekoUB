@@ -89,10 +89,9 @@ def load_plugin(plugin_path: Path) -> bool:
         if plugin_name.startswith("__") or not plugin_path.suffix == ".py":
             return False
 
-        # Determine the module prefix based on parent directory
-        parent_dir = plugin_path.parent.name
-        if parent_dir == "private_plugins":
-            logger.warning("Private plugin loading is disabled")
+        public_plugin_dir = Path(__file__).parent / "plugins"
+        if plugin_path.parent.resolve() != public_plugin_dir.resolve():
+            logger.warning("Plugin loading is restricted to the public plugins directory")
             return False
         module_prefix = "plugins"
 
@@ -105,8 +104,25 @@ def load_plugin(plugin_path: Path) -> bool:
         # Add to sys.modules so it can import other modules
         sys.modules[f"{module_prefix}.{plugin_name}"] = module
 
+        # Record dispatcher changes so legacy public modules can be reloaded
+        # without clearing handlers owned by other modules.
+        dispatcher = getattr(app, "dispatcher", None) if app else None
+        before = {
+            group: {id(handler) for handler in handlers}
+            for group, handlers in getattr(dispatcher, "groups", {}).items()
+        }
         # Execute the module
-        spec.loader.exec_module(module)
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            if dispatcher is not None:
+                for group, handlers in list(dispatcher.groups.items()):
+                    prior = before.get(group, set())
+                    for handler in list(handlers):
+                        if id(handler) not in prior:
+                            app.remove_handler(handler, group)
+            sys.modules.pop(f"{module_prefix}.{plugin_name}", None)
+            raise
 
         managed_classes = [
             value
@@ -120,6 +136,16 @@ def load_plugin(plugin_path: Path) -> bool:
             if plugin_manager is None:
                 raise RuntimeError("Managed plugin manager is not initialized")
             plugin_manager.activate_module(module, plugin_path)
+        elif dispatcher is not None:
+            registrations = []
+            for group, handlers in dispatcher.groups.items():
+                prior = before.get(group, set())
+                registrations.extend(
+                    (handler, group)
+                    for handler in handlers
+                    if id(handler) not in prior
+                )
+            loaded_plugin_handlers[plugin_name] = registrations
 
         # Store the loaded module
         loaded_plugins[plugin_name] = module
@@ -180,12 +206,8 @@ def load_all_plugins(*, skip_paths: set[Path] | None = None):
 
 
 def reload_plugins():
-    """Reload managed plugins without duplicating legacy registrations."""
-    managed_paths: set[Path] = {
-        Path(getattr(module, "__file__", "")).resolve()
-        for module in loaded_plugins.values()
-        if getattr(module, "__file__", None)
-    }
+    """Reload managed and legacy public plugins without clearing unrelated handlers."""
+    managed_paths: set[Path] = set()
     if plugin_manager is not None:
         for plugin_id in list(plugin_manager.active):
             active = plugin_manager.active[plugin_id]
@@ -201,15 +223,25 @@ def reload_plugins():
                     exc_info=True,
                 )
 
-    # Legacy modules register at import time, but their handlers are not yet
-    # tracked by module. Avoid re-importing them and installing duplicates.
-    if loaded_plugins:
-        logger.warning(
-            "Legacy public plugins cannot be hot-reloaded safely; restart to reload them"
-        )
+    # Remove only handlers installed by legacy plugin imports.
+    if app and hasattr(app, "dispatcher"):
+        for module_name, registrations in list(loaded_plugin_handlers.items()):
+            for handler, group in reversed(registrations):
+                try:
+                    app.remove_handler(handler, group)
+                except Exception:
+                    logger.exception("Failed removing legacy handler from %s", module_name)
+
+    for module in loaded_plugins.values():
+        module_name = getattr(module, "__name__", "")
+        if module_name.startswith("plugins."):
+            sys.modules.pop(module_name, None)
+    loaded_plugins.clear()
+    loaded_plugin_handlers.clear()
+
     try:
         load_all_plugins(skip_paths=managed_paths)
-        logger.info("Managed plugins reloaded successfully")
+        logger.info("Plugins reloaded successfully")
     except Exception as e:
         logger.error("Error loading plugins: %s", e, exc_info=True)
 

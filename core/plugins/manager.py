@@ -41,13 +41,17 @@ class PluginManager:
     ) -> None:
         self.client = client
         self.plugin_dir = plugin_dir.resolve()
-        self.plugin_dir.mkdir(parents=True, exist_ok=True)
         self.prefix = prefix
-        self.command_prefixes = list(prefix) if isinstance(prefix, (list, tuple)) else [prefix]
-        self.config = config or {}
+        self.command_prefixes = (
+            list(prefix)
+            if isinstance(prefix, (list, tuple))
+            else [prefix]
+        )
+        self.config = config if config is not None else {}
         self.registry = PluginRegistry()
         self.active: dict[str, ActivePlugin] = {}
         self.status: dict[str, str] = {}
+        self._module_owners: dict[str, str] = {}
 
     def load_all(self) -> dict[str, str]:
         self.plugin_dir.mkdir(parents=True, exist_ok=True)
@@ -83,13 +87,16 @@ class PluginManager:
     def load_path(self, path: Path) -> PluginDeclaration:
         module_name = f"plugins.{path.stem}"
         if path.parent.resolve() != self.plugin_dir.resolve():
-            raise ValueError("Plugin path must be a direct child of the configured public directory")
+            raise ValueError(
+                "Plugin path must be a direct child of the configured public directory"
+            )
         if not path.is_file() or path.suffix != ".py" or path.stem.startswith("_"):
             raise ValueError(f"Not a discoverable public plugin file: {path.name}")
         spec = importlib.util.spec_from_file_location(module_name, path)
         if spec is None or spec.loader is None:
             raise ImportError(f"Unable to create module spec for {path}")
         module = importlib.util.module_from_spec(spec)
+        previous_module = sys.modules.get(module_name)
         sys.modules[module_name] = module
         try:
             spec.loader.exec_module(module)
@@ -99,6 +106,7 @@ class PluginManager:
                 if isinstance(value, type)
                 and issubclass(value, Plugin)
                 and value is not Plugin
+                and value.__module__ == module_name
             ]
             if len(instances) != 1:
                 raise ValueError(
@@ -112,7 +120,10 @@ class PluginManager:
             )
             return self.registry.plugins[instances[0].id]
         except Exception:
-            sys.modules.pop(module_name, None)
+            if previous_module is None:
+                sys.modules.pop(module_name, None)
+            else:
+                sys.modules[module_name] = previous_module
             raise
 
     def activate(
@@ -126,6 +137,14 @@ class PluginManager:
     ) -> None:
         plugin.prefix = "".join(self.command_prefixes)
         declaration = self._validate(plugin)
+        if any(
+            (item.event.startswith("bot_") or item.options.bot)
+            and getattr(self.client, "is_bot", False) is False
+            for item in declaration.handlers
+        ):
+            raise NotImplementedError(
+                "Bot handlers require a PluginManager configured with a bot client"
+            )
         previous = self.active.get(plugin.id)
         if previous is not None and not replace:
             raise ValueError(f"Plugin {plugin.id!r} is already active")
@@ -150,8 +169,6 @@ class PluginManager:
         if previous is not None:
             for handler, group in reversed(previous.handlers):
                 self.client.remove_managed_handler(handler, group)
-            if previous.module_name != "<memory>":
-                sys.modules.pop(previous.module_name, None)
         self.registry.plugins[plugin.id] = declaration
         self.active[plugin.id] = ActivePlugin(
             plugin,
@@ -162,6 +179,8 @@ class PluginManager:
             source_path or (previous.source_path if previous else None),
         )
         self.status[plugin.id] = "active"
+        if module_name != "<memory>":
+            self._module_owners[module_name] = plugin.id
 
     def reload(self, plugin_id: str) -> None:
         current = self.active.get(plugin_id)
@@ -185,6 +204,7 @@ class PluginManager:
                 if isinstance(value, type)
                 and issubclass(value, Plugin)
                 and value is not Plugin
+                and value.__module__ == candidate_name
                 and value.id == plugin_id
             ]
             if len(candidates) != 1:
@@ -195,6 +215,7 @@ class PluginManager:
             raise
         if current.module_name != "<memory>":
             sys.modules.pop(current.module_name, None)
+        self._module_owners.pop(current.module_name, None)
 
     def _validate(self, plugin: Plugin) -> PluginDeclaration:
         declaration = PluginDeclaration(
@@ -203,8 +224,11 @@ class PluginManager:
             description=plugin.description,
             handlers=plugin.declarations(),
         )
-        if not declaration.plugin_id:
-            raise ValueError("Plugin id must not be empty")
+        if (
+            not declaration.plugin_id
+            or not declaration.plugin_id.replace("_", "a").isalnum()
+        ):
+            raise ValueError("Plugin id must be a non-empty alphanumeric identifier")
         if not declaration.handlers:
             raise ValueError(f"Plugin {plugin.id!r} declares no handlers")
         if plugin.id in self.registry.plugins and plugin.id not in self.active:
@@ -213,20 +237,26 @@ class PluginManager:
         for item in declaration.handlers:
             if item.event not in HANDLER_TYPES:
                 raise ValueError(f"Unsupported handler event {item.event!r}")
-            if item.event.startswith("bot_"):
-                raise NotImplementedError(
-                    "Bot handlers require a configured bot client and are not available yet"
-                )
+            if not item.method_name or not callable(getattr(plugin, item.method_name, None)):
+                raise ValueError(f"Handler method {item.method_name!r} is not callable")
             options = item.options
-            if options.bot:
+            if item.event.startswith("bot_") or options.bot:
+                if getattr(self.client, "is_bot", False):
+                    continue
                 raise NotImplementedError(
-                    "Bot handlers require a configured bot client and are not available yet"
+                    "Bot handlers require a PluginManager configured with a bot client"
                 )
             if options.command is not None:
                 command = options.command
-                if not command.trigger or command.trigger.startswith("-"):
+                if (
+                    not command.trigger
+                    or not command.trigger.replace("_", "a").isalnum()
+                    or command.trigger.startswith("-")
+                ):
                     raise ValueError(f"Invalid command trigger {command.trigger!r}")
                 for name in (command.trigger, *command.aliases):
+                    if not name or not name.replace("_", "a").isalnum():
+                        raise ValueError(f"Invalid command name or alias {name!r}")
                     key = name.casefold()
                     if key in names:
                         raise ValueError(f"Duplicate command or alias {name!r}")
@@ -238,19 +268,17 @@ class PluginManager:
         options = declaration.options
         filters_value = options.filters
         if options.handler_kwargs:
-            unsupported = ", ".join(sorted(options.handler_kwargs))
-            raise TypeError(
-                f"{declaration.event} handler does not accept handler options: {unsupported}"
-            )
+            unknown = ", ".join(sorted(options.handler_kwargs))
+            raise TypeError(f"Unsupported handler options for {declaration.event}: {unknown}")
         command_meta = options.command
         if command_meta is not None:
             command_prefixes = (
-                list(command_meta.prefixes)
-                if isinstance(command_meta.prefixes, tuple)
+                self.command_prefixes
+                if command_meta.prefixes == "."
+                else [command_meta.prefixes]
+                if isinstance(command_meta.prefixes, str)
                 else list(command_meta.prefixes)
             )
-            if command_meta.prefixes == ".":
-                command_prefixes = self.command_prefixes
             command_filters = filters.me & filters.command(
                 [command_meta.trigger, *command_meta.aliases],
                 prefixes=command_prefixes,
@@ -275,6 +303,7 @@ class PluginManager:
         for handler, group in reversed(active.handlers):
             self.client.remove_managed_handler(handler, group)
         self.registry.unregister(active.declaration.plugin_id)
+        self._module_owners.pop(active.module_name, None)
         if active.module_name != "<memory>":
             sys.modules.pop(active.module_name, None)
         self.active.pop(active.declaration.plugin_id, None)

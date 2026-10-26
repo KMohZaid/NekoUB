@@ -48,17 +48,20 @@ def parse_options(
         raise OptionParseError("Invalid quoting in command arguments.") from error
     if tokens:
         command_token = tokens[0]
-        command_name = command_token.split("@", 1)[0]
         prefix_values = (prefixes,) if isinstance(prefixes, str) else tuple(prefixes)
         matching_prefix = next(
-            (prefix for prefix in prefix_values if command_name.startswith(prefix)),
+            (prefix for prefix in prefix_values if command_token.startswith(prefix)),
             None,
         )
         command_names = (trigger,) if isinstance(trigger, str) else tuple(trigger)
-        if matching_prefix is not None and (
-            command_name[len(matching_prefix):].casefold()
-            in {name.casefold() for name in command_names}
-        ):
+        actual_name = (
+            command_token[len(matching_prefix):].split("@", 1)[0]
+            if matching_prefix is not None
+            else ""
+        )
+        if matching_prefix is not None and actual_name.casefold() in {
+            name.casefold() for name in command_names
+        }:
             tokens = tokens[1:]
 
     by_long = {
@@ -108,10 +111,10 @@ def parse_options(
                 if separator:
                     raw = attached
                 else:
-                    if index >= len(tokens):
+                    if index >= len(tokens) or tokens[index].startswith("-"):
                         raise OptionParseError(
-                f"Option <code>{name}</code> requires a value."
-            )
+                            f"Option <code>{name}</code> requires a value."
+                        )
                     raw = tokens[index]
                     index += 1
                 value = _convert(option, raw, name)
@@ -145,10 +148,10 @@ def parse_options(
                         raise OptionParseError(
                             f"Value option <code>{name}</code> must be last in a cluster and include its value."
                         )
-                    if index >= len(tokens):
+                    if index >= len(tokens) or tokens[index].startswith("-"):
                         raise OptionParseError(
-                f"Option <code>{name}</code> requires a value."
-            )
+                            f"Option <code>{name}</code> requires a value."
+                        )
                     raw = tokens[index]
                     index += 1
                     offset += 1
@@ -165,6 +168,7 @@ def parse_options(
         rendered = ", ".join(f"<code>{name}</code>" for name in required_missing)
         raise OptionParseError(f"Missing required options: {rendered}.")
     return ParsedOptions(values=values, positional=tuple(positional))
+
 
 
 def _convert(option: Option, raw: str, name: str) -> Any:

@@ -1,6 +1,10 @@
 import unittest
 
+from core.plugins.context import _split_html
+
 from core.plugins import Example, Option, Plugin, PluginRegistry, handlers as h
+from core.plugins.api import _wrap_handler
+from core.plugins.registry import HandlerDeclaration
 from core.plugins.errors import OptionParseError, parse_options
 from pyrogram import filters as F
 
@@ -65,6 +69,38 @@ class PluginApiTests(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(OptionParseError) as raised:
                 parse_options(text, schema, "find")
             self.assertIn(expected, str(raised.exception))
+
+    def test_managed_handler_receives_context_update_args_and_continues(self):
+        class HandlerPlugin(Plugin):
+            id = "handler"
+            captured = None
+
+            @h.message()
+            async def callback(self, client, update, ctx, *args, **kwargs):
+                self.captured = (client, update, ctx, args, kwargs)
+
+        plugin = HandlerPlugin()
+        declaration = plugin.declarations()[0]
+        callback = _wrap_handler(plugin, declaration, config={"flag": "yes"})
+        client, update = object(), object()
+        with self.assertRaises(Exception) as raised:
+            import asyncio
+            asyncio.run(callback(client, update, "extra", key="value"))
+        self.assertEqual(type(raised.exception).__name__, "ContinuePropagation")
+        actual_client, actual_update, context, args, kwargs = plugin.captured
+        self.assertIs(actual_client, client)
+        self.assertIs(actual_update, update)
+        self.assertEqual(args, ("extra",))
+        self.assertEqual(kwargs, {"key": "value"})
+        self.assertEqual(context.config["flag"], "yes")
+
+    def test_html_splitter_counts_utf16_and_keeps_entities_whole(self):
+        chunks = _split_html("<b>😀😀 &amp; z</b>", 3)
+        self.assertEqual(chunks, ["<b>😀</b>", "<b>😀 </b>", "<b>&amp; z</b>"])
+
+    def test_html_splitter_closes_and_reopens_active_tags(self):
+        chunks = _split_html("<b>abcd efgh</b>", 5)
+        self.assertEqual(chunks, ["<b>abcd </b>", "<b>efgh</b>"])
 
     def test_options_strip_aliases_and_configured_prefixes(self):
         parsed = parse_options(

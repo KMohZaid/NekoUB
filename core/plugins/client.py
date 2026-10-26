@@ -33,9 +33,10 @@ class PluginClient(Client):
 
     def remove_managed_handler(
         self, handler: HandlerT, group: int
-    ) -> tuple[HandlerT, int]:
+    ) -> None:
         """Remove one handler instance previously installed by the manager."""
-        registration = super().remove_handler(handler, group)
+        super().remove_handler(handler, group)
+        registration = (handler, group)
         for plugin_id, handlers in list(
             getattr(self, "_managed_plugin_handlers", {}).items()
         ):
