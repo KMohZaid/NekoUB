@@ -501,8 +501,15 @@ def _usage_code(command: dict) -> str:
     return f"`{_usage_plain(command)}`"
 
 
+def _managed_commands() -> list[dict]:
+    manager = getattr(main, "plugin_manager", None)
+    return manager.command_help() if manager is not None else []
+
+
 def _total_commands() -> int:
-    return sum(len(cat["commands"]) for cat in CATEGORIES.values())
+    return sum(len(cat["commands"]) for cat in CATEGORIES.values()) + len(
+        _managed_commands()
+    )
 
 
 def _header() -> str:
@@ -525,6 +532,7 @@ def render_root() -> str:
         "",
         f"Open: `{_prefix()}help <n>` or `{_prefix()}help <name>`",
         f"Everything: `{_prefix()}help all`",
+        f"Managed commands: `{_prefix()}help managed`",
     ]
     return "\n".join(lines)
 
@@ -566,6 +574,29 @@ def _summarize(desc: str, limit: int = 90) -> str:
     return text
 
 
+def render_managed() -> str:
+    commands = _managed_commands()
+    lines = ["**Managed plugin commands**", ""]
+    for item in commands:
+        usage = " | ".join(
+            prefix + item["trigger"] for prefix in item["prefixes"]
+        )
+        if item["options"]:
+            usage += " [options]"
+        description = item["description"] or f"Command from {item['plugin']}"
+        lines.append(f"• `{usage}` — {description}")
+        if item["aliases"]:
+            aliases = ", ".join(
+                f"`{prefix}{alias}`"
+                for prefix in item["prefixes"]
+                for alias in item["aliases"]
+            )
+            lines.append(f"  Aliases: {aliases}")
+        for example in item["examples"]:
+            lines.append(f"  Example: `{example}`")
+    return "\n".join(lines)
+
+
 def render_all() -> str:
     lines = ["**🐱 NekoUB — All commands**", ""]
     for cat in CATEGORIES.values():
@@ -573,6 +604,17 @@ def render_all() -> str:
         for command in cat["commands"]:
             lines.append(
                 f"• {_usage_code(command)} — {_summarize(command['desc'])}"
+            )
+        lines.append("")
+    managed = _managed_commands()
+    if managed:
+        lines.append("**Managed plugins**")
+        for item in managed:
+            usage = item["prefix"] + item["trigger"]
+            if item["options"]:
+                usage += " [options]"
+            lines.append(
+                f"• `{usage}` — {item['description'] or item['plugin']}"
             )
         lines.append("")
     text = "\n".join(lines).strip()
@@ -629,6 +671,8 @@ def render(args: str) -> str:
         if len(tokens) > 1 and tokens[1].isdigit():
             return render_detail(first, int(tokens[1]) - 1)
         return render_category(first)
+    if first in {"managed", "plugins"}:
+        return render_managed()
 
     return render_command_lookup(first)
 

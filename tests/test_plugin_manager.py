@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock
 
-from core.plugins import Plugin, handlers as h
+from core.plugins import Example, Plugin, handlers as h
 from core.plugins.manager import PluginManager
 from pyrogram import filters
 
@@ -66,6 +66,24 @@ class PluginManagerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Duplicate command"):
             self.manager.activate(Duplicate())
         self.client.register_managed_handler.assert_not_called()
+
+    def test_command_help_includes_all_prefixes_and_renders_examples(self):
+        class PrefixPlugin(Plugin):
+            id = "prefixes"
+
+            @h.command(
+                "hello",
+                prefixes=(".", "!"),
+                aliases=("hi",),
+                examples=(Example("{cmd}"),),
+            )
+            async def hello(self, client, message, ctx, args):
+                pass
+
+        self.manager.activate(PrefixPlugin())
+        result = self.manager.command_help()[0]
+        self.assertEqual(result["prefixes"], (".", "!"))
+        self.assertEqual(result["examples"], (".hello",))
 
     def test_reload_uses_source_filename_not_plugin_id(self):
         plugin_path = Path(self.temp_dir.name) / "demo_plugin.py"

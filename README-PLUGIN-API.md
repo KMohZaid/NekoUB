@@ -7,7 +7,6 @@ This is the initial authoring API for managed public plugins. Plugin modules mus
 Copy `templates/typed_plugin.py` into `plugins/` after customizing the plugin id and handlers. Import Kurigram types directly for editor completion and type checking:
 
 ```python
-from pyrogram.types import Message
 from pyrogram import Client
 from pyrogram.types import Message
 from core.plugins import (
@@ -43,7 +42,7 @@ Handlers receive the real Kurigram client, the real event object, the required `
 - `@h.edited_message(filters=...)` handles edited messages.
 - `@h.callback_query(filters=...)` handles callback queries.
 - `@h.inline_query(filters=...)` handles inline queries.
-- `@h.bot_command`, `@h.bot_callback_query`, and `@h.bot_inline_query` declare assistant-bot handlers. They must be attached to a bot client by a future bot-capability-aware manager; userbot startup does not make bot handlers available automatically.
+- `@h.bot_command`, `@h.bot_callback_query`, and `@h.bot_inline_query` are reserved declarations. The current application starts only a userbot client, so managed activation rejects bot handlers rather than pretending they are active.
 
 Stacking message decorators on one method creates distinct registrations that invoke the same method. For example, stack `@h.message` and `@h.edited_message` when the method supports both event forms. The update argument remains the original Kurigram type for that event.
 

@@ -217,6 +217,40 @@ class PluginManager:
             sys.modules.pop(current.module_name, None)
         self._module_owners.pop(current.module_name, None)
 
+    def command_help(self) -> list[dict[str, Any]]:
+        """Return command metadata rendered with the configured prefixes."""
+        commands: list[dict[str, Any]] = []
+        for plugin_id, declaration in sorted(self.registry.plugins.items()):
+            for handler in declaration.handlers:
+                command = handler.options.command
+                if command is None:
+                    continue
+                prefixes = (
+                    self.command_prefixes
+                    if command.prefixes == "."
+                    else [command.prefixes]
+                    if isinstance(command.prefixes, str)
+                    else list(command.prefixes)
+                )
+                prefix = prefixes[0] if prefixes else ""
+                commands.append(
+                    {
+                        "plugin": plugin_id,
+                        "prefix": prefix,
+                        "prefixes": tuple(prefixes),
+                        "category": command.category or declaration.category,
+                        "trigger": command.trigger,
+                        "aliases": command.aliases,
+                        "description": command.description,
+                        "examples": tuple(
+                            example.render(command.trigger, prefix)
+                            for example in command.examples
+                        ),
+                        "options": command.options,
+                    }
+                )
+        return commands
+
     def _validate(self, plugin: Plugin) -> PluginDeclaration:
         declaration = PluginDeclaration(
             plugin_id=plugin.id,
@@ -248,6 +282,15 @@ class PluginManager:
                 )
             if options.command is not None:
                 command = options.command
+                prefixes = (
+                    self.command_prefixes
+                    if command.prefixes == "."
+                    else [command.prefixes]
+                    if isinstance(command.prefixes, str)
+                    else list(command.prefixes)
+                )
+                if not prefixes or any(not prefix for prefix in prefixes):
+                    raise ValueError("Commands must declare at least one non-empty prefix")
                 if (
                     not command.trigger
                     or not command.trigger.replace("_", "a").isalnum()

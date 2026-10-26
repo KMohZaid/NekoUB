@@ -36,7 +36,6 @@ class PluginClient(Client):
     ) -> None:
         """Remove one handler instance previously installed by the manager."""
         super().remove_handler(handler, group)
-        registration = (handler, group)
         for plugin_id, handlers in list(
             getattr(self, "_managed_plugin_handlers", {}).items()
         ):
@@ -45,4 +44,3 @@ class PluginClient(Client):
                 self._managed_plugin_handlers[plugin_id] = remaining
             else:
                 del self._managed_plugin_handlers[plugin_id]
-        return registration
