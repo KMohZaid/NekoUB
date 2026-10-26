@@ -13,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import emoji
-from pyrogram import enums, filters, types as pyrogram_types
+from pyrogram import Client, enums, filters, types as pyrogram_types
 from pyrogram.enums import ParseMode, StickerFormat, StickerType
 from pyrogram.types import InputSticker
 from pyrogram.errors import (
@@ -30,7 +30,8 @@ import config
 import main
 from plugins import sticker_index
 from utils.media import image_to_sticker, video_to_sticker
-from utils import continue_propagation, get_logger
+from core.plugins import Plugin, PluginContext, ParsedOptions, handlers as h
+from utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -2269,11 +2270,6 @@ def parse_kang_args(text: str) -> tuple[str | None, str | None, str, bool, bool,
 # ============================================================
 
 
-@main.app.on_message(
-    filters.me
-    & filters.command("start_sticker_monitor", prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
 async def start_sticker_monitor(client, message: Message):
     monitoring_chats.add(message.chat.id)
     await message.edit(
@@ -2281,11 +2277,6 @@ async def start_sticker_monitor(client, message: Message):
     )
 
 
-@main.app.on_message(
-    filters.me
-    & filters.command("stop_sticker_monitor", prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
 async def stop_sticker_monitor(client, message: Message):
     monitoring_chats.clear()
     await message.edit("Stopped sticker monitor in all chats")
@@ -2356,11 +2347,6 @@ async def packs_search(client, message: Message, query: str) -> None:
     )
 
 
-@main.app.on_message(
-    filters.me
-    & filters.command(["packs", "mypacks"], prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
 async def packs_command(client, message: Message):
     global _pack_index
     logger.info(f"[STICKER] packs command received in chat={message.chat.id}")
@@ -2526,10 +2512,6 @@ async def packs_command(client, message: Message):
     )
 
 
-@main.app.on_message(
-    filters.me & filters.command("sticker", prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
 async def sticker_command(client, message: Message):
     reply = message.reply_to_message
     if not reply:
@@ -2575,10 +2557,6 @@ async def sticker_command(client, message: Message):
         await message.edit(f"Could not create sticker: {type(exc).__name__}: {exc}")
 
 
-@main.app.on_message(
-    filters.me & filters.command("stickerdebug", prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
 async def sticker_debug_command(client, message: Message):
     replied = message.reply_to_message
     if replied is None or replied.sticker is None:
@@ -2623,10 +2601,6 @@ async def sticker_debug_command(client, message: Message):
         await message.edit(f"Could not fetch sticker pack data: {type(exc).__name__}: {exc}")
 
 
-@main.app.on_message(
-    filters.me & filters.command("kang", prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
 async def kang_command(client, message: Message):
     logger.info(
         f"[STICKER] .kang handler received chat={message.chat.id} message={message.id}"
@@ -2753,8 +2727,6 @@ ensure_sticker_index_scheduler()
 # ============================================================
 
 
-@main.app.on_message(filters.me & filters.sticker)
-@continue_propagation
 async def monitor_sticker_handler(client, message: Message):
     if message.chat.id not in monitoring_chats:
         return
@@ -2769,10 +2741,6 @@ async def monitor_sticker_handler(client, message: Message):
 # ============================================================
 
 
-@main.app.on_message(
-    filters.me & filters.command("help_sticker", prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
 async def help_sticker(client, message: Message):
     prefix = html.escape(config.CMD_PREFIX, quote=False)
     logger.info(
@@ -2882,10 +2850,6 @@ async def help_sticker(client, message: Message):
         raise
 
 
-@main.app.on_message(
-    filters.me & filters.command("help_sticker_monitor", prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
 async def help_sticker_monitor(client, message: Message):
     prefix = html.escape(config.CMD_PREFIX, quote=False)
     await message.edit(
@@ -2990,10 +2954,6 @@ def _sticker_naming_help_text() -> str:
     return "\n".join(lines)
 
 
-@main.app.on_message(
-    filters.me & filters.command("help_sticker_duplicate_check", prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
 async def help_sticker_duplicate_check(client, message: Message):
     prefix = html.escape(config.CMD_PREFIX, quote=False)
     await message.edit(
@@ -3024,13 +2984,93 @@ async def help_sticker_duplicate_check(client, message: Message):
     )
 
 
-@main.app.on_message(
-    filters.me & filters.command("help_sticker_naming", prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
 async def help_sticker_naming(client, message: Message):
     await ensure_me(client)
     await message.edit(
         _sticker_naming_help_text(),
         parse_mode=ParseMode.HTML,
     )
+
+
+class StickerPlugin(Plugin):
+    id = "sticker"
+    category = "Utility"
+    description = "Manage sticker packs and process stickers."
+
+    @h.command("start_sticker_monitor", prefixes=config.CMD_PREFIX, filters=filters.me)
+    async def start_sticker_monitor_handler(
+        self, client: Client, message: Message, ctx: PluginContext["StickerPlugin"],
+        parsed: ParsedOptions,
+    ) -> None:
+        await start_sticker_monitor(client, message)
+
+    @h.command("stop_sticker_monitor", prefixes=config.CMD_PREFIX, filters=filters.me)
+    async def stop_sticker_monitor_handler(
+        self, client: Client, message: Message, ctx: PluginContext["StickerPlugin"],
+        parsed: ParsedOptions,
+    ) -> None:
+        await stop_sticker_monitor(client, message)
+
+    @h.command("packs", aliases=("mypacks",), prefixes=config.CMD_PREFIX, filters=filters.me)
+    async def packs_handler(
+        self, client: Client, message: Message, ctx: PluginContext["StickerPlugin"],
+        parsed: ParsedOptions,
+    ) -> None:
+        await packs_command(client, message)
+
+    @h.command("sticker", prefixes=config.CMD_PREFIX, filters=filters.me)
+    async def sticker_handler(
+        self, client: Client, message: Message, ctx: PluginContext["StickerPlugin"],
+        parsed: ParsedOptions,
+    ) -> None:
+        await sticker_command(client, message)
+
+    @h.command("stickerdebug", prefixes=config.CMD_PREFIX, filters=filters.me)
+    async def sticker_debug_handler(
+        self, client: Client, message: Message, ctx: PluginContext["StickerPlugin"],
+        parsed: ParsedOptions,
+    ) -> None:
+        await sticker_debug_command(client, message)
+
+    @h.command("kang", prefixes=config.CMD_PREFIX, filters=filters.me)
+    async def kang_handler(
+        self, client: Client, message: Message, ctx: PluginContext["StickerPlugin"],
+        parsed: ParsedOptions,
+    ) -> None:
+        await kang_command(client, message)
+
+    @h.message(filters=filters.me & filters.sticker)
+    async def monitor_sticker(
+        self, client: Client, message: Message, ctx: PluginContext["StickerPlugin"]
+    ) -> None:
+        await monitor_sticker_handler(client, message)
+
+    @h.command("help_sticker", prefixes=config.CMD_PREFIX, filters=filters.me)
+    async def help_handler(
+        self, client: Client, message: Message, ctx: PluginContext["StickerPlugin"],
+        parsed: ParsedOptions,
+    ) -> None:
+        await help_sticker(client, message)
+
+    @h.command("help_sticker_monitor", prefixes=config.CMD_PREFIX, filters=filters.me)
+    async def help_monitor_handler(
+        self, client: Client, message: Message, ctx: PluginContext["StickerPlugin"],
+        parsed: ParsedOptions,
+    ) -> None:
+        await help_sticker_monitor(client, message)
+
+    @h.command(
+        "help_sticker_duplicate_check", prefixes=config.CMD_PREFIX, filters=filters.me
+    )
+    async def help_duplicate_check_handler(
+        self, client: Client, message: Message, ctx: PluginContext["StickerPlugin"],
+        parsed: ParsedOptions,
+    ) -> None:
+        await help_sticker_duplicate_check(client, message)
+
+    @h.command("help_sticker_naming", prefixes=config.CMD_PREFIX, filters=filters.me)
+    async def help_naming_handler(
+        self, client: Client, message: Message, ctx: PluginContext["StickerPlugin"],
+        parsed: ParsedOptions,
+    ) -> None:
+        await help_sticker_naming(client, message)

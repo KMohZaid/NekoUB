@@ -33,7 +33,7 @@ class GreetingPlugin(Plugin):
         await ctx.send(f"Hello, {args.name}!", reply_to=message)
 ```
 
-Handlers receive the real Kurigram client, the real event object, the required `ctx`, then parsed command options when applicable and any additional handler arguments. Annotate `Message`, `CallbackQuery`, `InlineQuery`, and application-specific values to improve completion and catch mistakes in an IDE. `F` is a convenience alias for Kurigram filters; `from pyrogram import filters` remains supported.
+Handlers receive the userbot as `client`, the real event object, the required `ctx`, then parsed command options when applicable and any additional handler arguments. For `@h.bot_*` declarations, the first client argument is the assistant bot as `bot`. In both cases `ctx.client` is the userbot and `ctx.bot` is the assistant bot (or `None` when disabled). Annotate `Message`, `CallbackQuery`, `InlineQuery`, and application-specific values to improve completion and catch mistakes in an IDE. `F` is a convenience alias for Kurigram filters; `from pyrogram import filters` remains supported.
 
 ## Handler types
 
@@ -42,7 +42,7 @@ Handlers receive the real Kurigram client, the real event object, the required `
 - `@h.edited_message(filters=...)` handles edited messages.
 - `@h.callback_query(filters=...)` handles callback queries.
 - `@h.inline_query(filters=...)` handles inline queries.
-- `@h.bot_command`, `@h.bot_callback_query`, and `@h.bot_inline_query` are reserved declarations. The current application starts only a userbot client, so managed activation rejects bot handlers rather than pretending they are active.
+- `@h.bot_command`, `@h.bot_callback_query`, and `@h.bot_inline_query` register handlers on the optional assistant bot client. Set `BOT_TOKEN` to enable it; leave it empty to run only the userbot. Bot command prefixes default to `/`.
 
 Stacking message decorators on one method creates distinct registrations that invoke the same method. For example, stack `@h.message` and `@h.edited_message` when the method supports both event forms. The update argument remains the original Kurigram type for that event.
 
@@ -66,4 +66,4 @@ The parser supports long options, short options, boolean clusters, typed values,
 
 ## Loader boundary
 
-Only direct `*.py` files in `plugins/` are discovered. `private_plugins/` is intentionally excluded. A managed module must declare exactly one `Plugin` subclass. Migrated command modules include `alive`, `eval`, `exec`, `help`, `id`, `info`, `json`, `kill`, `ping`, `reload`, `save`, `sangmata`, `spam`, and `translate`. Other public modules remain on the legacy import-side-effect path until their event and state behavior can be preserved. Bot decorators are declarations only: this application starts a userbot and currently rejects activation of bot handlers. The demo plugin demonstrates managed callbacks and event handlers.
+Only direct `*.py` files in `plugins/` are discovered. `private_plugins/` is intentionally excluded. A managed module must declare exactly one `Plugin` subclass. Migrated public feature modules include `ai`, `alive`, `automessages`, `eval`, `exec`, `help`, `id`, `info`, `json`, `kill`, `ping`, `reload`, `sangmata`, `save`, `spam`, `sticker`, `todoist`, `translate`, `tts`, `voice_note`, and `web`. `sticker_index.py` is an internal helper, not a handler module. The demo plugin demonstrates managed callbacks and event handlers.

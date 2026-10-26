@@ -6,6 +6,7 @@ import sys
 import threading
 from pathlib import Path
 
+from pyrogram import compose
 from pyrogram.enums import ParseMode
 
 import config
@@ -18,6 +19,7 @@ logger = get_logger(__name__)
 
 # Global variables
 app: PluginClient | None = None
+bot: PluginClient | None = None
 loaded_plugins = {}
 loaded_plugin_handlers = {}  # Track legacy public plugin handlers by module.
 plugin_manager = None
@@ -46,12 +48,13 @@ def signal_handler(signum, frame):
         logger.debug(f"Error cancelling tasks: {e}")
 
     # Try graceful stop
-    if app and hasattr(app, "stop"):
-        try:
-            app.stop()
-            logger.info("Bot stopped successfully")
-        except Exception as e:
-            logger.error(f"Error stopping bot: {e}")
+    for client in (bot, app):
+        if client and hasattr(client, "stop"):
+            try:
+                client.stop()
+                logger.info("Bot client stopped successfully")
+            except Exception as e:
+                logger.error(f"Error stopping bot client: {e}")
 
     # Force exit after 2 seconds if still running
     def hard_exit():
@@ -256,7 +259,7 @@ def reload_plugins():
 
 def main():
     """Main entry point."""
-    global app, plugin_manager
+    global app, bot, plugin_manager
 
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
@@ -297,12 +300,31 @@ def main():
             parse_mode=parse_mode,
         )
 
-    # Initialize the managed public plugin manager.
+    # Optional assistant bot client. Userbot handlers still receive `client`;
+    # bot handlers are registered on this client and receive it as `bot`.
+    if config.BOT_TOKEN:
+        bot = PluginClient(
+            f"{config.CLIENT_NAME}_bot",
+            api_id=config.API_ID,
+            api_hash=config.API_HASH,
+            bot_token=config.BOT_TOKEN,
+            app_version=config.APP_VERSION,
+            workers=config.WORKERS,
+            parse_mode=parse_mode,
+        )
+
+    # Initialize the managed public plugin manager with both client roles.
     plugin_manager = PluginManager(
         app,
         Path(__file__).parent / "plugins",
         prefix=config.CMD_PREFIX,
-        config={key: value for key, value in vars(config).items() if key.isupper()},
+        config={
+            key: value
+            for key, value in vars(config).items()
+            if key.isupper() and key != "BOT_TOKEN"
+        },
+        user_client=app,
+        bot_client=bot,
     )
 
     # Make app globally accessible for plugins
@@ -324,10 +346,14 @@ def main():
     # Load public plugins only. Existing private plugins are intentionally excluded.
     load_all_plugins()
 
-    # Start the client
+    # Start clients together when assistant-bot support is configured.
     logger.info("🐱 NekoUB started successfully! Nya~")
     print("\n✨ NekoUB is now online and ready to serve!\n")
-    app.run()
+    if bot is not None:
+        compose_clients = [app, bot]
+        asyncio.get_event_loop().run_until_complete(compose(compose_clients))
+    else:
+        app.run()
 
 
 if __name__ == "__main__":

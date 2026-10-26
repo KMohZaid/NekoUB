@@ -73,6 +73,41 @@ class PluginManagerTests(unittest.TestCase):
         self.assertNotIn("managed", self.manager.registry.plugins)
         self.assertEqual(self.client.remove_managed_handler.call_count, 2)
 
+    def test_bot_handlers_register_on_bot_client(self):
+        user_client = Mock()
+        bot_client = Mock()
+        user_client.register_managed_handler.side_effect = (
+            lambda handler, group, **metadata: (handler, group)
+        )
+        bot_client.register_managed_handler.side_effect = (
+            lambda handler, group, **metadata: (handler, group)
+        )
+        manager = PluginManager(
+            user_client,
+            Path(self.temp_dir.name),
+            user_client=user_client,
+            bot_client=bot_client,
+        )
+
+        class DualClientPlugin(Plugin):
+            id = "dual_client"
+
+            @h.command("user")
+            async def user_command(self, client, message, ctx, args):
+                pass
+
+            @h.bot_command("bot")
+            async def bot_command(self, bot, message, ctx, args):
+                pass
+
+        manager.activate(DualClientPlugin())
+        self.assertEqual(user_client.register_managed_handler.call_count, 1)
+        self.assertEqual(bot_client.register_managed_handler.call_count, 1)
+        self.assertEqual(len(manager.active["dual_client"].handlers), 2)
+        manager._deactivate(manager.active["dual_client"])
+        user_client.remove_managed_handler.assert_called_once()
+        bot_client.remove_managed_handler.assert_called_once()
+
     def test_failed_staging_removes_only_staged_handlers(self):
         self.client.register_managed_handler.side_effect = [
             (object(), 0),

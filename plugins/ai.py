@@ -4,14 +4,13 @@ import re
 from urllib.parse import urlparse
 
 import httpx
-from pyrogram import filters
+from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
 from pyrogram.types import Message
 
 import config
-import main
+from core.plugins import Example, Plugin, PluginContext, ParsedOptions, handlers as h
 from utils import (
-    continue_propagation,
     get_logger,
     is_user_premium,
     split_text_into_chunks,
@@ -420,147 +419,162 @@ async def _ai_search(client, message: Message, query: str, chat_id: int) -> None
     await _send_ai_response(client, message, text, query)
 
 
-@main.app.on_message(
-    filters.me & filters.command(["ai", "ask"], prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
-async def ai_command(client, message: Message):
-    """Chat with the configured AI model. Usage: .ai <prompt> | .ai help"""
-    prefix = config.CMD_PREFIX
-    parts = (message.text or "").split(maxsplit=1)
-    arg = parts[1].strip() if len(parts) > 1 else ""
-    chat_id = message.chat.id
-    lowered = arg.lower()
+class AIPlugin(Plugin):
+    id = "ai"
+    category = "AI"
+    description = "Chat with the configured AI model and search the web."
 
-    if lowered in ("help", "?", "-h", "--help"):
-        await message.edit(
-            f"🤖 <b>AI chat</b>\n\n"
-            f"<code>{prefix}ai &lt;prompt&gt;</code> - ask the model\n"
-            f"<code>{prefix}ai</code> (reply) - use the replied message\n"
-            f"<code>{prefix}ai &lt;prompt&gt;</code> (reply) - add reply as context\n"
-            f"<code>{prefix}ai reset</code> - clear conversation\n"
-            f"<code>{prefix}ai search &lt;query&gt;</code> - web results + summary\n"
-            f"<code>{prefix}ai model [name]</code> - show/set model\n"
-            f"<code>{prefix}ai sys [text]</code> - show/set system prompt\n\n"
-            f"Model: <code>{_esc(_model(chat_id))}</code>",
-            parse_mode=ParseMode.HTML,
-        )
-        return
+    @h.command(
+        "ai",
+        aliases=("ask",),
+        description="Chat with the configured AI model or search the web.",
+        examples=(Example("{cmd} <prompt>"), Example("{cmd} search <query>")),
+        prefixes=config.CMD_PREFIX,
+        filters=filters.me,
+    )
+    async def ai_command(
+        self,
+        client: Client,
+        message: Message,
+        ctx: PluginContext["AIPlugin"],
+        args: ParsedOptions,
+    ) -> None:
+        """Chat with the configured AI model. Usage: .ai <prompt> | .ai help"""
+        prefix = config.CMD_PREFIX
+        parts = (message.text or "").split(maxsplit=1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        chat_id = message.chat.id
+        lowered = arg.lower()
 
-    if lowered in ("reset", "clear", "forget"):
-        _history.pop(chat_id, None)
-        await message.edit("🧹 Conversation cleared.")
-        return
-
-    if lowered == "model" or lowered.startswith("model "):
-        new_model = arg[5:].strip()
-        if new_model:
-            _overrides.setdefault(chat_id, {})["model"] = new_model
+        if lowered in ("help", "?", "-h", "--help"):
             await message.edit(
-                f"✅ Model set to <code>{_esc(new_model)}</code>",
-                parse_mode=ParseMode.HTML,
-            )
-        else:
-            await message.edit(
+                f"🤖 <b>AI chat</b>\n\n"
+                f"<code>{prefix}ai &lt;prompt&gt;</code> - ask the model\n"
+                f"<code>{prefix}ai</code> (reply) - use the replied message\n"
+                f"<code>{prefix}ai &lt;prompt&gt;</code> (reply) - add reply as context\n"
+                f"<code>{prefix}ai reset</code> - clear conversation\n"
+                f"<code>{prefix}ai search &lt;query&gt;</code> - web results + summary\n"
+                f"<code>{prefix}ai model [name]</code> - show/set model\n"
+                f"<code>{prefix}ai sys [text]</code> - show/set system prompt\n\n"
                 f"Model: <code>{_esc(_model(chat_id))}</code>",
                 parse_mode=ParseMode.HTML,
             )
-        return
+            return
 
-    if lowered == "sys" or lowered.startswith("sys ") or lowered.startswith(
-        "system"
-    ):
-        new_sys = arg
-        for token in ("system", "sys"):
-            if new_sys.lower().startswith(token):
-                new_sys = new_sys[len(token):].strip()
-                break
-        if new_sys:
-            _overrides.setdefault(chat_id, {})["system"] = new_sys
-            await message.edit(
-                f"✅ System prompt set to:\n<i>{_esc(new_sys)}</i>",
-                parse_mode=ParseMode.HTML,
-            )
-        else:
-            await message.edit(
-                f"System prompt:\n<i>{_esc(_system(chat_id))}</i>",
-                parse_mode=ParseMode.HTML,
-            )
-        return
+        if lowered in ("reset", "clear", "forget"):
+            _history.pop(chat_id, None)
+            await message.edit("🧹 Conversation cleared.")
+            return
 
-    if lowered == "search" or lowered.startswith("search "):
-        query = arg[len("search"):].strip()
-        if not query:
-            query = _reply_text(message)
-        if not query:
+        if lowered == "model" or lowered.startswith("model "):
+            new_model = arg[5:].strip()
+            if new_model:
+                _overrides.setdefault(chat_id, {})["model"] = new_model
+                await message.edit(
+                    f"✅ Model set to <code>{_esc(new_model)}</code>",
+                    parse_mode=ParseMode.HTML,
+                )
+            else:
+                await message.edit(
+                    f"Model: <code>{_esc(_model(chat_id))}</code>",
+                    parse_mode=ParseMode.HTML,
+                )
+            return
+
+        if lowered == "sys" or lowered.startswith("sys ") or lowered.startswith(
+            "system"
+        ):
+            new_sys = arg
+            for token in ("system", "sys"):
+                if new_sys.lower().startswith(token):
+                    new_sys = new_sys[len(token):].strip()
+                    break
+            if new_sys:
+                _overrides.setdefault(chat_id, {})["system"] = new_sys
+                await message.edit(
+                    f"✅ System prompt set to:\n<i>{_esc(new_sys)}</i>",
+                    parse_mode=ParseMode.HTML,
+                )
+            else:
+                await message.edit(
+                    f"System prompt:\n<i>{_esc(_system(chat_id))}</i>",
+                    parse_mode=ParseMode.HTML,
+                )
+            return
+
+        if lowered == "search" or lowered.startswith("search "):
+            query = arg[len("search"):].strip()
+            if not query:
+                query = _reply_text(message)
+            if not query:
+                await message.edit(
+                    f"🔎 Usage: <code>{prefix}ai search &lt;query&gt;</code>",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+            await _ai_search(client, message, query, chat_id)
+            return
+
+        reply_text = _reply_text(message)
+        if not arg and not reply_text:
             await message.edit(
-                f"🔎 Usage: <code>{prefix}ai search &lt;query&gt;</code>",
+                f"🤖 Usage: <code>{prefix}ai &lt;prompt&gt;</code> "
+                f"(or reply to a message) · <code>{prefix}ai help</code>",
                 parse_mode=ParseMode.HTML,
             )
             return
-        await _ai_search(client, message, query, chat_id)
-        return
 
-    reply_text = _reply_text(message)
-    if not arg and not reply_text:
-        await message.edit(
-            f"🤖 Usage: <code>{prefix}ai &lt;prompt&gt;</code> "
-            f"(or reply to a message) · <code>{prefix}ai help</code>",
-            parse_mode=ParseMode.HTML,
-        )
-        return
+        prompt = arg
+        if reply_text:
+            context = f"Context (replied message):\n{reply_text}\n\n"
+            prompt = context + (arg or "Summarize or respond to the above.")
 
-    prompt = arg
-    if reply_text:
-        context = f"Context (replied message):\n{reply_text}\n\n"
-        prompt = context + (arg or "Summarize or respond to the above.")
+        if not config.AI_API_KEY and "127.0.0.1" not in config.AI_API_URL:
+            await message.edit(
+                "❌ No AI_API_KEY configured. Set it in .env.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
 
-    if not config.AI_API_KEY and "127.0.0.1" not in config.AI_API_URL:
-        await message.edit(
-            "❌ No AI_API_KEY configured. Set it in .env.",
-            parse_mode=ParseMode.HTML,
-        )
-        return
+        history = _history.setdefault(chat_id, [])
+        messages = []
+        system = _system(chat_id)
+        if system:
+            system = f"{system}\n\n{PLAIN_TEXT_DIRECTIVE}".strip()
+        else:
+            system = PLAIN_TEXT_DIRECTIVE
+        messages.append({"role": "system", "content": system})
+        messages.extend(history)
+        messages.append({"role": "user", "content": prompt})
 
-    history = _history.setdefault(chat_id, [])
-    messages = []
-    system = _system(chat_id)
-    if system:
-        system = f"{system}\n\n{PLAIN_TEXT_DIRECTIVE}".strip()
-    else:
-        system = PLAIN_TEXT_DIRECTIVE
-    messages.append({"role": "system", "content": system})
-    messages.extend(history)
-    messages.append({"role": "user", "content": prompt})
+        await message.edit("🤖 Thinking…")
+        try:
+            content, error = await _complete(messages, chat_id)
+        except Exception as exc:
+            logger.error(f"[AI] request failed: {exc}")
+            await message.edit(
+                f"❌ Request failed: <code>{_esc(type(exc).__name__)}</code>\n"
+                f"{_esc(str(exc))}",
+                parse_mode=ParseMode.HTML,
+            )
+            return
 
-    await message.edit("🤖 Thinking…")
-    try:
-        content, error = await _complete(messages, chat_id)
-    except Exception as exc:
-        logger.error(f"[AI] request failed: {exc}")
-        await message.edit(
-            f"❌ Request failed: <code>{_esc(type(exc).__name__)}</code>\n"
-            f"{_esc(str(exc))}",
-            parse_mode=ParseMode.HTML,
-        )
-        return
+        if error:
+            await message.edit(f"❌ {_esc(error)}", parse_mode=ParseMode.HTML)
+            return
 
-    if error:
-        await message.edit(f"❌ {_esc(error)}", parse_mode=ParseMode.HTML)
-        return
+        # Remember the exchange (store the raw prompt, not the context wrapper).
+        history.append({"role": "user", "content": prompt})
+        history.append({"role": "assistant", "content": content})
+        if len(history) > MAX_HISTORY:
+            del history[: len(history) - MAX_HISTORY]
 
-    # Remember the exchange (store the raw prompt, not the context wrapper).
-    history.append({"role": "user", "content": prompt})
-    history.append({"role": "assistant", "content": content})
-    if len(history) > MAX_HISTORY:
-        del history[: len(history) - MAX_HISTORY]
-
-    body = _strip_markdown(content)
-    # Show the question: both the typed arg and the replied message when present.
-    arg = arg.strip()
-    reply_text = reply_text.strip()
-    if arg and reply_text:
-        combined = f"{arg}: {reply_text}"
-    else:
-        combined = arg or reply_text
-    await _send_ai_response(client, message, body, combined)
+        body = _strip_markdown(content)
+        # Show the question: both the typed arg and the replied message when present.
+        arg = arg.strip()
+        reply_text = reply_text.strip()
+        if arg and reply_text:
+            combined = f"{arg}: {reply_text}"
+        else:
+            combined = arg or reply_text
+        await _send_ai_response(client, message, body, combined)

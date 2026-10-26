@@ -4,14 +4,14 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from pyrogram import filters
+from pyrogram import Client, filters
 from pyrogram.enums import ChatAction
 from pyrogram.types import Message
 
 import config
-import main
+from core.plugins import Example, Plugin, PluginContext, ParsedOptions, handlers as h
 from utils.media import _ffmpeg
-from utils import continue_propagation, get_logger
+from utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -130,70 +130,85 @@ async def _error(client, message: Message, text: str) -> None:
     )
 
 
-@main.app.on_message(
-    filters.me & filters.command(["voice", "vn"], prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
-async def voice_note_command(client, message: Message):
-    try:
-        delete_command = _parse_delete_flag(message)
-    except ValueError as exc:
-        await _error(client, message, str(exc))
-        return
+class VoiceNotePlugin(Plugin):
+    id = "voice_note"
+    category = "Media"
+    description = "Convert audio or video media to a voice note."
 
-    source = message if _media_mime(message) else message.reply_to_message
-    if not source or not _media_mime(source):
-        await _error(
-            client,
-            message,
-            "Reply to an audio or video message, or use `.vn` / `.voice` on one.",
-        )
-        return
-
-    chat_id = message.chat.id
-    if source.id == message.id:
-        reply_to_id = message.reply_to_message.id if message.reply_to_message else None
-    else:
-        reply_to_id = source.id
-
-    with tempfile.TemporaryDirectory(
-        prefix="nekoub-voice-note-", dir=TEMP_DIR
-    ) as temp_dir:
-        source_path = await client.download_media(
-            source,
-            file_name=str(Path(temp_dir) / "source"),
-        )
-        if not source_path:
-            await _error(client, message, "Could not download the source media.")
+    @h.command(
+        "vn",
+        aliases=("voice",),
+        description="Convert audio or video media to a voice note.",
+        examples=(Example("{cmd}"), Example("{cmd} -d")),
+        prefixes=config.CMD_PREFIX,
+        filters=filters.me,
+    )
+    async def voice_note_command(
+        self,
+        client: Client,
+        message: Message,
+        ctx: PluginContext["VoiceNotePlugin"],
+        args: ParsedOptions,
+    ) -> None:
+        try:
+            delete_command = _parse_delete_flag(message)
+        except ValueError as exc:
+            await _error(client, message, str(exc))
             return
 
-        if delete_command or source.id != message.id:
-            try:
-                await message.delete()
-            except Exception as exc:
-                logger.warning(f"[VOICE_NOTE] Could not delete command: {exc}")
-
-        stop = asyncio.Event()
-        action_task = asyncio.create_task(_recording_action(client, chat_id, stop))
-        try:
-            output_path = Path(temp_dir) / "voice-note.ogg"
-            await _run_ffmpeg([
-                _ffmpeg(), "-y", "-hide_banner", "-loglevel", "error",
-                "-i", str(source_path), "-vn", "-c:a", "libopus", "-b:a", "48k",
-                "-ar", "48000", "-ac", "1", str(output_path),
-            ])
-            duration, waveform = _voice_metadata(output_path)
-            await client.send_voice(
-                chat_id,
-                str(output_path),
-                duration=duration,
-                waveform=waveform,
-                reply_to_message_id=reply_to_id,
+        source = message if _media_mime(message) else message.reply_to_message
+        if not source or not _media_mime(source):
+            await _error(
+                client,
+                message,
+                "Reply to an audio or video message, or use `.vn` / `.voice` on one.",
             )
-        except Exception as exc:
-            logger.error(f"[VOICE_NOTE] Conversion or send failed: {exc}", exc_info=True)
-            await _error(client, message, f"Could not make a voice note: {type(exc).__name__}")
-        finally:
-            stop.set()
-            action_task.cancel()
-            await asyncio.gather(action_task, return_exceptions=True)
+            return
+
+        chat_id = message.chat.id
+        if source.id == message.id:
+            reply_to_id = message.reply_to_message.id if message.reply_to_message else None
+        else:
+            reply_to_id = source.id
+
+        with tempfile.TemporaryDirectory(
+            prefix="nekoub-voice-note-", dir=TEMP_DIR
+        ) as temp_dir:
+            source_path = await client.download_media(
+                source,
+                file_name=str(Path(temp_dir) / "source"),
+            )
+            if not source_path:
+                await _error(client, message, "Could not download the source media.")
+                return
+
+            if delete_command or source.id != message.id:
+                try:
+                    await message.delete()
+                except Exception as exc:
+                    logger.warning(f"[VOICE_NOTE] Could not delete command: {exc}")
+
+            stop = asyncio.Event()
+            action_task = asyncio.create_task(_recording_action(client, chat_id, stop))
+            try:
+                output_path = Path(temp_dir) / "voice-note.ogg"
+                await _run_ffmpeg([
+                    _ffmpeg(), "-y", "-hide_banner", "-loglevel", "error",
+                    "-i", str(source_path), "-vn", "-c:a", "libopus", "-b:a", "48k",
+                    "-ar", "48000", "-ac", "1", str(output_path),
+                ])
+                duration, waveform = _voice_metadata(output_path)
+                await client.send_voice(
+                    chat_id,
+                    str(output_path),
+                    duration=duration,
+                    waveform=waveform,
+                    reply_to_message_id=reply_to_id,
+                )
+            except Exception as exc:
+                logger.error(f"[VOICE_NOTE] Conversion or send failed: {exc}", exc_info=True)
+                await _error(client, message, f"Could not make a voice note: {type(exc).__name__}")
+            finally:
+                stop.set()
+                action_task.cancel()
+                await asyncio.gather(action_task, return_exceptions=True)

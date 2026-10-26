@@ -175,19 +175,29 @@ def _wrap_handler(
     *,
     config: Mapping[str, Any] | None = None,
     command_prefixes: Sequence[str] = (".",),
+    user_client: Client | None = None,
+    bot_client: Client | None = None,
 ) -> Callback:
     original = getattr(plugin, declaration.method_name)
     command_options = declaration.options.command
 
     @wraps(original)
     async def invoke(client: Client, update: Any, *args: Any, **kwargs: Any) -> Any:
-        if (
-            declaration.options.bot or declaration.event.startswith("bot_")
-        ) and not getattr(client, "is_bot", False):
+        is_bot_handler = declaration.options.bot or declaration.event.startswith("bot_")
+        if is_bot_handler and not getattr(client, "is_bot", False):
             raise RuntimeError("Bot handler was attached to a non-bot client")
         context = PluginContext(
-            client=client,
+            client=(
+                user_client
+                if user_client is not None
+                else None if is_bot_handler else client
+            ),
             update=update,
+            bot=(
+                bot_client
+                if bot_client is not None
+                else client if is_bot_handler else None
+            ),
             plugin=plugin,
             config=config if config is not None else {},
         )
@@ -226,8 +236,13 @@ def _wrap_handler(
             handler_args = (parsed, *args)
         from pyrogram import ContinuePropagation
 
+        handler_client = (
+            client
+            if is_bot_handler
+            else user_client if user_client is not None else client
+        )
         try:
-            await original(client, update, context, *handler_args, **kwargs)
+            await original(handler_client, update, context, *handler_args, **kwargs)
         except Exception as error:
             logging.getLogger("core.plugins").exception(
                 "Managed plugin handler failed: %s.%s",

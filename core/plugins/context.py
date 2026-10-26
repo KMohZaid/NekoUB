@@ -18,9 +18,10 @@ PluginT = TypeVar("PluginT")
 class PluginContext(Generic[PluginT]):
     """Framework helpers for one managed handler invocation."""
 
-    client: Client[Any]
+    client: Client[Any] | None
     update: Any
     plugin: PluginT
+    bot: Client[Any] | None = None
     config: Mapping[str, Any] = field(default_factory=dict)
     command: Any = None
     parse_mode: Any = ParseMode.HTML
@@ -71,6 +72,8 @@ class PluginContext(Generic[PluginT]):
                 chat = getattr(self.update, "chat", None)
                 if chat is None:
                     raise ValueError("ctx.send requires reply_to or an update with a chat")
+                if self.client is None:
+                    raise ValueError("ctx.send requires a userbot client or reply_to")
                 sent.append(await self.client.send_message(chat.id, chunk, **send_kwargs))
         return sent[0] if len(sent) == 1 else sent
 

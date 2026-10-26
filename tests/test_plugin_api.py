@@ -110,6 +110,37 @@ class PluginApiTests(unittest.TestCase):
             asyncio.run(callback(object(), update))
         self.assertEqual(plugin.parsed.positional, ("echo hello world",))
 
+    def test_bot_handler_receives_bot_as_client_and_context_exposes_both(self):
+        class BotPlugin(Plugin):
+            id = "bot_handler"
+            captured = None
+
+            @h.bot_command("hello")
+            async def hello(self, bot, update, ctx, args):
+                self.captured = (bot, update, ctx, args)
+
+        plugin = BotPlugin()
+        declaration = plugin.declarations()[0]
+        user_client = object()
+        bot_client = type("Bot", (), {"is_bot": True})()
+        callback = _wrap_handler(
+            plugin,
+            declaration,
+            user_client=user_client,
+            bot_client=bot_client,
+        )
+        update = type("Message", (), {"text": "/hello"})()
+        with self.assertRaises(Exception) as raised:
+            import asyncio
+            asyncio.run(callback(bot_client, update))
+        self.assertEqual(type(raised.exception).__name__, "ContinuePropagation")
+        actual_bot, actual_update, context, args = plugin.captured
+        self.assertIs(actual_bot, bot_client)
+        self.assertIs(actual_update, update)
+        self.assertIs(context.client, user_client)
+        self.assertIs(context.bot, bot_client)
+        self.assertEqual(args.positional, ())
+
     def test_managed_handler_receives_context_update_args_and_continues(self):
         class HandlerPlugin(Plugin):
             id = "handler"

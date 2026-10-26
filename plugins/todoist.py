@@ -8,14 +8,14 @@ from typing import Optional
 
 import httpx
 from cachetools import TTLCache
-from pyrogram import filters
+from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
 from pyrogram.types import Message
 from todoist_api_python.api import TodoistAPI
 
 import config
-import main
-from utils import continue_propagation, get_logger
+from core.plugins import ParsedOptions, Plugin, PluginContext, handlers as h
+from utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -735,110 +735,115 @@ def _reserve_todo_message(message: Message) -> bool:
     return True
 
 
-@main.app.on_message(
-    filters.me
-    & filters.command("todo", prefixes=config.CMD_PREFIX)
-    & ~filters.scheduled
-)
-@continue_propagation
-async def todo_command(client, message: Message):
-    raw_text = _extract_message_text(message).strip()
-    raw_content = raw_text.split(maxsplit=1)
+class TodoistPlugin(Plugin):
+    id = "todoist"
+    category = "Utility"
+    description = "Create and list Todoist tasks from Telegram messages."
 
-    if len(raw_content) < 2:
-        await message.edit(USAGE_TEXT)
-        return
+    @h.command(
+        "todo",
+        aliases=("todoist",),
+        description=description,
+        prefixes=config.CMD_PREFIX,
+        filters=filters.me & ~filters.scheduled,
+    )
+    async def todo_command(
+        self,
+        client: Client,
+        message: Message,
+        ctx: PluginContext["TodoistPlugin"],
+        parsed_options: ParsedOptions,
+    ) -> None:
+        arg = " ".join(parsed_options.positional).strip()
+        list_match = re.match(r"(?i)^list(?:\s+(\S+))?$", arg)
+        if list_match:
+            page_token = list_match.group(1)
+            if page_token is None:
+                page = 1
+            elif page_token.isdigit():
+                page = int(page_token)
+            else:
+                await message.edit(
+                    f"Usage: <code>{config.CMD_PREFIX}todo list [page]</code>",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+            await handle_todo_list(client, message, page)
+            return
 
-    arg = raw_content[1].strip()
-    list_match = re.match(r"(?i)^list(?:\s+(\S+))?$", arg)
-    if list_match:
-        page_token = list_match.group(1)
-        if page_token is None:
-            page = 1
-        elif page_token.isdigit():
-            page = int(page_token)
-        else:
+        parsed = parse_todo_input(arg)
+        if not parsed.title:
+            await message.edit(USAGE_TEXT)
+            return
+        if len(parsed.title) > MAX_TASK_CONTENT_LEN:
+            await message.reply_text("title is more than 500 char")
+            await send_result_feedback(client, message, success=False)
+            return
+
+        todo_message_link = _build_message_link(message.chat.id, message.id)
+        try:
+            ensure_initialized()
+        except RuntimeError as init_error:
+            logger.warning(f"[TODOIST] Not configured: {init_error}")
             await message.edit(
-                f"Usage: <code>{config.CMD_PREFIX}todo list [page]</code>",
+                "❌ Todoist is not configured.\n\n"
+                f"Reason: <code>{_esc(str(init_error))}</code>\n\n"
+                "Add <code>TODOIST_API_TOKEN</code> to <code>.env</code> "
+                "(Settings → Integrations → Developer in Todoist), then restart "
+                "the bot.",
                 parse_mode=ParseMode.HTML,
             )
             return
-        await handle_todo_list(client, message, page)
-        return
 
-    parsed = parse_todo_input(arg)
-    if not parsed.title:
-        await message.edit(USAGE_TEXT)
-        return
-    if len(parsed.title) > MAX_TASK_CONTENT_LEN:
-        await message.reply_text("title is more than 500 char")
-        await send_result_feedback(client, message, success=False)
-        return
+        try:
+            description = build_description(message, parsed.description)
+            labels = [LABEL.name]
+            for label in resolve_labels(parsed.tags):
+                if label.casefold() != LABEL.name.casefold():
+                    labels.append(label)
 
-    todo_message_link = _build_message_link(message.chat.id, message.id)
-    try:
-        ensure_initialized()
-    except RuntimeError as init_error:
-        logger.warning(f"[TODOIST] Not configured: {init_error}")
-        await message.edit(
-            "❌ Todoist is not configured.\n\n"
-            f"Reason: <code>{_esc(str(init_error))}</code>\n\n"
-            "Add <code>TODOIST_API_TOKEN</code> to <code>.env</code> "
-            "(Settings → Integrations → Developer in Todoist), then restart "
-            "the bot.",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
-    try:
-        description = build_description(message, parsed.description)
-        labels = [LABEL.name]
-        for label in resolve_labels(parsed.tags):
-            if label.casefold() != LABEL.name.casefold():
-                labels.append(label)
-
-        chat_title = message.chat.title or message.chat.first_name or "Chat"
-        chat_label_name = f"TG 📩 {chat_title} {message.chat.id}"
-        chat_label = create_label(
-            name=chat_label_name, color=TODOIST_LABEL_COLOR
-        )
-
-        create_task_kwargs = {
-            "content": parsed.title,
-            "section_id": SECTION.id,
-            "labels": labels + [chat_label.name],
-        }
-        if description:
-            create_task_kwargs["description"] = description
-        if parsed.priority:
-            create_task_kwargs["priority"] = parsed.priority
-        if parsed.due_string:
-            create_task_kwargs["due_string"] = parsed.due_string
-            create_task_kwargs["due_lang"] = "en"
-
-        if not _reserve_todo_message(message):
-            logger.info(
-                "[TODOIST] Ignored duplicate command delivery: "
-                f"chat={message.chat.id} message={message.id}"
+            chat_title = message.chat.title or message.chat.first_name or "Chat"
+            chat_label_name = f"TG 📩 {chat_title} {message.chat.id}"
+            chat_label = create_label(
+                name=chat_label_name, color=TODOIST_LABEL_COLOR
             )
-            return
 
-        API.add_task(**create_task_kwargs)
-        await send_result_feedback(client, message, success=True)
-    except Exception as exc:
-        error_details = _format_todoist_error(exc)
-        logger.error(
-            f"[TODOIST] Failed to create task: {error_details}", exc_info=True
-        )
-        await log_error_to_saved_messages(
-            client,
-            context=(
-                f"chat={message.chat.id} message={message.id}\n"
-                f"todo_message={todo_message_link}"
-            ),
-            error=RuntimeError(error_details),
-        )
-        await send_result_feedback(client, message, success=False)
+            create_task_kwargs = {
+                "content": parsed.title,
+                "section_id": SECTION.id,
+                "labels": labels + [chat_label.name],
+            }
+            if description:
+                create_task_kwargs["description"] = description
+            if parsed.priority:
+                create_task_kwargs["priority"] = parsed.priority
+            if parsed.due_string:
+                create_task_kwargs["due_string"] = parsed.due_string
+                create_task_kwargs["due_lang"] = "en"
+
+            if not _reserve_todo_message(message):
+                logger.info(
+                    "[TODOIST] Ignored duplicate command delivery: "
+                    f"chat={message.chat.id} message={message.id}"
+                )
+                return
+
+            API.add_task(**create_task_kwargs)
+            await send_result_feedback(client, message, success=True)
+        except Exception as exc:
+            error_details = _format_todoist_error(exc)
+            logger.error(
+                f"[TODOIST] Failed to create task: {error_details}", exc_info=True
+            )
+            await log_error_to_saved_messages(
+                client,
+                context=(
+                    f"chat={message.chat.id} message={message.id}\n"
+                    f"todo_message={todo_message_link}"
+                ),
+                error=RuntimeError(error_details),
+            )
+            await send_result_feedback(client, message, success=False)
 
 
 initialize_todoist()

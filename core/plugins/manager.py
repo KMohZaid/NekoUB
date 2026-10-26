@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class ActivePlugin:
     instance: Plugin
     declaration: PluginDeclaration
-    handlers: list[tuple[Any, int]]
+    handlers: list[tuple[Client, Any, int]]
     module_name: str
     module: ModuleType | None
     source_path: Path | None = None
@@ -38,8 +38,20 @@ class PluginManager:
         *,
         prefix: str | list[str] = ".",
         config: dict[str, Any] | None = None,
+        user_client: Client | None = None,
+        bot_client: Client | None = None,
     ) -> None:
         self.client = client
+        self.user_client = (
+            user_client
+            if user_client is not None
+            else None if getattr(client, "is_bot", False) is True else client
+        )
+        self.bot_client = (
+            bot_client
+            if bot_client is not None
+            else client if getattr(client, "is_bot", False) is True else None
+        )
         self.plugin_dir = plugin_dir.resolve()
         self.prefix = prefix
         self.command_prefixes = (
@@ -139,11 +151,18 @@ class PluginManager:
         declaration = self._validate(plugin)
         if any(
             (item.event.startswith("bot_") or item.options.bot)
-            and getattr(self.client, "is_bot", False) is False
+            and self.bot_client is None
             for item in declaration.handlers
         ):
             raise NotImplementedError(
                 "Bot handlers require a PluginManager configured with a bot client"
+            )
+        if any(
+            not item.event.startswith("bot_") and not item.options.bot
+            for item in declaration.handlers
+        ) and self.user_client is None:
+            raise NotImplementedError(
+                "Userbot handlers require a PluginManager configured with a user client"
             )
         previous = self.active.get(plugin.id)
         if previous is not None and not replace:
@@ -153,22 +172,33 @@ class PluginManager:
         try:
             for item in declaration.handlers:
                 handler = self._build_handler(plugin, item)
-                group = 0
-                registration = self.client.register_managed_handler(
+                group = item.options.handler_kwargs.get("group", 0)
+                if not isinstance(group, int):
+                    raise TypeError("Handler group must be an integer")
+                target_client = (
+                    self.bot_client
+                    if item.event.startswith("bot_") or item.options.bot
+                    else self.user_client
+                )
+                if target_client is None:
+                    raise NotImplementedError(
+                        f"No client is configured for {item.event} handlers"
+                    )
+                registration = target_client.register_managed_handler(
                     handler,
                     group,
                     plugin_id=plugin.id,
                     event=item.event,
                 )
-                staged.append(registration)
+                staged.append((target_client, *registration))
         except Exception:
-            for handler, group in reversed(staged):
-                self.client.remove_managed_handler(handler, group)
+            for registered_client, handler, registered_group in reversed(staged):
+                registered_client.remove_managed_handler(handler, registered_group)
             raise
 
         if previous is not None:
-            for handler, group in reversed(previous.handlers):
-                self.client.remove_managed_handler(handler, group)
+            for registered_client, handler, registered_group in reversed(previous.handlers):
+                registered_client.remove_managed_handler(handler, registered_group)
         self.registry.plugins[plugin.id] = declaration
         self.active[plugin.id] = ActivePlugin(
             plugin,
@@ -279,10 +309,13 @@ class PluginManager:
                 raise ValueError(f"Handler method {item.method_name!r} is not callable")
             options = item.options
             if item.event.startswith("bot_") or options.bot:
-                if getattr(self.client, "is_bot", False):
-                    continue
+                if self.bot_client is None:
+                    raise NotImplementedError(
+                        "Bot handlers require a PluginManager configured with a bot client"
+                    )
+            elif self.user_client is None:
                 raise NotImplementedError(
-                    "Bot handlers require a PluginManager configured with a bot client"
+                    "Userbot handlers require a PluginManager configured with a user client"
                 )
             if options.command is not None:
                 command = options.command
@@ -314,9 +347,6 @@ class PluginManager:
     def _build_handler(self, plugin: Plugin, declaration: HandlerDeclaration) -> Any:
         options = declaration.options
         filters_value = options.filters
-        if options.handler_kwargs:
-            unknown = ", ".join(sorted(options.handler_kwargs))
-            raise TypeError(f"Unsupported handler options for {declaration.event}: {unknown}")
         command_meta = options.command
         if command_meta is not None:
             command_prefixes = (
@@ -326,16 +356,20 @@ class PluginManager:
                 if isinstance(command_meta.prefixes, str)
                 else list(command_meta.prefixes)
             )
-            command_filters = filters.me & filters.command(
+            command_filters = filters.command(
                 [command_meta.trigger, *command_meta.aliases],
                 prefixes=command_prefixes,
             )
+            if not (options.bot or declaration.event.startswith("bot_")):
+                command_filters = filters.me & command_filters
             filters_value = command_filters if filters_value is None else command_filters & filters_value
         callback = _wrap_handler(
             plugin,
             declaration,
             config=self.config,
             command_prefixes=self.command_prefixes,
+            user_client=self.user_client,
+            bot_client=self.bot_client,
         )
         handler_type = HANDLER_TYPES[declaration.event]
         try:
@@ -347,8 +381,8 @@ class PluginManager:
         return handler
 
     def _deactivate(self, active: ActivePlugin) -> None:
-        for handler, group in reversed(active.handlers):
-            self.client.remove_managed_handler(handler, group)
+        for client, handler, group in reversed(active.handlers):
+            client.remove_managed_handler(handler, group)
         self.registry.unregister(active.declaration.plugin_id)
         self._module_owners.pop(active.module_name, None)
         if active.module_name != "<memory>":

@@ -58,7 +58,8 @@ from pyrogram.types import Message
 
 import config
 import main
-from utils import continue_propagation, get_logger
+from core.plugins import Example, ParsedOptions, Plugin, PluginContext, handlers as h
+from utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -96,7 +97,7 @@ UNIT_WORDS = {
 MANAGEMENT = {"list", "ls", "del", "rm", "delete", "remove", "clear",
               "clearall", "help", "?", "enable", "disable"}
 
-# Set on ``main`` so a hot reload does not spawn a second scheduler.
+# Stored on the persistent module so managed reloads can reuse the scheduler.
 _TASK_ATTR = "_automessages_scheduler_task"
 
 
@@ -438,57 +439,111 @@ async def send_output(
 # ============================================================
 
 
-@main.app.on_message(~filters.me & ~filters.service, group=1)
-@continue_propagation
-async def automation_listener(client, message: Message):
-    try:
-        if message.outgoing:
-            return
-        sender = message.from_user
-        if sender is not None and (sender.is_self or sender.is_bot):
-            return
+class AutomessagesPlugin(Plugin):
+    id = "automessages"
+    category = "Utilities"
+    description = "Per-chat keyword and scheduled automated messages."
 
-        store = load_store()
-        items = store.get(str(message.chat.id))
-        if not items:
-            return
+    def __init__(self):
+        ensure_scheduler()
 
-        text = message.text or message.caption or ""
-        me_id = client.me.id if client.me else None
+    @h.message(filters=~filters.me & ~filters.service, group=1)
+    async def automation_listener(
+        self, client, message: Message, ctx: PluginContext["AutomessagesPlugin"]
+    ):
+        ensure_scheduler()
+        try:
+            if message.outgoing:
+                return
+            sender = message.from_user
+            if sender is not None and (sender.is_self or sender.is_bot):
+                return
 
-        replied_to_me = is_reply_to_me(message, me_id)
-        mentioned = tagged_me(message)
+            store = load_store()
+            items = store.get(str(message.chat.id))
+            if not items:
+                return
 
-        for item in items:
-            if not item.get("enabled", True):
-                continue
-            kind = item.get("kind")
-            if kind not in ("keyword", "reply", "tag"):
-                continue
-            flags = item.get("flags") or {}
-            exact = bool(flags.get("exact"))
-            needle = item.get("match", "")
+            text = message.text or message.caption or ""
+            me_id = client.me.id if client.me else None
 
-            if kind == "keyword":
-                hit = match_text(text, needle, exact)
-            elif kind == "reply":
-                hit = replied_to_me and match_text(text, needle, exact)
-            else:  # tag
-                hit = (replied_to_me or mentioned) and match_text(
-                    text, needle, exact
-                )
+            replied_to_me = is_reply_to_me(message, me_id)
+            mentioned = tagged_me(message)
 
-            if hit:
-                await send_output(
-                    client,
-                    message,
-                    message.chat.id,
-                    item["output"],
-                    flags,
-                    sender,
-                )
-    except Exception as exc:
-        logger.error(f"[AM] Listener error: {exc}", exc_info=True)
+            for item in items:
+                if not item.get("enabled", True):
+                    continue
+                kind = item.get("kind")
+                if kind not in ("keyword", "reply", "tag"):
+                    continue
+                flags = item.get("flags") or {}
+                exact = bool(flags.get("exact"))
+                needle = item.get("match", "")
+
+                if kind == "keyword":
+                    hit = match_text(text, needle, exact)
+                elif kind == "reply":
+                    hit = replied_to_me and match_text(text, needle, exact)
+                else:  # tag
+                    hit = (replied_to_me or mentioned) and match_text(
+                        text, needle, exact
+                    )
+
+                if hit:
+                    await send_output(
+                        client,
+                        message,
+                        message.chat.id,
+                        item["output"],
+                        flags,
+                        sender,
+                    )
+        except Exception as exc:
+            logger.error(f"[AM] Listener error: {exc}", exc_info=True)
+
+    @h.command(
+        "am",
+        aliases=("auto", "automessage", "automessages"),
+        description=description,
+        prefixes=config.CMD_PREFIX,
+        parse_mode="markdown",
+    )
+    async def automessages_command(
+        self, client, message: Message, ctx: PluginContext["AutomessagesPlugin"]
+    ):
+        raw = (message.text or "").split(maxsplit=1)
+        args = raw[1].strip() if len(raw) > 1 else ""
+        chat_id = message.chat.id
+        prefix = config.CMD_PREFIX
+
+        try:
+            if not args:
+                await message.edit(help_text())
+                return
+
+            action = _management(args)
+            if action is not None:
+                await _handle_management(message, chat_id, prefix, *action)
+                return
+
+            item, error = parse_automation(args)
+            if error:
+                await message.edit(f"❌ {error}")
+                return
+
+            store = load_store()
+            items = chat_items(store, chat_id)
+            item["id"] = next_id(items)
+            items.append(item)
+            save_store(store)
+
+            await message.edit(
+                f"✅ Added automation `{item['id']}`: {_describe(item)}"
+            )
+            logger.info(f"[AM] Added #{item['id']} in {chat_id}: {_describe(item)}")
+        except Exception as exc:
+            logger.error(f"[AM] Command error: {exc}", exc_info=True)
+            await message.edit(f"❌ Failed: {type(exc).__name__}")
 
 
 # ============================================================
@@ -503,23 +558,22 @@ def _reschedule(item: dict, now_ts: float) -> float:
     return next_clock_run(hour, minute, now_ts)
 
 
-async def _scheduler_loop() -> None:
+async def _scheduler_loop(client) -> None:
     await asyncio.sleep(3)  # let the client finish connecting
     while True:
         try:
-            await _tick()
+            await _tick(client)
         except Exception as exc:
             logger.error(f"[AM] Scheduler error: {exc}", exc_info=True)
         await asyncio.sleep(TICK_SECONDS)
 
 
-async def _tick() -> None:
+async def _tick(client) -> None:
     store = load_store()
     if not store:
         return
     now = time.time()
     changed = False
-    client = main.app
 
     for chat_key, items in store.items():
         for item in list(items):
@@ -566,7 +620,7 @@ def ensure_scheduler() -> None:
         except RuntimeError:
             return
     try:
-        setattr(main, _TASK_ATTR, loop.create_task(_scheduler_loop()))
+        setattr(main, _TASK_ATTR, loop.create_task(_scheduler_loop(main.app)))
         logger.info("[AM] Scheduler started")
     except Exception as exc:
         logger.error(f"[AM] Could not start scheduler: {exc}")
@@ -700,51 +754,6 @@ def _management(raw: str) -> tuple[str, str] | None:
     return None
 
 
-@main.app.on_message(
-    filters.me
-    & filters.command(
-        ["am", "auto", "automessage", "automessages"],
-        prefixes=config.CMD_PREFIX,
-    ),
-    group=1,
-)
-@continue_propagation
-async def automessages_command(client, message: Message):
-    raw = (message.text or "").split(maxsplit=1)
-    args = raw[1].strip() if len(raw) > 1 else ""
-    chat_id = message.chat.id
-    prefix = config.CMD_PREFIX
-
-    try:
-        if not args:
-            await message.edit(help_text())
-            return
-
-        action = _management(args)
-        if action is not None:
-            await _handle_management(message, chat_id, prefix, *action)
-            return
-
-        item, error = parse_automation(args)
-        if error:
-            await message.edit(f"❌ {error}")
-            return
-
-        store = load_store()
-        items = chat_items(store, chat_id)
-        item["id"] = next_id(items)
-        items.append(item)
-        save_store(store)
-
-        await message.edit(
-            f"✅ Added automation `{item['id']}`: {_describe(item)}"
-        )
-        logger.info(f"[AM] Added #{item['id']} in {chat_id}: {_describe(item)}")
-    except Exception as exc:
-        logger.error(f"[AM] Command error: {exc}", exc_info=True)
-        await message.edit(f"❌ Failed: {type(exc).__name__}")
-
-
 async def _handle_management(
     message: Message, chat_id: int, prefix: str, action: str, arg: str
 ) -> None:
@@ -784,7 +793,3 @@ async def _handle_management(
         item["enabled"] = False
         save_store(store)
         await message.edit(f"⏸ Disabled automation `{target}`.")
-
-
-# Start the scheduler when the plugin is (re)loaded.
-ensure_scheduler()

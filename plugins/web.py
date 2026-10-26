@@ -1,18 +1,13 @@
 import asyncio
 import html
 
-from pyrogram import filters
+from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
 from pyrogram.types import Message
 
 import config
-import main
-from utils import (
-    continue_propagation,
-    get_logger,
-    is_user_premium,
-    split_text_into_chunks,
-)
+from core.plugins import ParsedOptions, Plugin, PluginContext, handlers as h
+from utils import get_logger, is_user_premium, split_text_into_chunks
 from utils.websearch import fetch_text
 from utils.websearch import search as _shared_search
 
@@ -208,156 +203,117 @@ async def _open_result(
     )
 
 
-@main.app.on_message(
-    filters.me & filters.command(["web", "search"], prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
-async def web_command(client, message: Message):
-    """Search the web / page through results.
+class WebPlugin(Plugin):
+    id = "web"
+    category = "Utility"
+    description = "Search the web and read pages."
 
-    Usage:
-        .web <query>
-        .web next | prev
-    """
-    prefix = config.CMD_PREFIX
-    parts = (message.text or "").split(maxsplit=1)
-    arg = parts[1].strip() if len(parts) > 1 else ""
+    @h.command("web", aliases=("search",), description=description,
+               prefixes=config.CMD_PREFIX, filters=filters.me)
+    async def web_command(self, client: Client, message: Message,
+                          ctx: PluginContext["WebPlugin"], parsed: ParsedOptions) -> None:
+        """Search the web / page through results."""
+        prefix = config.CMD_PREFIX
+        arg = " ".join(parsed.positional).strip()
+        if not arg:
+            await message.edit(
+                f"🌐 <b>Web search</b>\n\n"
+                f"<code>{prefix}web &lt;query&gt;</code> - search\n"
+                f"<code>{prefix}web next</code> / <code>{prefix}web prev</code> - paginate\n"
+                f"<code>{prefix}open &lt;n&gt;</code> - read a result\n"
+                f"<code>{prefix}read &lt;url&gt;</code> - read any URL",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        lowered = arg.lower()
+        state = _state.get(message.chat.id)
+        if lowered in ("next", "more") and state:
+            await _do_search(message, state["query"], state["page"] + 1)
+            return
+        if lowered in ("prev", "back") and state:
+            await _do_search(message, state["query"], state["page"] - 1)
+            return
+        await _do_search(message, arg, 0)
 
-    if not arg:
-        await message.edit(
-            f"🌐 <b>Web search</b>\n\n"
-            f"<code>{prefix}web &lt;query&gt;</code> - search\n"
-            f"<code>{prefix}web next</code> / "
-            f"<code>{prefix}web prev</code> - paginate\n"
-            f"<code>{prefix}open &lt;n&gt;</code> - read a result\n"
-            f"<code>{prefix}read &lt;url&gt;</code> - read any URL",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
-    lowered = arg.lower()
-    state = _state.get(message.chat.id)
-
-    if lowered in ("next", "more") and state:
+    @h.command("next", prefixes=config.CMD_PREFIX, filters=filters.me)
+    async def next_command(self, client: Client, message: Message,
+                           ctx: PluginContext["WebPlugin"], parsed: ParsedOptions) -> None:
+        state = _state.get(message.chat.id)
+        if not state:
+            await message.edit(
+                f"😿 No search to page through. Try <code>{config.CMD_PREFIX}web &lt;query&gt;</code>.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
         await _do_search(message, state["query"], state["page"] + 1)
-        return
-    if lowered in ("prev", "back") and state:
+
+    @h.command("prev", prefixes=config.CMD_PREFIX, filters=filters.me)
+    async def prev_command(self, client: Client, message: Message,
+                           ctx: PluginContext["WebPlugin"], parsed: ParsedOptions) -> None:
+        state = _state.get(message.chat.id)
+        if not state:
+            await message.edit(
+                f"😿 No search to page through. Try <code>{config.CMD_PREFIX}web &lt;query&gt;</code>.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
         await _do_search(message, state["query"], state["page"] - 1)
-        return
 
-    await _do_search(message, arg, 0)
+    @h.command("open", prefixes=config.CMD_PREFIX, filters=filters.me)
+    async def open_command(self, client: Client, message: Message,
+                           ctx: PluginContext["WebPlugin"], parsed: ParsedOptions) -> None:
+        arg = " ".join(parsed.positional).strip()
+        if not arg.isdigit():
+            await message.edit(
+                f"Usage: <code>{config.CMD_PREFIX}open &lt;n&gt;</code> (n from the last {config.CMD_PREFIX}web)",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        await _open_result(client, message, int(arg))
 
+    @h.command("read", aliases=("browse", "url"), prefixes=config.CMD_PREFIX,
+               filters=filters.me)
+    async def read_command(self, client: Client, message: Message,
+                           ctx: PluginContext["WebPlugin"], parsed: ParsedOptions) -> None:
+        url = " ".join(parsed.positional).strip()
+        if not url:
+            await message.edit(
+                f"Usage: <code>{config.CMD_PREFIX}read</code> https://example.com",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        await message.edit(f"📄 Reading {_esc(url)}…", parse_mode=ParseMode.HTML)
+        try:
+            text = await _fetch_text(url)
+        except Exception as exc:
+            logger.error(f"[WEB] read failed: {exc}")
+            await message.edit(
+                f"❌ Failed to read {_esc(url)}\n<code>{_esc(type(exc).__name__)}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        if not text:
+            await message.edit(f"😿 No readable text at {_esc(url)}.", parse_mode=ParseMode.HTML)
+            return
+        await _send_page_content(client, message, "Web page", url, text)
 
-@main.app.on_message(
-    filters.me & filters.command(["next"], prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
-async def next_command(client, message: Message):
-    """Next page of the last search. Usage: .next"""
-    state = _state.get(message.chat.id)
-    if not state:
-        await message.edit(
-            f"😿 No search to page through. Try "
-            f"<code>{config.CMD_PREFIX}web &lt;query&gt;</code>.",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-    await _do_search(message, state["query"], state["page"] + 1)
-
-
-@main.app.on_message(
-    filters.me & filters.command(["prev"], prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
-async def prev_command(client, message: Message):
-    """Previous page of the last search. Usage: .prev"""
-    state = _state.get(message.chat.id)
-    if not state:
-        await message.edit(
-            f"😿 No search to page through. Try "
-            f"<code>{config.CMD_PREFIX}web &lt;query&gt;</code>.",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-    await _do_search(message, state["query"], state["page"] - 1)
-
-
-@main.app.on_message(
-    filters.me & filters.command(["open"], prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
-async def open_command(client, message: Message):
-    """Read a search result. Usage: .open <n>"""
-    parts = (message.text or "").split(maxsplit=1)
-    arg = parts[1].strip() if len(parts) > 1 else ""
-    if not arg.isdigit():
-        await message.edit(
-            f"Usage: <code>{config.CMD_PREFIX}open &lt;n&gt;</code> "
-            f"(n from the last {config.CMD_PREFIX}web)",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-    await _open_result(client, message, int(arg))
-
-
-@main.app.on_message(
-    filters.me
-    & filters.command(["read", "browse", "url"], prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
-async def read_command(client, message: Message):
-    """Read any URL as plain text. Usage: .read <url>"""
-    parts = (message.text or "").split(maxsplit=1)
-    url = parts[1].strip() if len(parts) > 1 else ""
-    if not url:
-        await message.edit(
-            f"Usage: <code>{config.CMD_PREFIX}read</code> https://example.com",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
-
-    await message.edit(
-        f"📄 Reading {_esc(url)}…", parse_mode=ParseMode.HTML
-    )
-    try:
-        text = await _fetch_text(url)
-    except Exception as exc:
-        logger.error(f"[WEB] read failed: {exc}")
-        await message.edit(
-            f"❌ Failed to read {_esc(url)}\n"
-            f"<code>{_esc(type(exc).__name__)}</code>",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
-    if not text:
-        await message.edit(
-            f"😿 No readable text at {_esc(url)}.",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
-    await _send_page_content(client, message, "Web page", url, text)
-
-
-@main.app.on_message(filters.me & filters.reply & filters.regex(r"^\s*\d+\s*$"))
-async def number_reply(client, message: Message):
-    """Reply to a results message with a number to open that result."""
-    reply = message.reply_to_message
-    if not reply:
-        return
-    results = _msg_results.get(reply.id)
-    if not results:
-        return
-    index = int(message.text.strip())
-    result = results.get(index)
-    if result is None:
-        valid = sorted(results)
-        await message.edit(
-            f"❌ This page has results {valid[0]}–{valid[-1]}.",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-    await _open_result(client, message, index, result)
+    @h.message(filters=filters.me & filters.reply & filters.regex(r"^\s*\d+\s*$"))
+    async def number_reply(self, client: Client, message: Message,
+                           ctx: PluginContext["WebPlugin"]) -> None:
+        """Reply to a results message with a number to open that result."""
+        reply = message.reply_to_message
+        if not reply:
+            return
+        results = _msg_results.get(reply.id)
+        if not results:
+            return
+        index = int(message.text.strip())
+        result = results.get(index)
+        if result is None:
+            valid = sorted(results)
+            await message.edit(f"❌ This page has results {valid[0]}–{valid[-1]}.",
+                               parse_mode=ParseMode.HTML)
+            return
+        await _open_result(client, message, index, result)

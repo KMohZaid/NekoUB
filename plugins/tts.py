@@ -9,15 +9,14 @@ from pathlib import Path
 
 import edge_tts
 import httpx
-from pyrogram import filters
+from pyrogram import Client, filters
 from pyrogram.enums import ChatAction, ParseMode
 from pyrogram.types import Message
 
 import config
-import main
+from core.plugins import Example, Plugin, PluginContext, ParsedOptions, handlers as h
 from utils.media import _ffmpeg
 from utils import (
-    continue_propagation,
     get_logger,
     is_user_premium,
     split_text_into_chunks,
@@ -488,89 +487,104 @@ async def _show_error(client, chat_id: int, reply_id: int | None, error: str):
     )
 
 
-@main.app.on_message(
-    filters.me & filters.command(["tts", "say"], prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
-async def tts_command(client, message: Message):
-    raw = (message.text or "").split(maxsplit=1)
-    raw_args = raw[1] if len(raw) > 1 else ""
-    if not raw_args.strip() and not message.reply_to_message:
-        await message.edit(_format_help(), parse_mode=ParseMode.HTML)
-        return
+class TTSPlugin(Plugin):
+    id = "tts"
+    category = "Media"
+    description = "Convert text to speech with Kokoro or Edge TTS."
 
-    reply = message.reply_to_message
-    chat_id = message.chat.id
-    command_id = message.id
-    original_reply_id = reply.id if reply else None
-    reply_text = (reply.text or reply.caption or "") if reply else ""
-    try:
-        await message.delete()
-    except Exception as exc:
-        logger.warning(f"[TTS] Could not delete command message: {exc}")
+    @h.command(
+        "say",
+        aliases=("tts",),
+        description="Convert text to speech.",
+        examples=(Example("{cmd} Hello, how are you?"), Example("{cmd} -v heart Hello there!")),
+        prefixes=config.CMD_PREFIX,
+        filters=filters.me,
+    )
+    async def tts_command(
+        self,
+        client: Client,
+        message: Message,
+        ctx: PluginContext["TTSPlugin"],
+        args: ParsedOptions,
+    ) -> None:
+        raw = (message.text or "").split(maxsplit=1)
+        raw_args = raw[1] if len(raw) > 1 else ""
+        if not raw_args.strip() and not message.reply_to_message:
+            await message.edit(_format_help(), parse_mode=ParseMode.HTML)
+            return
 
-    try:
-        multi, voice, speed, info, transcript, text = _parse_command(raw_args)
-        if not text and reply_text:
-            text = reply_text
-        if not text:
-            raise ValueError("Provide text or reply to a text message.")
-        if multi:
-            turns = _parse_dialogue(text)
-        else:
-            turns = [(voice, speed, text)]
-    except ValueError as exc:
-        await _show_error(client, chat_id, original_reply_id or command_id, str(exc))
-        return
+        reply = message.reply_to_message
+        chat_id = message.chat.id
+        command_id = message.id
+        original_reply_id = reply.id if reply else None
+        reply_text = (reply.text or reply.caption or "") if reply else ""
+        try:
+            await message.delete()
+        except Exception as exc:
+            logger.warning(f"[TTS] Could not delete command message: {exc}")
 
-    stop_action = asyncio.Event()
-    action_task = asyncio.create_task(_keep_recording_action(client, chat_id, stop_action))
-    started = asyncio.get_running_loop().time()
-    try:
-        with tempfile.TemporaryDirectory(prefix="nekoub-tts-") as folder:
-            output = await _synthesize_turns(turns, Path(folder))
-            duration, waveform = _voice_metadata(output)
-            elapsed = asyncio.get_running_loop().time() - started
-            duration_text = f"{duration // 60}:{duration % 60:02d}"
+        try:
+            multi, voice, speed, info, transcript, text = _parse_command(raw_args)
+            if not text and reply_text:
+                text = reply_text
+            if not text:
+                raise ValueError("Provide text or reply to a text message.")
             if multi:
-                voices = []
-                for turn_voice, _, _ in turns:
-                    label = "Edge TTS" if turn_voice == EDGE_VOICE else VOICE_NAMES[turn_voice]
-                    if label not in voices:
-                        voices.append(label)
-                voice_label = ", ".join(voices)
+                turns = _parse_dialogue(text)
             else:
-                voice_label = "Edge TTS" if voice == EDGE_VOICE else VOICE_NAMES[voice]
-            metadata = (
-                f"Kokoro 82M{' multi-voice' if multi else ''} · CPU · "
-                f"{len(text)} chars · {voice_label} · generated in "
-                f"{elapsed:.1f}s · speech {duration_text}"
-                if voice != EDGE_VOICE
-                else (
-                    f"Edge TTS · {len(text)} chars · {voice_label} · "
-                    f"generated in {elapsed:.1f}s · speech {duration_text}"
+                turns = [(voice, speed, text)]
+        except ValueError as exc:
+            await _show_error(client, chat_id, original_reply_id or command_id, str(exc))
+            return
+
+        stop_action = asyncio.Event()
+        action_task = asyncio.create_task(_keep_recording_action(client, chat_id, stop_action))
+        started = asyncio.get_running_loop().time()
+        try:
+            with tempfile.TemporaryDirectory(prefix="nekoub-tts-") as folder:
+                output = await _synthesize_turns(turns, Path(folder))
+                duration, waveform = _voice_metadata(output)
+                elapsed = asyncio.get_running_loop().time() - started
+                duration_text = f"{duration // 60}:{duration % 60:02d}"
+                if multi:
+                    voices = []
+                    for turn_voice, _, _ in turns:
+                        label = "Edge TTS" if turn_voice == EDGE_VOICE else VOICE_NAMES[turn_voice]
+                        if label not in voices:
+                            voices.append(label)
+                    voice_label = ", ".join(voices)
+                else:
+                    voice_label = "Edge TTS" if voice == EDGE_VOICE else VOICE_NAMES[voice]
+                metadata = (
+                    f"Kokoro 82M{' multi-voice' if multi else ''} · CPU · "
+                    f"{len(text)} chars · {voice_label} · generated in "
+                    f"{elapsed:.1f}s · speech {duration_text}"
+                    if voice != EDGE_VOICE
+                    else (
+                        f"Edge TTS · {len(text)} chars · {voice_label} · "
+                        f"generated in {elapsed:.1f}s · speech {duration_text}"
+                    )
                 )
-            )
-            caption = metadata if info else ""
-            if info and transcript:
-                caption_limit = 4090 if await _get_premium_status(client) else 1020
-                if len(text) + len(metadata) + 2 <= caption_limit:
-                    caption = f"{metadata}\n\n{_esc(text)}"
-            voice_message = await client.send_voice(
-                chat_id,
-                str(output),
-                caption=caption,
-                parse_mode=ParseMode.HTML,
-                duration=duration,
-                waveform=waveform,
-                reply_to_message_id=original_reply_id,
-            )
-            if transcript:
-                await _send_transcription(client, voice_message, text)
-    except Exception as exc:
-        logger.error(f"[TTS] Synthesis or sending failed: {exc}", exc_info=True)
-        await _show_error(client, chat_id, original_reply_id or command_id, f"TTS failed: {type(exc).__name__}: {exc}")
-    finally:
-        stop_action.set()
-        action_task.cancel()
-        await asyncio.gather(action_task, return_exceptions=True)
+                caption = metadata if info else ""
+                if info and transcript:
+                    caption_limit = 4090 if await _get_premium_status(client) else 1020
+                    if len(text) + len(metadata) + 2 <= caption_limit:
+                        caption = f"{metadata}\n\n{_esc(text)}"
+                voice_message = await client.send_voice(
+                    chat_id,
+                    str(output),
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                    duration=duration,
+                    waveform=waveform,
+                    reply_to_message_id=original_reply_id,
+                )
+                if transcript:
+                    await _send_transcription(client, voice_message, text)
+        except Exception as exc:
+            logger.error(f"[TTS] Synthesis or sending failed: {exc}", exc_info=True)
+            await _show_error(client, chat_id, original_reply_id or command_id, f"TTS failed: {type(exc).__name__}: {exc}")
+        finally:
+            stop_action.set()
+            action_task.cancel()
+            await asyncio.gather(action_task, return_exceptions=True)
