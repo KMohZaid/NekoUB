@@ -135,6 +135,8 @@ class RichAnswerPreparationTests(unittest.TestCase):
             'style="success"', "blockquote", "footnote", "spoiler", "underline",
             "superscript", "subscript", "do not claim highlighting is guaranteed",
             "Prefer URL buttons", "supported language tag", "libprisma",
+            "For answers longer than about 3,500 characters",
+            '<summary>Show more</summary>',
         ):
             with self.subTest(syntax=syntax):
                 self.assertIn(syntax, ai.RICH_MARKDOWN_DIRECTIVE)

@@ -52,10 +52,13 @@ RICH_MARKDOWN_DIRECTIVE = (
     "is guaranteed. Use "
     "footnotes, underline, superscript, subscript, and other supported Rich "
     "Markdown syntax when useful, not as decoration. Organize long answers into "
-    "useful <details open><summary>Section</summary>...</details> sections, "
-    "keeping the opening about 4,000 characters outside details; Telegram handles "
-    "long-message Show More natively, so never truncate at 4,000 characters. "
-    "Use <details> collapsed only for optional material; do not hide the whole "
+    "useful <details open><summary>Section</summary>...</details> sections. For "
+    "answers longer than about 3,500 characters, keep the complete useful opening "
+    "(roughly 3,000–4,000 characters) visible, then place the remaining optional "
+    "depth inside a collapsed <details><summary>Show more</summary>...</details> "
+    "section. This gives a clear native Show more control while keeping the answer "
+    "useful before expansion. Do not truncate at 4,000 characters. Use <details> "
+    "collapsed only for the continuation or optional material, not the whole "
     "answer. Do not force every syntax into every response."
 )
 PLAIN_TEXT_DIRECTIVE = RICH_MARKDOWN_DIRECTIVE
