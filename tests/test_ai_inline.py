@@ -715,6 +715,14 @@ class RichAnswerPreparationTests(unittest.TestCase):
         self.assertIn("header row", ai.RICH_MARKDOWN_DIRECTIVE)
         self.assertIn("separator row", ai.RICH_MARKDOWN_DIRECTIVE)
 
+    def test_active_prompt_explains_url_buttons_and_spoilers_explicitly(self):
+        directive = ai.RICH_MARKDOWN_DIRECTIVE
+        self.assertIn('<tg-button type="url"', directive)
+        self.assertIn("A Markdown [label](url) is only an inline text link, not a button", directive)
+        self.assertIn("never put spoiler content or its formatting inside inline code or a fenced code block", directive)
+        self.assertIn("Click on spoiler tag to reveal them!", directive)
+        self.assertIn("Do not explain spoiler syntax or show its delimiters", directive)
+
     def test_active_prompt_is_the_original_rich_markdown_directive(self):
         self.assertTrue(ai.RICH_MARKDOWN_DIRECTIVE.startswith(
             "Write answers using Telegram Rich Markdown, preserving its syntax rather "
