@@ -37,6 +37,8 @@ MAX_POLLS = 30  # deferred-queue polls before giving up
 SEARCH_RESULTS = 8  # results fed to the model for `.ai search`
 MAX_AI_MESSAGES = 3
 INLINE_RESPONSE_TTL = 300.0
+CONTEXT_PAGE_SIZE = 100
+MAX_CONTEXT_MESSAGES = 100
 
 # XXX: this prompt make gpt luna and deepseek like code agent model give casual and good ui response but for now i am not making use of it as i found out that i can use antigravity cli for gpt oss 120b which is little slower than groq but got better limit and i can use multiple accounts thanks to omniroute
 DEPRECATED_RICH_MARKDOWN_DIRECTIVE = (
@@ -600,6 +602,42 @@ def _system(chat_id: int) -> str:
     ).strip()
 
 
+async def _recent_context(client, message: Message, count: int) -> str:
+    """Fetch the latest text/caption messages before the command."""
+    collected = []
+    offset_id = message.id
+    while len(collected) < min(count, MAX_CONTEXT_MESSAGES):
+        batch = []
+        async for item in client.get_chat_history(
+            message.chat.id,
+            limit=CONTEXT_PAGE_SIZE,
+            offset_id=offset_id,
+        ):
+            batch.append(item)
+        if not batch:
+            break
+
+        oldest_id = min(item.id for item in batch)
+        if oldest_id >= offset_id:
+            break
+        offset_id = oldest_id
+        for item in batch:
+            text = (item.text or item.caption or "").strip()
+            if not text:
+                continue
+            sender = item.from_user
+            name = " ".join(
+                part for part in (
+                    getattr(sender, "first_name", ""),
+                    getattr(sender, "last_name", ""),
+                ) if part
+            ) or getattr(sender, "title", "Unknown")
+            collected.append(f"{name}: {text}")
+            if len(collected) >= min(count, MAX_CONTEXT_MESSAGES):
+                break
+    return "\n".join(reversed(collected))
+
+
 def _reply_text(message: Message) -> str:
     reply = message.reply_to_message
     if not reply:
@@ -838,6 +876,25 @@ class AIPlugin(Plugin):
         prefix = config.CMD_PREFIX
         parts = (message.text or "").split(maxsplit=1)
         arg = parts[1].strip() if len(parts) > 1 else ""
+        context_count = 0
+        if arg.startswith(("-c ", "--context ")):
+            option, _, remainder = arg.partition(" ")
+            count_text, _, arg = remainder.strip().partition(" ")
+            try:
+                context_count = int(count_text)
+            except ValueError:
+                await message.edit(
+                    f"❌ Usage: <code>{prefix}ai -c &lt;1-{MAX_CONTEXT_MESSAGES}&gt; &lt;prompt&gt;</code>",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+            if context_count < 1 or context_count > MAX_CONTEXT_MESSAGES:
+                await message.edit(
+                    f"❌ Context count must be between 1 and {MAX_CONTEXT_MESSAGES}.",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+            arg = arg.strip()
         chat_id = message.chat.id
         lowered = arg.lower()
 
@@ -845,8 +902,10 @@ class AIPlugin(Plugin):
             await message.edit(
                 f"🤖 <b>AI chat</b>\n\n"
                 f"<code>{prefix}ai &lt;prompt&gt;</code> - ask the model\n"
+                f"<code>{prefix}ai -c &lt;N&gt; &lt;prompt&gt;</code> - add recent chat context\n"
                 f"<code>{prefix}ai</code> (reply) - use the replied message\n"
                 f"<code>{prefix}ai &lt;prompt&gt;</code> (reply) - add reply as context\n"
+                f"<code>{prefix}ai -c &lt;N&gt; &lt;prompt&gt;</code> - include the last N text messages\n"
                 f"<code>{prefix}ai reset</code> - clear conversation\n"
                 f"<code>{prefix}ai search &lt;query&gt;</code> - web results + summary\n"
                 f"<code>{prefix}ai model [name]</code> - show/set model\n"
@@ -920,9 +979,13 @@ class AIPlugin(Plugin):
             return
 
         prompt = arg
+        if context_count:
+            recent = await _recent_context(client, message, context_count)
+            if recent:
+                prompt = f"Recent chat messages:\n{recent}\n\n{prompt}".strip()
         if reply_text:
-            context = f"Context (replied message):\n{reply_text}\n\n"
-            prompt = context + (arg or "Summarize or respond to the above.")
+            context = f"Supplemental context (replied message):\n{reply_text}\n\n"
+            prompt = context + (prompt or "Summarize or respond to the above.")
 
         if not any(
             api_key or "127.0.0.1" in api_url

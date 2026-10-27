@@ -1,10 +1,51 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
 from pyrogram.types import InlineQueryResultArticle, InputRichMessage, InputRichMessageContent
 
 from plugins import ai
+
+
+class RecentContextTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fetches_latest_text_and_caption_messages_with_sender_names(self):
+        messages = [
+            SimpleNamespace(id=12, text=None, caption=None, from_user=SimpleNamespace(first_name="Media")),
+            SimpleNamespace(id=11, text="second", caption=None, from_user=SimpleNamespace(first_name="Sam")),
+            SimpleNamespace(id=10, text=None, caption="first", from_user=SimpleNamespace(first_name="Lee")),
+        ]
+        async def history(**_kwargs):
+            for item in messages:
+                yield item
+
+        client = Mock()
+        client.get_chat_history = Mock(side_effect=lambda _chat, **kwargs: history(**kwargs))
+        command = Mock(chat=Mock(id=7), id=13)
+
+        result = await ai._recent_context(client, command, 2)
+
+        self.assertEqual(result, "Lee: first\nSam: second")
+        client.get_chat_history.assert_called_once_with(7, limit=100, offset_id=13)
+
+    async def test_paginates_using_oldest_returned_message_id(self):
+        pages = [
+            [SimpleNamespace(id=12, text=None, caption=None), SimpleNamespace(id=11, text="new", caption=None, from_user=None)],
+            [SimpleNamespace(id=10, text="old", caption=None, from_user=None)],
+        ]
+
+        async def history(**_kwargs):
+            for item in pages.pop(0):
+                yield item
+
+        client = Mock()
+        client.get_chat_history = Mock(side_effect=lambda _chat, **kwargs: history(**kwargs))
+        command = Mock(chat=Mock(id=7), id=13)
+
+        result = await ai._recent_context(client, command, 2)
+
+        self.assertEqual(result, "Unknown: old\nUnknown: new")
+        self.assertEqual(client.get_chat_history.call_args_list[1].kwargs["offset_id"], 11)
 
 
 class InlineResponseStagingTests(unittest.TestCase):
