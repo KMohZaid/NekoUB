@@ -326,75 +326,18 @@ class RichAnswerPreparationTests(unittest.TestCase):
             "Answer\n\n---\n\nTime: 1.2s",
         )
 
-    def test_detailed_requests_prioritize_depth_and_conversational_rich_format(self):
-        for instruction in (
-            "When the user asks for a detailed answer, prioritize depth over the default brevity",
-            "Keep the tone conversational and enjoyable",
-            "Use clean Rich Markdown sections",
-            "large code blocks in relevant collapsed sections",
-        ):
-            with self.subTest(instruction=instruction):
-                self.assertIn(instruction, ai.RICH_MARKDOWN_DIRECTIVE)
+    def test_active_prompt_is_the_original_rich_markdown_directive(self):
+        self.assertTrue(ai.RICH_MARKDOWN_DIRECTIVE.startswith(
+            "Write answers using Telegram Rich Markdown, preserving its syntax rather "
+            "than flattening it."
+        ))
+        self.assertNotIn("friendly, natural, and conversational", ai.RICH_MARKDOWN_DIRECTIVE)
+        self.assertIs(ai.PLAIN_TEXT_DIRECTIVE, ai.RICH_MARKDOWN_DIRECTIVE)
 
-    def test_prompt_uses_casual_tone_and_relevant_emojis(self):
-        for instruction in (
-            "Use a relevant emoji in the title and section headings",
-            "do not decorate every line",
-            "Keep technical and coding explanations casual",
-        ):
-            with self.subTest(instruction=instruction):
-                self.assertIn(instruction, ai.RICH_MARKDOWN_DIRECTIVE)
-
-    def test_prompt_emphasizes_emoji_in_titles_and_section_headings(self):
-        self.assertIn(
-            "Use a relevant emoji in the title and section headings",
-            ai.RICH_MARKDOWN_DIRECTIVE,
-        )
-
-    def test_rich_markdown_prompt_requires_formatted_structured_answers(self):
-        for instruction in (
-            "Every response MUST use Telegram Rich Markdown",
-            "Never answer in plain text when Rich Markdown can express the structure",
-            "Use a descriptive heading",
-            "Use real Markdown lists",
-            "Do not output a list of labels as unformatted paragraphs",
-        ):
-            with self.subTest(instruction=instruction):
-                self.assertIn(instruction, ai.RICH_MARKDOWN_DIRECTIVE)
-
-    def test_rich_markdown_prompt_sets_a_casual_general_audience_style(self):
-        for instruction in (
-            "friendly, natural, and conversational",
-            "Do not default to a coding or tutorial answer",
-            "Match the structure to the question",
-            "Use emoji",
-            "Do not add emojis",
-            "Use a table for a real comparison",
-            "Do not use a table",
-            "short direct answer",
-            "For a detailed explanation, use this visual pattern",
-            "Never leave list items as bare lines",
-            "Do not copy plain-text formatting from conversation history",
-            "For detailed explanations, Markdown structure is required, not optional",
-            "Use actual Markdown headings and lists",
-            "Never leave list items as bare lines",
-            "same number of cells in every row",
-            "[Pokémon Official](https://www.pokemon.com/)",
-            "[Pokédex](https://www.pokemon.com/us/pokedex/)",
-            "Prefer Telegram URL buttons for important resources whose",
-            "the official Pokédex with url=\"https://www.pokemon.com/us/pokedex/\"",
-            "End detailed overviews with a useful, concise **TL;DR**",
-            "For answers longer than about 2,500 visible characters",
-            "the continuation at the nearest completed paragraph or section boundary",
-            "For every detailed franchise overview, include a Markdown comparison table",
-            "| Part | What it is | What people do with it |",
-            "| Video games | ... | ... |",
-            "Do not copy plain-text formatting from conversation history",
-            "Prefer Telegram URL buttons for important resources whose",
-            "the official Pokédex with url=\"https://www.pokemon.com/us/pokedex/\"",
-        ):
-            with self.subTest(instruction=instruction):
-                self.assertIn(instruction, ai.RICH_MARKDOWN_DIRECTIVE)
+    def test_expanded_prompt_is_retained_but_not_active(self):
+        self.assertIn("friendly, natural, and conversational", ai.DEPRECATED_RICH_MARKDOWN_DIRECTIVE)
+        self.assertIsNot(ai.DEPRECATED_RICH_MARKDOWN_DIRECTIVE, ai.RICH_MARKDOWN_DIRECTIVE)
+        self.assertNotIn("friendly, natural, and conversational", ai.PLAIN_TEXT_DIRECTIVE)
 
     def test_usage_footer_does_not_expose_model_name(self):
         self.assertNotIn(
@@ -402,7 +345,7 @@ class RichAnswerPreparationTests(unittest.TestCase):
             ai._append_token_usage("Answer", {"prompt_tokens": 10, "completion_tokens": 2}),
         )
 
-    def test_rich_markdown_prompt_encourages_native_syntax(self):
+    def test_expanded_prompt_encourages_native_syntax(self):
         for syntax in (
             "<details open>", "table", "$$", "```math", '<tg-button type="url"',
             'style="success"', "blockquote", "footnote", "spoiler", "underline",
@@ -413,4 +356,4 @@ class RichAnswerPreparationTests(unittest.TestCase):
             '<summary>Show more</summary>',
         ):
             with self.subTest(syntax=syntax):
-                self.assertIn(syntax, ai.RICH_MARKDOWN_DIRECTIVE)
+                self.assertIn(syntax, ai.DEPRECATED_RICH_MARKDOWN_DIRECTIVE)

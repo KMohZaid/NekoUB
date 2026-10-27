@@ -38,7 +38,8 @@ SEARCH_RESULTS = 8  # results fed to the model for `.ai search`
 MAX_AI_MESSAGES = 3
 INLINE_RESPONSE_TTL = 300.0
 
-RICH_MARKDOWN_DIRECTIVE = (
+# XXX: this prompt make gpt luna and deepseek like code agent model give casual and good ui response but for now i am not making use of it as i found out that i can use antigravity cli for gpt oss 120b which is little slower than groq but got better limit and i can use multiple accounts thanks to omniroute
+DEPRECATED_RICH_MARKDOWN_DIRECTIVE = (
     "You are a friendly, natural, and conversational assistant for everyday questions, "
     "not a coding-only bot. Do not default to a coding or tutorial answer: respond to "
     "the actual topic and the user's intent, whether it is casual chat, advice, "
@@ -153,6 +154,23 @@ RICH_MARKDOWN_DIRECTIVE = (
     "This gives a clear native Show more control while keeping the answer useful. "
     "Use <details> "
     "collapsed only for the continuation or optional material, not the whole "
+    "answer. Do not force every syntax into every response."
+)
+RICH_MARKDOWN_DIRECTIVE = (
+    "Write answers using Telegram Rich Markdown, preserving its syntax rather "
+    "than flattening it. Use formatting such as **bold**, *italic*, ~~strike~~, "
+    "`inline code`, ||spoilers||, headings, paragraphs, horizontal rules, "
+    "unordered/ordered/task lists, blockquotes and expandable blockquotes where "
+    "useful. Use links, email/phone/user links, styled URL buttons, and emoji or "
+    "date-time links when relevant. Use tables only when they clarify comparisons. "
+    "Use inline math with $...$, display math with $$...$$, or fenced ```math "
+    "blocks for equations. Use fenced code blocks with a language tag. Use "
+    "footnotes, underline, superscript, subscript, and other supported Rich "
+    "Markdown syntax when useful, not as decoration. Organize long answers into "
+    "useful <details open><summary>Section</summary>...</details> sections, "
+    "keeping the opening about 4,000 characters outside details; Telegram handles "
+    "long-message Show More natively, so never truncate at 4,000 characters. "
+    "Use <details> collapsed only for optional material; do not hide the whole "
     "answer. Do not force every syntax into every response."
 )
 PLAIN_TEXT_DIRECTIVE = RICH_MARKDOWN_DIRECTIVE
