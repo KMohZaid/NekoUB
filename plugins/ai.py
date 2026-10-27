@@ -1,12 +1,14 @@
 import asyncio
 import html
 import re
+import secrets
+import time
 from urllib.parse import urlparse
 
 import httpx
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
-from pyrogram.types import Message
+from pyrogram.types import InlineQuery, Message, ReplyParameters
 
 import config
 from core.plugins import Example, Plugin, PluginContext, ParsedOptions, handlers as h
@@ -27,18 +29,116 @@ MAX_REPLY_CONTEXT = 2000
 MAX_POLLS = 30  # deferred-queue polls before giving up
 SEARCH_RESULTS = 8  # results fed to the model for `.ai search`
 MAX_AI_MESSAGES = 3
+INLINE_RESPONSE_TTL = 300.0
 
-PLAIN_TEXT_DIRECTIVE = (
-    "Format the response as plain text that reads well without any rendering: "
-    "no Markdown (no **bold**, #headings, or backticks), no tables or column "
-    "layouts, no HTML tags (e.g. <br>), and no LaTeX. Write short paragraphs; "
-    "for lists, start each item with '- ' or '1. ' on its own line."
+RICH_MARKDOWN_DIRECTIVE = (
+    "Write answers using Telegram Rich Markdown, preserving its syntax rather "
+    "than flattening it. Use formatting such as **bold**, *italic*, ~~strike~~, "
+    "`inline code`, ||spoilers||, headings, paragraphs, horizontal rules, "
+    "unordered/ordered/task lists, blockquotes and expandable blockquotes where "
+    "useful. Use links, email/phone/user links, styled URL buttons, and emoji or "
+    "date-time links when relevant. Use tables only when they clarify comparisons. "
+    "Use inline math with $...$, display math with $$...$$, or fenced ```math "
+    "blocks for equations. Use fenced code blocks with a language tag. Use "
+    "footnotes, underline, superscript, subscript, and other supported Rich "
+    "Markdown syntax when useful, not as decoration. Organize long answers into "
+    "useful <details open><summary>Section</summary>...</details> sections, "
+    "keeping the opening about 4,000 characters outside details; Telegram handles "
+    "long-message Show More natively, so never truncate at 4,000 characters. "
+    "Use <details> collapsed only for optional material; do not hide the whole "
+    "answer. Do not force every syntax into every response."
 )
+PLAIN_TEXT_DIRECTIVE = RICH_MARKDOWN_DIRECTIVE
+RICH_MESSAGE_LIMIT = 32768
+RICH_MESSAGE_TRUNCATION = "\n\n[Response shortened to fit Telegram's rich-message limit.]"
 
 # chat_id -> list of {"role", "content"}
 _history: dict[int, list] = {}
 # chat_id -> {"model": str | None, "system": str | None}
 _overrides: dict[int, dict] = {}
+# opaque key -> (expiry timestamp, rich response)
+_inline_responses: dict[str, tuple[float, str]] = {}
+
+
+def _stage_inline_response(text: str) -> str:
+    now = time.monotonic()
+    for key, (expires_at, _) in list(_inline_responses.items()):
+        if expires_at <= now:
+            _inline_responses.pop(key, None)
+    key = secrets.token_urlsafe(24)
+    _inline_responses[key] = (now + INLINE_RESPONSE_TTL, text)
+    return key
+
+
+def _append_token_usage(content: str, usage: dict | None) -> str:
+    if not isinstance(usage, dict):
+        return content
+    input_tokens = usage.get("prompt_tokens", usage.get("input_tokens"))
+    output_tokens = usage.get("completion_tokens", usage.get("output_tokens"))
+    if not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
+        return content
+    total = usage.get("total_tokens")
+    if not isinstance(total, int):
+        total = input_tokens + output_tokens
+    return (
+        f"{content}\n\nInput tokens: {input_tokens} · "
+        f"Output tokens: {output_tokens} · Total: {total}"
+    )
+
+
+def _prepare_rich_answer(content: str) -> str:
+    if not content or not content.strip():
+        raise ValueError("The model returned an empty rich answer.")
+    content = content.strip()
+    if len(content.encode("utf-8")) <= RICH_MESSAGE_LIMIT:
+        return content
+    marker = RICH_MESSAGE_TRUNCATION
+    target_bytes = RICH_MESSAGE_LIMIT - len(marker.encode("utf-8"))
+    prefix = content.encode("utf-8")[:target_bytes].decode("utf-8", errors="ignore")
+    boundary = prefix.rfind("\n")
+    if boundary > target_bytes // 2:
+        prefix = prefix[:boundary]
+    return prefix.rstrip() + marker
+
+
+def _take_inline_response(key: str) -> str | None:
+    staged = _inline_responses.pop(key, None)
+    if staged is None:
+        return None
+    expires_at, text = staged
+    if expires_at <= time.monotonic():
+        return None
+    return text
+
+
+async def _answer_ai_inline_query(client, query_id: str, key: str, bot_token: str) -> None:
+    text = _take_inline_response(key)
+    results = []
+    if text is not None:
+        results.append(
+            {
+                "type": "article",
+                "id": key,
+                "title": "AI response",
+                "input_message_content": {"rich_message": {"markdown": text}},
+            }
+        )
+    response = await client.post(
+        f"https://api.telegram.org/bot{bot_token}/answerInlineQuery",
+        json={
+            "inline_query_id": query_id,
+            "results": results,
+            "cache_time": 0,
+            "is_personal": True,
+        },
+    )
+    try:
+        data = response.json()
+    except Exception as exc:
+        raise RuntimeError("Telegram returned a non-JSON inline-query response") from exc
+    if response.status_code != 200 or not isinstance(data, dict) or not data.get("ok"):
+        detail = data.get("description", "Telegram inline-query request failed") if isinstance(data, dict) else "Telegram inline-query request failed"
+        raise RuntimeError(detail)
 
 
 def _origin() -> str:
@@ -191,6 +291,20 @@ def _strip_markdown(text: str) -> str:
     return text.strip()
 
 
+async def _send_processing_reaction(client, message: Message) -> bool:
+    try:
+        if hasattr(message, "react"):
+            await message.react("👨‍💻")
+        elif hasattr(client, "send_reaction"):
+            await client.send_reaction(message.chat.id, message.id, "👨‍💻")
+        else:
+            return False
+        return True
+    except Exception:
+        logger.warning("[AI] Processing reaction failed", exc_info=True)
+        return False
+
+
 async def _send_ai_response(
     client, message: Message, body: str, question: str
 ) -> None:
@@ -286,8 +400,8 @@ def _error_message(response: httpx.Response) -> str:
     return f"HTTP {response.status_code}"
 
 
-async def _complete(messages: list, chat_id: int) -> tuple[str | None, str | None]:
-    """Return (content, error). Handles the gateway's 202 deferred queue."""
+async def _complete(messages: list, chat_id: int) -> tuple[str | None, str | None, dict | None]:
+    """Return (content, error, usage). Handles the gateway's 202 deferred queue."""
     model = _model(chat_id)
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
         response = await client.post(
@@ -322,22 +436,23 @@ async def _complete(messages: list, chat_id: int) -> tuple[str | None, str | Non
                 response = poll
                 break
             else:
-                return None, "Timed out waiting for the deferred response."
+                return None, "Timed out waiting for the deferred response.", None
 
         if response.status_code != 200:
-            return None, _error_message(response)
+            return None, _error_message(response), None
 
         try:
             data = response.json()
         except Exception:
-            return None, "The endpoint returned a non-JSON response."
+            return None, "The endpoint returned a non-JSON response.", None
 
         content = _extract_content(data)
         if not content:
             return None, _error_message(response) if "error" in data else (
                 "The model returned an empty response."
-            )
-        return content, None
+            ), None
+        usage = data.get("usage")
+        return content, None, usage if isinstance(usage, dict) else None
 
 
 async def _ai_search(client, message: Message, query: str, chat_id: int) -> None:
@@ -396,7 +511,7 @@ async def _ai_search(client, message: Message, query: str, chat_id: int) -> None
 
     await message.edit("🤖 Summarizing…", parse_mode=ParseMode.HTML)
     try:
-        summary, error = await _complete(messages, chat_id)
+        summary, error, _usage = await _complete(messages, chat_id)
     except Exception as exc:
         logger.error(f"[AI] summarize failed: {exc}")
         await message.edit(
@@ -423,6 +538,25 @@ class AIPlugin(Plugin):
     id = "ai"
     category = "AI & Tools"
     description = "Chat with the configured AI model and search the web."
+
+    @h.bot_inline_query(filters=filters.regex(r"^ai\."), public=True)
+    async def ai_inline_query(
+        self,
+        bot: Client,
+        query: InlineQuery,
+        ctx: PluginContext["AIPlugin"],
+    ) -> None:
+        key = query.query.partition(".")[2]
+        token = getattr(ctx.bot, "bot_token", None) or config.BOT_TOKEN
+        if not token:
+            await query.answer([])
+            return
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await _answer_ai_inline_query(client, query.id, key, token)
+        except Exception as exc:
+            logger.warning(f"[AI] inline query failed: {type(exc).__name__}")
+            raise
 
     @h.command(
         "ai",
@@ -557,20 +691,19 @@ class AIPlugin(Plugin):
         messages.extend(history)
         messages.append({"role": "user", "content": prompt})
 
-        await message.edit("🤖 Thinking…")
+        await _send_processing_reaction(client, message)
         try:
-            content, error = await _complete(messages, chat_id)
+            content, error, usage = await _complete(messages, chat_id)
         except Exception as exc:
-            logger.error(f"[AI] request failed: {exc}")
-            await message.edit(
-                f"❌ Request failed: <code>{_esc(type(exc).__name__)}</code>\n"
-                f"{_esc(str(exc))}",
+            logger.error(f"[AI] request failed: {type(exc).__name__}")
+            await message.reply_text(
+                f"❌ Request failed: <code>{_esc(type(exc).__name__)}</code>",
                 parse_mode=ParseMode.HTML,
             )
             return
 
         if error:
-            await message.edit(f"❌ {_esc(error)}", parse_mode=ParseMode.HTML)
+            await message.reply_text(f"❌ {_esc(error)}", parse_mode=ParseMode.HTML)
             return
 
         # Remember the exchange (store the raw prompt, not the context wrapper).
@@ -579,12 +712,26 @@ class AIPlugin(Plugin):
         if len(history) > MAX_HISTORY:
             del history[: len(history) - MAX_HISTORY]
 
-        body = _strip_markdown(content)
-        # Show the question: both the typed arg and the replied message when present.
-        arg = arg.strip()
-        reply_text = reply_text.strip()
-        if arg and reply_text:
-            combined = f"{arg}: {reply_text}"
-        else:
-            combined = arg or reply_text
-        await _send_ai_response(client, message, body, combined)
+        content = _append_token_usage(content, usage)
+        key = _stage_inline_response(_prepare_rich_answer(content))
+        try:
+            if ctx.bot is None:
+                raise RuntimeError("Assistant bot is not configured")
+            bot_info = await ctx.bot.get_me()
+            results = await client.get_inline_bot_results(
+                bot_info.username, f"ai.{key}"
+            )
+            if not results.results:
+                raise RuntimeError("Assistant bot returned no AI response")
+            await client.send_inline_bot_result(
+                message.chat.id,
+                results.query_id,
+                results.results[0].id,
+                reply_parameters=ReplyParameters(message_id=message.id),
+            )
+        except Exception as exc:
+            logger.error(f"[AI] inline delivery failed: {type(exc).__name__}")
+            await message.reply_text(
+                f"❌ Could not deliver the AI response (<code>{_esc(type(exc).__name__)}</code>).",
+                parse_mode=ParseMode.HTML,
+            )
