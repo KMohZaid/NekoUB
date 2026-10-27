@@ -133,7 +133,8 @@ class RichAnswerPreparationTests(unittest.TestCase):
         for syntax in (
             "<details open>", "table", "$$", "```math", '<tg-button type="url"',
             'style="success"', "blockquote", "footnote", "spoiler", "underline",
-            "superscript", "subscript", "color highlighting is guaranteed",
+            "superscript", "subscript", "do not claim highlighting is guaranteed",
+            "Prefer URL buttons", "supported language tag", "libprisma",
         ):
             with self.subTest(syntax=syntax):
                 self.assertIn(syntax, ai.RICH_MARKDOWN_DIRECTIVE)
