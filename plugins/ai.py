@@ -1058,8 +1058,10 @@ class AIPlugin(Plugin):
                 last_update = time.monotonic()
 
         refresh_task = asyncio.create_task(keep_guest_message_alive())
+        started_at = time.monotonic()
+        usage = None
         try:
-            streamed, error, _usage = await _stream_complete(
+            streamed, error, usage = await _stream_complete(
                 request.messages, chat_id, on_chunk
             )
         except Exception as exc:
@@ -1072,6 +1074,12 @@ class AIPlugin(Plugin):
                 pass
         final = streamed or content.removeprefix("🤖 Thinking…")
         streamed_content = streamed
+        final = _append_token_usage(
+            final,
+            usage,
+            elapsed_seconds=time.monotonic() - started_at,
+            prompt_estimate=_estimate_prompt_tokens(request.messages),
+        )
         if error:
             detail = _esc(error)
             final = (final + "\n\n" if final else "") + (

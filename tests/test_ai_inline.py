@@ -311,6 +311,42 @@ class AIStreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(request.future.done())
         self.assertIs(request.future.result(), request)
 
+    async def test_guest_stream_final_edit_includes_token_usage_footer(self):
+        request = ai.PendingAIRequest(
+            chat_id=42,
+            messages=[{"role": "user", "content": "hi"}],
+            prompt="hi",
+        )
+        request_id = await ai._register_stream_request(request)
+        bot = Mock()
+        bot.me = SimpleNamespace(username="assistantbot")
+        bot.answer_guest_query = AsyncMock(return_value=SimpleNamespace(inline_message_id="inline-id"))
+        bot.edit_inline_text = AsyncMock()
+        message = SimpleNamespace(
+            text=f"@assistantbot {request_id}",
+            chat=SimpleNamespace(id=42),
+            guest_query_id="guest-query-id",
+        )
+
+        async def stream(_messages, _chat_id, on_chunk):
+            await on_chunk("Hello")
+            return "Hello", None, {
+                "prompt_tokens": 10,
+                "completion_tokens": 2,
+                "total_tokens": 12,
+            }
+
+        with patch.object(ai, "_stream_complete", side_effect=stream):
+            await ai.AIPlugin().guest_message(bot, message, SimpleNamespace(bot=bot))
+
+        final = bot.edit_inline_text.await_args.kwargs["rich_message"].markdown
+        self.assertIn("Hello", final)
+        self.assertIn("Input tokens: 10", final)
+        self.assertIn("Output tokens: 2", final)
+        self.assertIn("Total: 12", final)
+        self.assertIn("Prompt tokens: ~1 (history ~0 + current ~1)", final)
+        self.assertRegex(final, r"Time: [0-9]+\.[0-9]s")
+
     async def test_guest_trigger_answers_query_then_edits_inline_response(self):
         request = ai.PendingAIRequest(chat_id=42, messages=[], prompt="hi")
         request_id = await ai._register_stream_request(request)
@@ -341,9 +377,8 @@ class AIStreamingTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertGreater(bot.edit_inline_text.await_count, 0)
         self.assertTrue(all(call.args[0] == "inline-id" for call in bot.edit_inline_text.await_args_list))
-        self.assertEqual(
-            bot.edit_inline_text.await_args.kwargs["rich_message"].markdown,
-            "Hello",
+        self.assertTrue(
+            bot.edit_inline_text.await_args.kwargs["rich_message"].markdown.startswith("Hello")
         )
         self.assertEqual(request.state, "completed")
         self.assertEqual(ai._history[42][-2:], [
@@ -374,7 +409,9 @@ class AIStreamingTests(unittest.IsolatedAsyncioTestCase):
         bot.answer_guest_query.assert_awaited_once()
         bot.edit_inline_text.assert_not_awaited()
         bot.send_rich_message.assert_awaited_once()
-        self.assertEqual(bot.send_rich_message.await_args.kwargs["rich_message"].markdown, "answer")
+        self.assertTrue(
+            bot.send_rich_message.await_args.kwargs["rich_message"].markdown.startswith("answer")
+        )
         self.assertEqual(request.state, "completed")
 
     async def test_partial_guest_stream_error_persists_collapsed_error_block(self):
