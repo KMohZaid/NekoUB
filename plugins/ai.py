@@ -36,10 +36,17 @@ RICH_MARKDOWN_DIRECTIVE = (
     "than flattening it. Use formatting such as **bold**, *italic*, ~~strike~~, "
     "`inline code`, ||spoilers||, headings, paragraphs, horizontal rules, "
     "unordered/ordered/task lists, blockquotes and expandable blockquotes where "
-    "useful. Use links, email/phone/user links, styled URL buttons, and emoji or "
-    "date-time links when relevant. Use tables only when they clarify comparisons. "
+    "useful. For important external resources, use actual URL buttons with "
+    "Telegram's HTML syntax, for example <tg-button type=\"url\" "
+    "style=\"success\" url=\"https://example.com\">Open resource</tg-button>; "
+    "a Markdown [label](url) is only an inline text link, not a button. Use buttons "
+    "sparingly and only when the destination is useful. Also use inline links, "
+    "email/phone/user links, and emoji or date-time links where relevant. Use "
+    "tables only when they clarify comparisons. "
     "Use inline math with $...$, display math with $$...$$, or fenced ```math "
-    "blocks for equations. Use fenced code blocks with a language tag. Use "
+    "blocks for equations. Use fenced code blocks with an accurate language tag "
+    "(for example ```python); Telegram may render them monospaced without syntax "
+    "coloring, so do not claim color highlighting is guaranteed. Use "
     "footnotes, underline, superscript, subscript, and other supported Rich "
     "Markdown syntax when useful, not as decoration. Organize long answers into "
     "useful <details open><summary>Section</summary>...</details> sections, "
@@ -70,20 +77,39 @@ def _stage_inline_response(text: str) -> str:
     return key
 
 
-def _append_token_usage(content: str, usage: dict | None) -> str:
-    if not isinstance(usage, dict):
-        return content
-    input_tokens = usage.get("prompt_tokens", usage.get("input_tokens"))
-    output_tokens = usage.get("completion_tokens", usage.get("output_tokens"))
-    if not isinstance(input_tokens, int) or not isinstance(output_tokens, int):
-        return content
-    total = usage.get("total_tokens")
-    if not isinstance(total, int):
-        total = input_tokens + output_tokens
-    return (
-        f"{content}\n\nInput tokens: {input_tokens} · "
-        f"Output tokens: {output_tokens} · Total: {total}"
-    )
+def _format_token_count(value: int) -> str:
+    exact = f"{value:,}"
+    if value < 1000:
+        return exact
+    suffixes = ((1_000_000_000, "B"), (1_000_000, "M"), (1000, "k"))
+    for scale, suffix in suffixes:
+        if value >= scale:
+            short = f"{value / scale:.1f}".rstrip("0").rstrip(".")
+            return f"{exact} ({short}{suffix})"
+    return exact
+
+
+def _append_token_usage(
+    content: str, usage: dict | None, *, elapsed_seconds: float | None = None
+) -> str:
+    footer_parts = []
+    if isinstance(usage, dict):
+        input_tokens = usage.get("prompt_tokens", usage.get("input_tokens"))
+        output_tokens = usage.get("completion_tokens", usage.get("output_tokens"))
+        if isinstance(input_tokens, int) and isinstance(output_tokens, int):
+            total = usage.get("total_tokens")
+            if not isinstance(total, int):
+                total = input_tokens + output_tokens
+            footer_parts.extend(
+                (
+                    f"Input tokens: {_format_token_count(input_tokens)}",
+                    f"Output tokens: {_format_token_count(output_tokens)}",
+                    f"Total: {_format_token_count(total)}",
+                )
+            )
+    if elapsed_seconds is not None:
+        footer_parts.append(f"Time: {elapsed_seconds:.1f}s")
+    return f"{content}\n\n{' · '.join(footer_parts)}" if footer_parts else content
 
 
 def _prepare_rich_answer(content: str) -> str:
@@ -692,6 +718,7 @@ class AIPlugin(Plugin):
         messages.append({"role": "user", "content": prompt})
 
         await _send_processing_reaction(client, message)
+        started_at = time.monotonic()
         try:
             content, error, usage = await _complete(messages, chat_id)
         except Exception as exc:
@@ -712,7 +739,10 @@ class AIPlugin(Plugin):
         if len(history) > MAX_HISTORY:
             del history[: len(history) - MAX_HISTORY]
 
-        content = _append_token_usage(content, usage)
+        elapsed_seconds = time.monotonic() - started_at
+        content = _append_token_usage(
+            content, usage, elapsed_seconds=elapsed_seconds
+        )
         key = _stage_inline_response(_prepare_rich_answer(content))
         try:
             if ctx.bot is None:

@@ -112,19 +112,28 @@ class RichAnswerPreparationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "empty"):
             ai._prepare_rich_answer("  \n")
 
-    def test_token_usage_footer_is_appended_when_available(self):
+    def test_token_usage_footer_formats_counts_and_includes_duration(self):
         self.assertEqual(
-            ai._append_token_usage("Answer", {"prompt_tokens": 12, "completion_tokens": 7}),
-            "Answer\n\nInput tokens: 12 · Output tokens: 7 · Total: 19",
+            ai._append_token_usage(
+                "Answer",
+                {"prompt_tokens": 1864, "completion_tokens": 100398000},
+                elapsed_seconds=2.4,
+            ),
+            "Answer\n\nInput tokens: 1,864 (1.9k) · "
+            "Output tokens: 100,398,000 (100.4M) · Total: 100,399,864 (100.4M) · Time: 2.4s",
         )
 
-    def test_missing_token_usage_leaves_answer_unchanged(self):
-        self.assertEqual(ai._append_token_usage("Answer", None), "Answer")
+    def test_missing_token_usage_still_shows_elapsed_time(self):
+        self.assertEqual(
+            ai._append_token_usage("Answer", None, elapsed_seconds=1.2),
+            "Answer\n\nTime: 1.2s",
+        )
 
     def test_rich_markdown_prompt_encourages_native_syntax(self):
         for syntax in (
-            "<details open>", "table", "$$", "```math", "button", "blockquote",
-            "footnote", "spoiler", "underline", "superscript", "subscript",
+            "<details open>", "table", "$$", "```math", '<tg-button type="url"',
+            'style="success"', "blockquote", "footnote", "spoiler", "underline",
+            "superscript", "subscript", "color highlighting is guaranteed",
         ):
             with self.subTest(syntax=syntax):
                 self.assertIn(syntax, ai.RICH_MARKDOWN_DIRECTIVE)
