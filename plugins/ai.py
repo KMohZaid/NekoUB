@@ -1,8 +1,10 @@
 import asyncio
 import html
+import json
 import re
 import secrets
 import time
+from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 import httpx
@@ -19,6 +21,7 @@ from pyrogram.types import (
 
 import config
 from core.plugins import Example, Option, Plugin, PluginContext, ParsedOptions, handlers as h
+from core.plugins.errors import parse_options
 from utils import (
     get_logger,
     is_user_premium,
@@ -39,6 +42,70 @@ MAX_AI_MESSAGES = 3
 INLINE_RESPONSE_TTL = 300.0
 CONTEXT_PAGE_SIZE = 100
 MAX_CONTEXT_MESSAGES = 100
+STREAM_REQUEST_TTL = 120.0
+
+
+@dataclass
+class PendingAIRequest:
+    chat_id: int
+    messages: list
+    prompt: str
+    sender_id: int | None = None
+    state: str = "pending"
+    future: asyncio.Future | None = field(default=None, repr=False)
+
+
+_pending_stream_requests: dict[str, tuple[PendingAIRequest, float]] = {}
+_stream_request_lock = asyncio.Lock()
+
+
+async def _register_stream_request(request: PendingAIRequest) -> str:
+    async with _stream_request_lock:
+        now = time.monotonic()
+        for request_id, (_pending, expiry) in tuple(_pending_stream_requests.items()):
+            if expiry <= now:
+                _pending_stream_requests.pop(request_id, None)
+        request_id = secrets.token_urlsafe(12)
+        _pending_stream_requests[request_id] = (request, now + STREAM_REQUEST_TTL)
+        return request_id
+
+
+async def _claim_stream_request(
+    request_id: str,
+    chat_id: int,
+    *,
+    owner: str = "bot",
+    sender_id: int | None = None,
+) -> PendingAIRequest | None:
+    async with _stream_request_lock:
+        entry = _pending_stream_requests.get(request_id)
+        if entry is None:
+            return None
+        request, expiry = entry
+        if (
+            expiry <= time.monotonic()
+            or request.chat_id != chat_id
+            or (request.sender_id is not None and request.sender_id != sender_id)
+            or request.state != "pending"
+        ):
+            return None
+        request.state = "bot_owned" if owner == "bot" else "fallback_owned"
+        if request.future is not None and not request.future.done():
+            request.future.set_result(request)
+        return request
+
+
+def _validate_context_count(value: int | None) -> int:
+    if value is None:
+        return 0
+    if value < 1 or value > MAX_CONTEXT_MESSAGES:
+        raise ValueError(f"Context count must be between 1 and {MAX_CONTEXT_MESSAGES}.")
+    return value
+
+
+def _stream_request_id_from_message(text: str, username: str) -> str | None:
+    match = re.fullmatch(rf"@{re.escape(username)} ([A-Za-z0-9_-]+)", text.strip(), re.IGNORECASE)
+    return match.group(1) if match else None
 
 # XXX: this prompt make gpt luna and deepseek like code agent model give casual and good ui response but for now i am not making use of it as i found out that i can use antigravity cli for gpt oss 120b which is little slower than groq but got better limit and i can use multiple accounts thanks to omniroute
 DEPRECATED_RICH_MARKDOWN_DIRECTIVE = (
@@ -683,6 +750,68 @@ def _error_message(response: httpx.Response) -> str:
     return f"HTTP {response.status_code}"
 
 
+async def _stream_complete(
+    messages: list,
+    chat_id: int,
+    on_chunk,
+) -> tuple[str | None, str | None, dict | None]:
+    """Stream OpenAI-compatible SSE content, falling back only before output."""
+    last_error = None
+    content_parts: list[str] = []
+    usage = None
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+        for index, (api_url, api_key, model) in enumerate(_providers(chat_id)):
+            try:
+                async with client.stream(
+                    "POST",
+                    f"{api_url.rstrip('/')}/chat/completions",
+                    headers=_headers(api_key),
+                    json={"model": model, "messages": messages, "stream": True},
+                ) as response:
+                    if response.status_code == 202:
+                        full_content, full_error, full_usage = await _complete(messages, chat_id)
+                        if full_content and not full_error:
+                            await on_chunk(full_content)
+                        return full_content, full_error, full_usage
+                    if response.status_code != 200:
+                        last_error = _error_message(response)
+                        continue
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            payload = json.loads(data)
+                        except (ValueError, TypeError):
+                            logger.warning("[AI] Ignoring malformed SSE event from provider %s", index + 1)
+                            continue
+                        if not isinstance(payload, dict):
+                            logger.warning("[AI] Ignoring malformed SSE event from provider %s", index + 1)
+                            continue
+                        event_usage = payload.get("usage")
+                        if isinstance(event_usage, dict):
+                            usage = event_usage
+                        try:
+                            chunk = payload["choices"][0]["delta"].get("content")
+                        except (KeyError, IndexError, TypeError, AttributeError):
+                            chunk = None
+                        if isinstance(chunk, str) and chunk:
+                            content_parts.append(chunk)
+                            await on_chunk(chunk)
+                content = "".join(content_parts)
+                if content:
+                    return content, None, usage
+                last_error = "The model returned an empty response."
+            except Exception as exc:
+                logger.warning("[AI] Stream provider %s failed: %s", index + 1, type(exc).__name__)
+                if content_parts:
+                    return "".join(content_parts), f"Request failed: {type(exc).__name__}: {exc}", usage
+                last_error = f"Request failed: {type(exc).__name__}: {exc}"
+    return None, last_error or "The AI request failed.", None
+
+
 async def _complete(
     messages: list, chat_id: int
 ) -> tuple[str | None, str | None, dict | None]:
@@ -850,6 +979,122 @@ class AIPlugin(Plugin):
             logger.warning(f"[AI] inline query failed: {type(exc).__name__}")
             raise
 
+    @h.bot_guest_message()
+    async def guest_message(
+        self,
+        bot: Client,
+        message: Message,
+        ctx: PluginContext["AIPlugin"],
+    ) -> None:
+        text = getattr(message, "text", None) or getattr(message, "caption", "") or ""
+        username = getattr(getattr(bot, "me", None), "username", None)
+        if not username:
+            try:
+                username = (await bot.get_me()).username
+            except Exception:
+                return
+        request_id = _stream_request_id_from_message(text, username)
+        chat_id = getattr(getattr(message, "chat", None), "id", None)
+        if request_id is None or chat_id is None:
+            return
+        sender_id = getattr(getattr(message, "from_user", None), "id", None)
+        request = await _claim_stream_request(request_id, chat_id, sender_id=sender_id)
+        if request is None:
+            return
+
+        # TODO: Streaming is not actually supported in Guest Chat yet. Wait for Guest Chat streaming support.
+        content = "🤖 Thinking…"
+        inline_message_id = None
+        guest_query_id = getattr(message, "guest_query_id", None)
+        try:
+            if not guest_query_id:
+                raise RuntimeError("Guest Chat query ID is missing")
+            guest_result = await bot.answer_guest_query(
+                guest_query_id,
+                result=InlineQueryResultArticle(
+                    title="AI response",
+                    input_message_content=InputRichMessageContent(
+                        InputRichMessage(markdown=content)
+                    ),
+                ),
+            )
+            inline_message_id = guest_result.inline_message_id
+        except Exception as exc:
+            logger.warning("[AI] Could not answer guest query: %s", type(exc).__name__)
+        last_update = time.monotonic()
+
+        async def edit_stream_message() -> None:
+            if inline_message_id:
+                try:
+                    await bot.edit_inline_text(
+                        inline_message_id,
+                        rich_message=InputRichMessage(markdown=_prepare_rich_answer(content)),
+                    )
+                except Exception as exc:
+                    logger.warning("[AI] Could not update guest response: %s", type(exc).__name__)
+
+        async def on_chunk(chunk: str) -> None:
+            nonlocal content, last_update
+            content += chunk
+            now = time.monotonic()
+            if inline_message_id and now - last_update >= 0.33:
+                await edit_stream_message()
+                last_update = now
+
+        async def keep_guest_message_alive() -> None:
+            nonlocal last_update
+            while True:
+                await asyncio.sleep(20)
+                await edit_stream_message()
+                last_update = time.monotonic()
+
+        refresh_task = asyncio.create_task(keep_guest_message_alive())
+        try:
+            streamed, error, _usage = await _stream_complete(
+                request.messages, chat_id, on_chunk
+            )
+        except Exception as exc:
+            streamed, error = content.removeprefix("🤖 Thinking…"), str(exc)
+        finally:
+            refresh_task.cancel()
+            try:
+                await refresh_task
+            except asyncio.CancelledError:
+                pass
+        final = streamed or content.removeprefix("🤖 Thinking…")
+        streamed_content = streamed
+        if error:
+            detail = _esc(error)
+            final = (final + "\n\n" if final else "") + (
+                "<details><summary>❌ Error occurred</summary>" + detail + "</details>"
+            )
+        if not final.strip():
+            final = "❌ The model returned an empty response."
+        final = _prepare_rich_answer(final)
+        if inline_message_id:
+            try:
+                await bot.edit_inline_text(
+                    inline_message_id,
+                    rich_message=InputRichMessage(markdown=final),
+                )
+            except Exception as exc:
+                logger.warning("[AI] Could not finalize guest response: %s", type(exc).__name__)
+                await bot.send_rich_message(
+                    chat_id, rich_message=InputRichMessage(markdown=final)
+                )
+        else:
+            await bot.send_rich_message(
+                chat_id, rich_message=InputRichMessage(markdown=final)
+            )
+        history = _history.setdefault(chat_id, [])
+        history.append({"role": "user", "content": request.prompt})
+        history.append({"role": "assistant", "content": streamed_content or final})
+        if len(history) > MAX_HISTORY:
+            del history[: len(history) - MAX_HISTORY]
+        request.state = "completed"
+        async with _stream_request_lock:
+            _pending_stream_requests.pop(request_id, None)
+
     @h.command(
         "ai",
         aliases=("ask",),
@@ -863,8 +1108,13 @@ class AIPlugin(Plugin):
         examples=(
             Example("{cmd} Explain this error", "Ask the configured model a direct question."),
             Example("{cmd} -c 10 Explain this error", "Include the last 10 text messages as context."),
+            Example("{cmd} -s Explain this error", "Stream the answer through Guest Chat."),
             Example("{cmd} search latest Python release", "Search the web and get a summary with sources."),
             Example("{cmd} reset", "Clear the saved conversation for this chat."),
+        ),
+        options=(
+            Option("context", short="-c", type=int, aliases=("--context",)),
+            Option("stream", short="-s", action="store_true", aliases=("--stream",)),
         ),
         help_options=(
             Option(
@@ -873,6 +1123,13 @@ class AIPlugin(Plugin):
                 type=int,
                 help="Include the last N text messages as context.",
                 aliases=("--context",),
+            ),
+            Option(
+                "stream",
+                short="-s",
+                action="store_true",
+                help="Stream the response. NOTE: for this to work, make your assistant have guest mode on. Go to BotFather mini app > select bot > Bot settings > Enable Guest Chat Mode",
+                aliases=("--stream",),
             ),
         ),
         prefixes=config.CMD_PREFIX,
@@ -890,24 +1147,23 @@ class AIPlugin(Plugin):
         parts = (message.text or "").split(maxsplit=1)
         arg = parts[1].strip() if len(parts) > 1 else ""
         context_count = 0
-        if arg.startswith(("-c ", "--context ")):
-            option, _, remainder = arg.partition(" ")
-            count_text, _, arg = remainder.strip().partition(" ")
+        context_value = None
+        stream_requested = False
+        if arg:
             try:
-                context_count = int(count_text)
-            except ValueError:
-                await message.edit(
-                    f"❌ Usage: <code>{prefix}ai -c &lt;1-{MAX_CONTEXT_MESSAGES}&gt; &lt;prompt&gt;</code>",
-                    parse_mode=ParseMode.HTML,
+                parsed = parse_options(
+                    f"{prefix}ai {arg}",
+                    next(options.command for event, options in self.ai_command.__nekoub_handlers__ if options.command).options,
+                    "ai",
+                    prefixes=(prefix,),
                 )
+                context_value = parsed.context
+                context_count = _validate_context_count(context_value)
+                stream_requested = parsed.stream
+                arg = " ".join(parsed.positional).strip()
+            except Exception as exc:
+                await message.edit(f"❌ {_esc(str(exc))}", parse_mode=ParseMode.HTML)
                 return
-            if context_count < 1 or context_count > MAX_CONTEXT_MESSAGES:
-                await message.edit(
-                    f"❌ Context count must be between 1 and {MAX_CONTEXT_MESSAGES}.",
-                    parse_mode=ParseMode.HTML,
-                )
-                return
-            arg = arg.strip()
         chat_id = message.chat.id
         lowered = arg.lower()
 
@@ -1022,6 +1278,42 @@ class AIPlugin(Plugin):
         messages.append({"role": "system", "content": system})
         messages.extend(history)
         messages.append({"role": "user", "content": prompt})
+
+        if stream_requested:
+            request = PendingAIRequest(
+                chat_id=chat_id,
+                messages=messages,
+                prompt=prompt,
+                sender_id=getattr(getattr(message, "from_user", None), "id", None),
+                future=asyncio.get_running_loop().create_future(),
+            )
+            request_id = await _register_stream_request(request)
+            bot_username = getattr(getattr(ctx.bot, "me", None), "username", None)
+            if ctx.bot is not None and not bot_username:
+                try:
+                    bot_username = (await ctx.bot.get_me()).username
+                except Exception:
+                    bot_username = None
+            try:
+                if not bot_username:
+                    raise RuntimeError("Assistant bot is not configured")
+                await message.reply_text(f"@{bot_username} {request_id}")
+            except Exception:
+                await _claim_stream_request(request_id, chat_id, owner="fallback")
+                async with _stream_request_lock:
+                    _pending_stream_requests.pop(request_id, None)
+            else:
+                try:
+                    await asyncio.wait_for(asyncio.shield(request.future), timeout=7)
+                except asyncio.TimeoutError:
+                    pass
+                if request.state == "bot_owned":
+                    return
+                if await _claim_stream_request(request_id, chat_id, owner="fallback") is None:
+                    if request.state != "fallback_owned":
+                        return
+                async with _stream_request_lock:
+                    _pending_stream_requests.pop(request_id, None)
 
         await _send_reaction(client, message, "👨‍💻")
         started_at = time.monotonic()

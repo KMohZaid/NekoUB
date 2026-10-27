@@ -108,6 +108,41 @@ class PluginManagerTests(unittest.TestCase):
         user_client.remove_managed_handler.assert_called_once()
         bot_client.remove_managed_handler.assert_called_once()
 
+    def test_bot_guest_handler_uses_kurigram_guest_message_handler(self):
+        from pyrogram.handlers import GuestMessageHandler
+
+        user_client = Mock()
+        bot_client = Mock()
+        user_client.register_managed_handler.side_effect = (
+            lambda handler, group, **metadata: (handler, group)
+        )
+        bot_client.register_managed_handler.side_effect = (
+            lambda handler, group, **metadata: (handler, group)
+        )
+
+        class GuestPlugin(Plugin):
+            id = "guest"
+
+            @h.bot_guest_message()
+            async def guest(self, bot, message, ctx):
+                pass
+
+        manager = PluginManager(
+            user_client,
+            Path(self.temp_dir.name),
+            user_client=user_client,
+            bot_client=bot_client,
+        )
+        manager.activate(GuestPlugin())
+
+        registered_handler = bot_client.register_managed_handler.call_args.args[0]
+        self.assertIsInstance(registered_handler, GuestMessageHandler)
+        self.assertEqual(
+            bot_client.register_managed_handler.call_args.kwargs["event"],
+            "bot_guest_message",
+        )
+        user_client.register_managed_handler.assert_not_called()
+
     def test_failed_staging_removes_only_staged_handlers(self):
         self.client.register_managed_handler.side_effect = [
             (object(), 0),

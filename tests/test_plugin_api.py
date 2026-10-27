@@ -266,6 +266,38 @@ class PluginApiTests(unittest.TestCase):
         self.assertEqual(type(raised.exception).__name__, "ContinuePropagation")
         self.assertTrue(plugin.called)
 
+    def test_bot_guest_message_receives_bot_and_both_clients_in_context(self):
+        class GuestPlugin(Plugin):
+            id = "bot_guest"
+            captured = None
+
+            @h.bot_guest_message()
+            async def guest(self, bot, message, ctx):
+                self.captured = (bot, message, ctx)
+
+        import asyncio
+
+        plugin = GuestPlugin()
+        declaration = plugin.declarations()[0]
+        self.assertEqual(declaration.event, "bot_guest_message")
+        user_client = object()
+        bot_client = type("Bot", (), {"is_bot": True})()
+        callback = _wrap_handler(
+            plugin,
+            declaration,
+            user_client=user_client,
+            bot_client=bot_client,
+        )
+        update = type("GuestMessage", (), {})()
+        with self.assertRaises(Exception) as raised:
+            asyncio.run(callback(bot_client, update))
+        self.assertEqual(type(raised.exception).__name__, "ContinuePropagation")
+        actual_bot, actual_update, context = plugin.captured
+        self.assertIs(actual_bot, bot_client)
+        self.assertIs(actual_update, update)
+        self.assertIs(context.client, user_client)
+        self.assertIs(context.bot, bot_client)
+
     def test_bot_handler_receives_bot_as_client_and_context_exposes_both(self):
         class BotPlugin(Plugin):
             id = "bot_handler"

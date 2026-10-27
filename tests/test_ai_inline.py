@@ -249,6 +249,334 @@ class AIProviderFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.post.await_args.args[0], "https://custom.example/v1/chat/completions")
 
 
+class AIStreamingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stream_option_metadata_and_combined_context_parse(self):
+        declarations = ai.AIPlugin.ai_command.__nekoub_handlers__
+        command = next(options.command for event, options in declarations if options.command)
+        option = next(item for item in command.help_options if item.name == "stream")
+
+        self.assertEqual(option.short, "-s")
+        self.assertIn("--stream", option.aliases)
+        self.assertIn("BotFather mini app", option.help)
+        parsed_first = ai.parse_options(".ai -c 5 -s hello", command.options, "ai")
+        parsed_second = ai.parse_options(".ai -s -c 5 hello", command.options, "ai")
+        self.assertEqual(parsed_first.context, 5)
+        self.assertTrue(parsed_first.stream)
+        self.assertEqual(parsed_first.positional, ("hello",))
+        self.assertEqual(parsed_second.context, 5)
+        self.assertTrue(parsed_second.stream)
+        self.assertEqual(parsed_second.positional, ("hello",))
+        with self.assertRaises(ValueError):
+            ai._validate_context_count(0)
+
+    async def test_stream_request_claim_checks_originating_sender(self):
+        request = ai.PendingAIRequest(chat_id=42, messages=[], prompt="hi", sender_id=100)
+        request_id = await ai._register_stream_request(request)
+
+        self.assertIsNone(await ai._claim_stream_request(request_id, 42, sender_id=200))
+        self.assertIs(await ai._claim_stream_request(request_id, 42, sender_id=100), request)
+
+    async def test_stream_request_can_only_be_claimed_once_for_source_chat(self):
+        request = ai.PendingAIRequest(chat_id=42, messages=[], prompt="hi")
+        request_id = await ai._register_stream_request(request)
+
+        self.assertIsNone(await ai._claim_stream_request(request_id, 7))
+        self.assertIs(await ai._claim_stream_request(request_id, 42), request)
+        self.assertIsNone(await ai._claim_stream_request(request_id, 42))
+        self.assertIsNone(await ai._claim_stream_request("unknown", 42))
+
+    async def test_guest_handler_ignores_wrong_bot_mention(self):
+        request = ai.PendingAIRequest(chat_id=42, messages=[], prompt="hi")
+        request_id = await ai._register_stream_request(request)
+        bot = Mock()
+        bot.me = SimpleNamespace(username="assistantbot")
+        message = SimpleNamespace(
+            text=f"@differentbot {request_id}",
+            chat=SimpleNamespace(id=42),
+        )
+
+        await ai.AIPlugin().guest_message(bot, message, SimpleNamespace(bot=bot))
+
+        self.assertEqual(request.state, "pending")
+        bot.answer_guest_query.assert_not_called()
+
+    async def test_guest_claim_notifies_waiting_command(self):
+        loop = __import__("asyncio").get_running_loop()
+        request = ai.PendingAIRequest(chat_id=42, messages=[], prompt="hi", future=loop.create_future())
+        request_id = await ai._register_stream_request(request)
+
+        claimed = await ai._claim_stream_request(request_id, 42)
+
+        self.assertIs(claimed, request)
+        self.assertTrue(request.future.done())
+        self.assertIs(request.future.result(), request)
+
+    async def test_guest_trigger_answers_query_then_edits_inline_response(self):
+        request = ai.PendingAIRequest(chat_id=42, messages=[], prompt="hi")
+        request_id = await ai._register_stream_request(request)
+        bot = Mock()
+        bot.me = SimpleNamespace(username="assistantbot")
+        bot.answer_guest_query = AsyncMock(return_value=SimpleNamespace(inline_message_id="inline-id"))
+        bot.edit_inline_text = AsyncMock()
+        context = SimpleNamespace(bot=bot)
+        message = SimpleNamespace(
+            text=f"@assistantbot {request_id}",
+            chat=SimpleNamespace(id=42),
+            guest_query_id="guest-query-id",
+        )
+        plugin = ai.AIPlugin()
+
+        async def stream(_messages, _chat_id, on_chunk):
+            await on_chunk("Hello")
+            return "Hello", None, None
+
+        with patch.object(ai, "_stream_complete", side_effect=stream):
+            await plugin.guest_message(bot, message, context)
+
+        bot.answer_guest_query.assert_awaited_once()
+        self.assertEqual(bot.answer_guest_query.await_args.args[0], message.guest_query_id)
+        self.assertEqual(
+            bot.answer_guest_query.await_args.kwargs["result"].input_message_content.rich_message.markdown,
+            "🤖 Thinking…",
+        )
+        self.assertGreater(bot.edit_inline_text.await_count, 0)
+        self.assertTrue(all(call.args[0] == "inline-id" for call in bot.edit_inline_text.await_args_list))
+        self.assertEqual(
+            bot.edit_inline_text.await_args.kwargs["rich_message"].markdown,
+            "Hello",
+        )
+        self.assertEqual(request.state, "completed")
+        self.assertEqual(ai._history[42][-2:], [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "Hello"},
+        ])
+
+    async def test_initial_draft_failure_does_not_abort_stream_or_final_message(self):
+        request = ai.PendingAIRequest(chat_id=42, messages=[], prompt="hi")
+        request_id = await ai._register_stream_request(request)
+        bot = Mock()
+        bot.me = SimpleNamespace(username="assistantbot")
+        bot.answer_guest_query = AsyncMock(side_effect=RuntimeError("guest answer unavailable"))
+        bot.edit_inline_text = AsyncMock()
+        bot.send_rich_message = AsyncMock()
+        message = SimpleNamespace(
+            text=f"@assistantbot {request_id}",
+            chat=SimpleNamespace(id=42),
+            guest_query_id="guest-query-id",
+        )
+
+        async def stream(_messages, _chat_id, _on_chunk):
+            return "answer", None, None
+
+        with patch.object(ai, "_stream_complete", side_effect=stream):
+            await ai.AIPlugin().guest_message(bot, message, SimpleNamespace(bot=bot))
+
+        bot.answer_guest_query.assert_awaited_once()
+        bot.edit_inline_text.assert_not_awaited()
+        bot.send_rich_message.assert_awaited_once()
+        self.assertEqual(bot.send_rich_message.await_args.kwargs["rich_message"].markdown, "answer")
+        self.assertEqual(request.state, "completed")
+
+    async def test_partial_guest_stream_error_persists_collapsed_error_block(self):
+        request = ai.PendingAIRequest(chat_id=42, messages=[], prompt="hi")
+        request_id = await ai._register_stream_request(request)
+        bot = Mock()
+        bot.me = SimpleNamespace(username="assistantbot")
+        bot.answer_guest_query = AsyncMock(return_value=SimpleNamespace(inline_message_id="inline-error"))
+        bot.edit_inline_text = AsyncMock()
+        message = SimpleNamespace(
+            text=f"@assistantbot {request_id}",
+            chat=SimpleNamespace(id=42),
+            guest_query_id="guest-query-id",
+        )
+
+        async def failed_stream(_messages, _chat_id, on_chunk):
+            await on_chunk("partial")
+            return "partial", "provider broke", None
+
+        with (
+            patch.object(ai, "_stream_complete", side_effect=failed_stream),
+            patch.object(ai, "_prepare_rich_answer", side_effect=lambda text: text),
+        ):
+            await ai.AIPlugin().guest_message(bot, message, SimpleNamespace(bot=bot))
+
+        final = bot.edit_inline_text.await_args.kwargs["rich_message"].markdown
+        self.assertIn("partial", final)
+        self.assertIn("<details><summary>❌ Error occurred</summary>", final)
+        self.assertIn("provider broke", final)
+
+    async def test_fallback_and_guest_claim_are_mutually_exclusive(self):
+        request = ai.PendingAIRequest(chat_id=42, messages=[], prompt="hi")
+        request_id = await ai._register_stream_request(request)
+
+        bot_claim = await ai._claim_stream_request(request_id, 42)
+        fallback_claim = await ai._claim_stream_request(request_id, 42, owner="fallback")
+
+        self.assertIs(bot_claim, request)
+        self.assertIsNone(fallback_claim)
+
+    async def test_deferred_stream_response_uses_full_response_completion(self):
+        client = _StreamingHTTPClient([], status_code=202)
+        async_client = _StreamingAsyncClient(client)
+        chunks = []
+
+        async def on_chunk(chunk):
+            chunks.append(chunk)
+
+        with (
+            patch.object(ai.httpx, "AsyncClient", return_value=async_client),
+            patch.object(ai.config, "AI_PROVIDERS", [
+                {"url": "https://one.example/v1", "key": "key", "model": "m"}
+            ]),
+            patch.object(ai, "_complete", new=AsyncMock(return_value=("deferred answer", None, None))) as complete,
+        ):
+            result = await ai._stream_complete([], 1, on_chunk)
+
+        complete.assert_awaited_once_with([], 1)
+        self.assertEqual(result, ("deferred answer", None, None))
+        self.assertEqual(chunks, ["deferred answer"])
+
+    async def test_ignores_non_object_sse_json_frames(self):
+        client = _StreamingHTTPClient([
+            'data: ["invalid shape"]\\n\\n',
+            'data: {"choices":[{"delta":{"content":"ok"}}]}\\n\\n',
+        ])
+        async_client = _StreamingAsyncClient(client)
+
+        async def on_chunk(_chunk):
+            return None
+
+        with (
+            patch.object(ai.httpx, "AsyncClient", return_value=async_client),
+            patch.object(ai.config, "AI_PROVIDERS", [
+                {"url": "https://one.example/v1", "key": "key", "model": "m"}
+            ]),
+        ):
+            result = await ai._stream_complete([], 1, on_chunk)
+
+        self.assertEqual(result, ("ok", None, None))
+
+    async def test_parses_sse_deltas_and_usage(self):
+        frames = [
+            'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n',
+            'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n',
+            'data: {"choices":[],"usage":{"prompt_tokens":4}}\n\n',
+            "data: [DONE]\n\n",
+        ]
+        chunks = []
+
+        async def on_chunk(chunk):
+            chunks.append(chunk)
+
+        client = _StreamingHTTPClient(frames)
+        async_client = _StreamingAsyncClient(client)
+
+        with (
+            patch.object(ai.httpx, "AsyncClient", return_value=async_client),
+            patch.object(ai.config, "AI_PROVIDERS", [
+                {"url": "https://one.example/v1", "key": "key", "model": "m"}
+            ]),
+        ):
+            result = await ai._stream_complete(
+                [{"role": "user", "content": "Hi"}], 1, on_chunk
+            )
+
+        self.assertEqual(result, ("Hello", None, {"prompt_tokens": 4}))
+        self.assertEqual(chunks, ["Hel", "lo"])
+        self.assertTrue(client.request["json"]["stream"])
+
+    async def test_falls_back_to_next_provider_before_any_content(self):
+        first = _StreamingHTTPClient([], status_code=429, text="busy")
+        second = _StreamingHTTPClient(['data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'])
+        clients = [first, second]
+        async_client = _StreamingAsyncClient(clients)
+        chunks = []
+
+        async def on_chunk(chunk):
+            chunks.append(chunk)
+
+        with (
+            patch.object(ai.httpx, "AsyncClient", return_value=async_client),
+            patch.object(ai.config, "AI_PROVIDERS", [
+                {"url": "https://one.example/v1", "key": "k1", "model": "m1"},
+                {"url": "https://two.example/v1", "key": "k2", "model": "m2"},
+            ]),
+        ):
+            result = await ai._stream_complete([], 1, on_chunk)
+
+        self.assertEqual(result, ("ok", None, None))
+        self.assertEqual(async_client.stream_calls, 2)
+
+    async def test_partial_stream_error_is_returned_without_provider_retry(self):
+        first = _StreamingHTTPClient(
+            ['data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'],
+            stream_error=RuntimeError("connection lost"),
+        )
+        async_client = _StreamingAsyncClient([first])
+        chunks = []
+
+        async def on_chunk(chunk):
+            chunks.append(chunk)
+
+        with (
+            patch.object(ai.httpx, "AsyncClient", return_value=async_client),
+            patch.object(ai.config, "AI_PROVIDERS", [
+                {"url": "https://one.example/v1", "key": "k1", "model": "m1"},
+                {"url": "https://two.example/v1", "key": "k2", "model": "m2"},
+            ]),
+        ):
+            result = await ai._stream_complete([], 1, on_chunk)
+
+        self.assertEqual(result[0], "partial")
+        self.assertIn("connection lost", result[1])
+        self.assertEqual(async_client.stream_calls, 1)
+        self.assertEqual(chunks, ["partial"])
+
+
+class _StreamingAsyncClient:
+    def __init__(self, clients):
+        self.clients = clients if isinstance(clients, list) else [clients]
+        self.stream_calls = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    def stream(self, *args, **kwargs):
+        self.stream_calls += 1
+        return self.clients.pop(0)(*args, **kwargs)
+
+
+class _StreamingHTTPClient:
+    def __init__(self, lines, status_code=200, text="", stream_error=None):
+        self.lines = lines
+        self.status_code = status_code
+        self.text = text
+        self.stream_error = stream_error
+        self.request = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    def __call__(self, *_args, **kwargs):
+        self.request = kwargs
+        return self
+
+    async def aiter_lines(self):
+        for line in self.lines:
+            yield line.rstrip("\\n")
+        if self.stream_error:
+            raise self.stream_error
+
+    def json(self):
+        return {"error": {"message": self.text}}
+
+
 class RichAnswerPreparationTests(unittest.TestCase):
     def test_preserves_rich_markdown_and_does_not_truncate_at_four_thousand(self):
         text = "**bold**\n\n[Open](https://example.com)\n\n" + "x" * 4100

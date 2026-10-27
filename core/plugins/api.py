@@ -13,6 +13,7 @@ from pyrogram.enums import ParseMode
 from pyrogram.handlers import (
     CallbackQueryHandler,
     EditedMessageHandler,
+    GuestMessageHandler,
     InlineQueryHandler,
     MessageHandler,
 )
@@ -416,6 +417,17 @@ class HandlerCollection:
             **handler_kwargs,
         )
 
+    @staticmethod
+    def bot_guest_message(
+        *, filters: Any = None, **handler_kwargs: Any
+    ) -> Callable[[Callback], Callback]:
+        return _event_decorator(
+            "bot_guest_message",
+            filters=filters,
+            bot=True,
+            **handler_kwargs,
+        )
+
 
 handlers = HandlerCollection()
 
@@ -428,6 +440,7 @@ HANDLER_TYPES = {
     "bot_command": MessageHandler,
     "bot_callback_query": CallbackQueryHandler,
     "bot_inline_query": InlineQueryHandler,
+    "bot_guest_message": GuestMessageHandler,
 }
 
 UPDATE_TYPES = {
@@ -439,4 +452,5 @@ UPDATE_TYPES = {
     "bot_command": Message,
     "bot_callback_query": CallbackQuery,
     "bot_inline_query": InlineQuery,
+    "bot_guest_message": Message,
 }
