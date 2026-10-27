@@ -97,15 +97,24 @@ header that carries the key (e.g. `X-API-Key`).
 ## 🤖 AI (.ai)
 
 ```env
-AI_API_URL=http://127.0.0.1:8787/v1
-AI_API_KEY=
-AI_MODEL=groq/openai/gpt-oss-120b
+# OpenRouter primary
+AI_API_URL_1=https://openrouter.ai/api/v1
+AI_API_KEY_1=your_openrouter_api_key
+AI_MODEL_1=deepseek/deepseek-chat-v3.1
+# Groq fallback
+AI_API_URL_2=https://api.groq.com/openai/v1
+AI_API_KEY_2=your_groq_api_key
+AI_MODEL_2=openai/gpt-oss-120b
 AI_SYSTEM_PROMPT=You are a helpful, concise assistant.
 ```
 
-Any OpenAI-compatible `chat/completions` endpoint. The default points at a local
-[synckey](https://github.com/) gateway. Per-chat model and system prompt can be
-overridden at runtime with `.ai model` and `.ai sys`.
+Any OpenAI-compatible `chat/completions` endpoint works. Providers are tried in
+ascending numeric order: slot 1 first, then slot 2 if slot 1 fails, and so on.
+Each slot needs `AI_API_URL_N` and `AI_MODEL_N`; `AI_API_KEY_N` may be empty for
+endpoints that do not require authentication. Use the exact model ID expected by
+each endpoint. Per-chat model and system prompt can be overridden at runtime with
+`.ai model` and `.ai sys`. The legacy unnumbered `AI_API_URL`, `AI_API_KEY`, and
+`AI_MODEL` settings are still used when no numbered providers are configured.
 
 ## 🖼️ Stickers (.kang, .packs)
 

@@ -1,4 +1,5 @@
 import os
+import re
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -8,6 +9,7 @@ load_dotenv()
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 SESSION_STRING = os.getenv("SESSION_STRING", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
 # Bot settings
 CMD_PREFIX = os.getenv("CMD_PREFIX", ".")
@@ -20,10 +22,35 @@ BROWSER_API_URL = os.getenv(
 BROWSER_API_KEY = os.getenv("BROWSER_API_KEY", "")
 BROWSER_API_KEY_HEADER = os.getenv("BROWSER_API_KEY_HEADER", "X-API-Key")
 
-# AI chat (.ai) - any OpenAI-compatible /chat/completions endpoint
-AI_API_URL = os.getenv("AI_API_URL", "http://127.0.0.1:8787/v1")
-AI_API_KEY = os.getenv("AI_API_KEY", "")
-AI_MODEL = os.getenv("AI_MODEL", "groq/openai/gpt-oss-120b")
+# AI chat (.ai) - ordered OpenAI-compatible /chat/completions providers
+
+def _load_ai_providers(environ: dict[str, str] | None = None) -> list[dict[str, str]]:
+    environ = environ if environ is not None else os.environ
+    indices = {
+        int(match.group(1))
+        for name in environ
+        if (match := re.fullmatch(r"AI_(?:API_URL|API_KEY|MODEL)_(\d+)", name))
+    }
+    providers = []
+    for index in sorted(indices):
+        url = environ.get(f"AI_API_URL_{index}", "").strip()
+        key = environ.get(f"AI_API_KEY_{index}", "").strip()
+        model = environ.get(f"AI_MODEL_{index}", "").strip()
+        if url and model:
+            providers.append({"url": url, "key": key, "model": model})
+    return providers
+
+
+AI_PROVIDERS = _load_ai_providers()
+if not AI_PROVIDERS:
+    AI_PROVIDERS = [{
+        "url": os.getenv("AI_API_URL", "http://127.0.0.1:8787/v1").strip(),
+        "key": os.getenv("AI_API_KEY", "").strip(),
+        "model": os.getenv("AI_MODEL", "groq/openai/gpt-oss-120b").strip(),
+    }]
+AI_API_URL = AI_PROVIDERS[0]["url"]
+AI_API_KEY = AI_PROVIDERS[0]["key"]
+AI_MODEL = AI_PROVIDERS[0]["model"]
 AI_SYSTEM_PROMPT = os.getenv(
     "AI_SYSTEM_PROMPT", "You are a helpful, concise assistant."
 )

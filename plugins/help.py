@@ -1,489 +1,171 @@
-# NOTE: Telegram only renders inline keyboards on messages sent by bots. A
-# userbot sends as a regular user account, so buttons are silently ignored;
-# this menu navigates with plain text commands instead.
+import html
+import re
+from pathlib import Path
 
-from pyrogram import filters
-from pyrogram.types import Message
+from pyrogram import Client, filters as F
+from pyrogram.enums import ParseMode
+from pyrogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InlineQuery,
+    InlineQueryResultArticle,
+    InputTextMessageContent,
+    CallbackQuery,
+    Message,
+    ReplyParameters,
+)
 
 import config
 import main
-from utils import continue_propagation, get_logger
+from core.plugins import Example, ParsedOptions, Plugin, PluginContext, handlers as h
+from utils import get_logger
 
 logger = get_logger(__name__)
 
 MAX_TEXT = 3800  # keep safely under Telegram's 4096 limit
 
 
-# Each command: cmd, args (display only), desc, ex (examples; {p} = prefix)
 CATEGORIES: dict[str, dict] = {
-    "core": {
-        "emoji": "🧭",
-        "title": "Core",
-        "desc": "Basic bot commands.",
-        "commands": [
-            {
-                "cmd": "alive",
-                "args": "",
-                "desc": "Show userbot status, uptime, plugins and system info.",
-                "ex": ["{p}alive"],
-            },
-            {
-                "cmd": "ping",
-                "args": "",
-                "desc": "Check bot latency (round-trip time in ms).",
-                "ex": ["{p}ping"],
-            },
-            {
-                "cmd": "reload",
-                "args": "",
-                "desc": "Hot-reload all plugins without restarting the bot. "
-                "Auto-deletes after 10s.",
-                "ex": ["{p}reload"],
-            },
-            {
-                "cmd": "help",
-                "args": "",
-                "desc": "Show this help menu. Aliases: commands, cmds, menu.",
-                "ex": ["{p}help", "{p}help stickers", "{p}help kang", "{p}help all"],
-            },
-        ],
-    },
-    "ai": {
-        "emoji": "🤖",
-        "title": "AI",
-        "desc": "Chat with the configured AI model (.ai).",
-        "commands": [
-            {
-                "cmd": "ai",
-                "args": "<prompt>",
-                "desc": "Ask the AI. Keeps a short conversation per chat. "
-                "Alias: ask.",
-                "ex": ["{p}ai explain quantum tunneling simply"],
-            },
-            {
-                "cmd": "ai",
-                "args": "(reply)",
-                "desc": "Reply to any message with .ai to send it as the "
-                "prompt; add a prompt to give extra instruction.",
-                "ex": ["{p}ai (reply to a message)", "{p}ai summarize (reply)"],
-            },
-            {
-                "cmd": "ai",
-                "args": "search <query>",
-                "desc": "Search the web and have the AI summarize the "
-                "results with sources.",
-                "ex": ["{p}ai search latest ai news"],
-            },
-            {
-                "cmd": "ai",
-                "args": "reset",
-                "desc": "Clear this chat's conversation history.",
-                "ex": ["{p}ai reset"],
-            },
-            {
-                "cmd": "ai",
-                "args": "model [name]",
-                "desc": "Show or set the model for this chat.",
-                "ex": ["{p}ai model", "{p}ai model groq/openai/gpt-oss-120b"],
-            },
-            {
-                "cmd": "ai",
-                "args": "sys [text]",
-                "desc": "Show or set the system prompt for this chat.",
-                "ex": ["{p}ai sys You are a pirate."],
-            },
-        ],
-    },
-    "web": {
-        "emoji": "🌐",
-        "title": "Web",
-        "desc": "Search the web and read pages from chat.",
-        "commands": [
-            {
-                "cmd": "web",
-                "args": "<query>",
-                "desc": "Search the web and list the results. Alias: search.",
-                "ex": ["{p}web latest ai news"],
-            },
-            {
-                "cmd": "web",
-                "args": "next | prev",
-                "desc": "Go to the next/previous page of the last search. "
-                "Aliases: .next, .prev.",
-                "ex": ["{p}web next", "{p}web prev"],
-            },
-            {
-                "cmd": "open",
-                "args": "<n>",
-                "desc": "Read result number <n> from the last search. "
-                "You can also reply to the results message with just a "
-                "number.",
-                "ex": ["{p}open 3"],
-            },
-            {
-                "cmd": "read",
-                "args": "<url>",
-                "desc": "Fetch any URL and show it as plain text. "
-                "Aliases: browse, url.",
-                "ex": ["{p}read https://example.com"],
-            },
-        ],
-    },
-    "utility": {
-        "emoji": "🧰",
-        "title": "Utility",
-        "desc": "Tools, info and message helpers.",
-        "commands": [
-            {
-                "cmd": "exec",
-                "args": "<command>",
-                "desc": "Run a shell command and show stdout/stderr/return code.",
-                "ex": ["{p}exec ls -la", "{p}exec uptime"],
-            },
-            {
-                "cmd": "eval",
-                "args": "<python>",
-                "desc": "Evaluate Python code. `await` is supported.",
-                "ex": ['{p}eval print("hello")'],
-            },
-            {
-                "cmd": "kill",
-                "args": "",
-                "desc": "Stop all currently running .exec / .eval tasks.",
-                "ex": ["{p}kill"],
-            },
-            {
-                "cmd": "info",
-                "args": "",
-                "desc": "Show info about this chat, or the sender of the "
-                "replied message (no phone numbers).",
-                "ex": ["{p}info", "{p}info (reply to a message)"],
-            },
-            {
-                "cmd": "id",
-                "args": "",
-                "desc": "Show chat ID, user ID, and media file IDs of the "
-                "replied message.",
-                "ex": ["{p}id", "{p}id (reply to media)"],
-            },
-            {
-                "cmd": "json",
-                "args": "",
-                "desc": "Export the replied message as a JSON file.",
-                "ex": ["{p}json (reply to a message)"],
-            },
-            {
-                "cmd": "save",
-                "args": "",
-                "desc": "Save the replied message to Saved Messages "
-                "(forward, falls back to copy).",
-                "ex": ["{p}save (reply to a message)"],
-            },
-            {
-                "cmd": "sg",
-                "args": "",
-                "desc": "Look up a user's past names and usernames via "
-                "SangMata. Reply to their message or pass an id/username. "
-                "Alias: sangmata.",
-                "ex": ["{p}sg (reply to a user)", "{p}sg @username", "{p}sg 12345678"],
-            },
-            {
-                "cmd": "tr",
-                "args": "[lang] <text>",
-                "desc": "Translate text, a replied message, or a replied "
-                "voice/audio note (voice uses Groq Whisper). Pass a "
-                "language code first (e.g. `hi`, `es`), otherwise the "
-                "configured default is used. Alias: translate.",
-                "ex": ["{p}tr Hello", "{p}tr es Hello", "{p}tr hi (reply)"],
-            },
-            {
-                "cmd": "tts",
-                "args": "<text>",
-                "desc": "Convert text or the replied message into a voice "
-                "note. Voice is set by TTS_VOICE. Alias: say.",
-                "ex": ["{p}tts Hello there", "{p}tts (reply)"],
-            },
-        ],
-    },
-    "automations": {
-        "emoji": "⏰",
-        "title": "Automations",
-        "desc": "Automated messages: keyword, reply, tag and time triggers.",
-        "commands": [
-            {
-                "cmd": "am",
-                "args": "<match> on <output>",
-                "desc": "Keyword trigger: send <output> when someone says "
-                "<match> in this chat. Flags: `-tag`/`-notag`, `-reply`, "
-                "`-exact`.",
-                "ex": [
-                    "{p}am hello on Hi there!",
-                    "{p}am hi on Hello! -tag",
-                ],
-            },
-            {
-                "cmd": "am",
-                "args": "<match> reply <output>",
-                "desc": "Reply trigger: send <output> when someone replies to "
-                "you (optionally only if their message contains <match>). "
-                "Alias trigger: `tag`/`mention` also fires when you are "
-                "tagged.",
-                "ex": [
-                    "{p}am reply On it!",
-                    "{p}am boss reply Yes sir?",
-                    "{p}am /ft tag /plant hdsfshfg -notag",
-                ],
-            },
-            {
-                "cmd": "am",
-                "args": "every <time> <output>",
-                "desc": "Repeat <output> every <time> (`30s`, `15m`, `1h`, "
-                "`1d`, or `30 minutes`).",
-                "ex": ["{p}am every 1h Stand up!", "{p}am every 30m Drink water"],
-            },
-            {
-                "cmd": "am",
-                "args": "at <HH:MM> <output>",
-                "desc": "Send <output> every day at <HH:MM> (24h) or "
-                "`9:00 am`. Uses the server's local timezone.",
-                "ex": ["{p}am at 09:00 Good morning", "{p}am at 22:30 Sleep!"],
-            },
-            {
-                "cmd": "am",
-                "args": "in <time> <output>",
-                "desc": "Send <output> once, after <time>.",
-                "ex": ["{p}am in 10m On my way", "{p}am in 2h Ping me"],
-            },
-            {
-                "cmd": "am",
-                "args": "list | del <id> | on <id> | off <id> | clear",
-                "desc": "Manage this chat's automations. Automations are per "
-                "chat and survive restarts.",
-                "ex": [
-                    "{p}am list",
-                    "{p}am off 2",
-                    "{p}am del 2",
-                    "{p}am clear",
-                ],
-            },
-        ],
-    },
-    "fun": {
-        "emoji": "🎉",
-        "title": "Fun / Spam",
-        "desc": "Repeat sending. Use responsibly.",
-        "commands": [
-            {
-                "cmd": "spam",
-                "args": "[flags] <count> <text>",
-                "desc": "Send a message repeatedly, or copy the replied "
-                "message. Flags: `-c/-count <n>`, `-d/-delay <10s|5m|1h>`, "
-                "`-del/-delete` (auto-delete after 2.5s), `-r/-reply`, "
-                "`-ignore/-nolimit` (bypass max count).",
-                "ex": [
-                    "{p}spam 10 Hello World",
-                    "{p}spam -d 5s 3 Hi",
-                    "{p}spam -del -c 5 Test",
-                    "{p}spam -r 5 Hi (reply to a message)",
-                ],
-            },
-            {
-                "cmd": "spam_stop",
-                "args": "",
-                "desc": "Stop the active spam in this chat.",
-                "ex": ["{p}spam_stop"],
-            },
-            {
-                "cmd": "spam_stat",
-                "args": "",
-                "desc": "Show progress of the active spam in this chat.",
-                "ex": ["{p}spam_stat"],
-            },
-            {
-                "cmd": "spam_help",
-                "args": "",
-                "desc": "Show detailed spam help.",
-                "ex": ["{p}spam_help"],
-            },
-        ],
-    },
-    "stickers": {
-        "emoji": "🖼️",
-        "title": "Stickers",
-        "desc": "Kang stickers into your own packs.",
-        "commands": [
-            {
-                "cmd": "sticker",
-                "args": "",
-                "desc": "Make the replied sticker, photo, GIF, or video into "
-                "a sticker and send it directly in chat without adding it to a pack.",
-                "ex": ["{p}sticker"],
-            },
-            {
-                "cmd": "kang",
-                "args": "",
-                "desc": "Reply to a sticker, photo, GIF or video to add it to "
-                "your automatic volume pack. Photos become static stickers; GIFs "
-                "and videos become video stickers. Emoji arguments replace the "
-                "source emoji unless -a is used to append. Add -s to send the "
-                "matching sticker from the pack after processing.",
-                "ex": ["{p}kang", "{p}kang 🐱", "{p}kang -a 🐱", "{p}kang -s"],
-            },
-            {
-                "cmd": "kang",
-                "args": "<number|shortname|id>",
-                "desc": "Add the replied media to an existing pack you own. "
-                "Use a number from `.packs`, its short name, or id. A bare "
-                "word is only looked up as an existing pack; if it is not found, "
-                "the command reports pack not found and does not create a theme. "
-                "Use `-t <theme>` to explicitly select or create a themed pack. "
-                "Add `-s` to send the matching destination-pack sticker.",
-                "ex": [
-                    "{p}kang 1",
-                    "{p}kang mypack 🐱",
-                    "{p}kang -t fun",
-                    "{p}kang -t anime 🐱 -a",
-                    "{p}kang oppeace_fun_123 -s",
-                ],
-            },
-            {
-                "cmd": "packs",
-                "args": "[page] [-c] [-e] [-a] [-n] [-s]",
-                "desc": "List your sticker packs 10 at a time with numbered "
-                "pages. Use `.packs <page>` to navigate; numbers stay global "
-                "for `.kang`. Filters: `-e` emoji, `-a` animated, `-n` static, "
-                "`-s` static + animated sticker packs (📺 marks mixed packs). "
-                "`-c` shows owned, active, "
-                "archived and total counts. Combine filters; no filter shows all. "
-                "Alias: mypacks.",
-                "ex": [
-                    "{p}packs",
-                    "{p}packs 2",
-                    "{p}packs -e",
-                    "{p}packs -s",
-                    "{p}packs -a -n 2",
-                    "{p}packs -c",
-                ],
-            },
-            {
-                "cmd": "packs search",
-                "args": "<keyword>",
-                "desc": "Search all public Telegram sticker packs by keyword "
-                "and get their add links.",
-                "ex": ["{p}packs search cats", "{p}packs search meme"],
-            },
-            {
-                "cmd": "start_sticker_monitor",
-                "args": "",
-                "desc": "Monitor only new sticker messages you send in this chat and add them to your automatic pack. Ignores photos, GIFs, videos, and stickers sent by others; resets on restart.",
-                "ex": ["{p}start_sticker_monitor"],
-            },
-            {
-                "cmd": "stop_sticker_monitor",
-                "args": "",
-                "desc": "Stop the sticker monitor in all chats.",
-                "ex": ["{p}stop_sticker_monitor"],
-            },
-            {
-                "cmd": "help_sticker",
-                "args": "",
-                "desc": "Show sticker help, kang targets and emoji options, reactions, pack commands, and links to naming and monitoring help.",
-                "ex": ["{p}help_sticker"],
-            },
-            {
-                "cmd": "help_sticker_naming",
-                "args": "",
-                "desc": "Show automatic and themed volume-2 naming examples, template fields, validation requirements, and base-format fallbacks.",
-                "ex": ["{p}help_sticker_naming"],
-            },
-            {
-                "cmd": "help_sticker_monitor",
-                "args": "",
-                "desc": "Explain which messages monitoring handles, how to start/stop it, and its restart behavior.",
-                "ex": ["{p}help_sticker_monitor"],
-            },
-            {
-                "cmd": "help_sticker_duplicate_check",
-                "args": "",
-                "desc": "Explain target-specific duplicate scans and the -d/-duplicate bypass.",
-                "ex": ["{p}help_sticker_duplicate_check"],
-            },
-            {
-                "cmd": "stickerdebug",
-                "args": "",
-                "desc": "Reply to a sticker to export its sticker and pack data, including raw Telegram objects, as JSON.",
-                "ex": ["{p}stickerdebug"],
-            },
-        ],
-    },
-    "todoist": {
-        "emoji": "✅",
-        "title": "Todoist",
-        "desc": "Requires TODOIST_API_TOKEN in .env. Tasks have a title, "
-        "an optional description and optional tags.",
-        "commands": [
-            {
-                "cmd": "todo",
-                "args": "<title>",
-                "desc": "Create a task with just a title. Reply to a message "
-                "to attach its text, sender and link to the description.",
-                "ex": [
-                    "{p}todo Buy milk",
-                    "{p}todo Pay bill (reply to the bill message)",
-                ],
-            },
-            {
-                "cmd": "todo",
-                "args": "<title> #desc |text|",
-                "desc": "Add your own description above any replied-message "
-                "context. Can span multiple lines.",
-                "ex": [
-                    "{p}todo Fix login #desc |Repro: 500 on submit|",
-                ],
-            },
-            {
-                "cmd": "todo",
-                "args": "<title> #tags |a, b|",
-                "desc": "Attach Todoist labels. Missing labels are created "
-                "automatically; the single `#tag <name>` form also works.",
-                "ex": [
-                    "{p}todo Fix login #tags |backend, urgent|",
-                    "{p}todo Call back #tag phone",
-                ],
-            },
-            {
-                "cmd": "todo",
-                "args": "<title> [#pN] [#due |<date>|]",
-                "desc": "Set priority (`#p1` very urgent … `#p4` low) and/or "
-                "a due date parsed by Todoist.",
-                "ex": [
-                    "{p}todo Pay bill #p1",
-                    "{p}todo Meeting #due |tomorrow 5pm|",
-                ],
-            },
-            {
-                "cmd": "todo",
-                "args": "<title> [#tags |a, b|] [#desc |text|] [#pN] [#due |<date>|]",
-                "desc": "Everything combined into one rich task.",
-                "ex": [
-                    "{p}todo Fix login #tags |backend, urgent| "
-                    "#desc |500 on submit| #p1 #due |tomorrow|",
-                ],
-            },
-            {
-                "cmd": "todo list",
-                "args": "[page]",
-                "desc": "List the tasks added from Telegram (10 per page) "
-                "with labels and a description preview. Pass a page number "
-                "to jump to that page.",
-                "ex": [
-                    "{p}todo list",
-                    "{p}todo list 2",
-                ],
-            },
-        ],
-    },
+    "Core": {"emoji": "🧭", "title": "Core", "desc": "Basic bot commands."},
+    "AI & Tools": {"emoji": "🤖", "title": "AI & Tools", "desc": "AI chat, web search, page reading, and translation."},
+    "Utility": {"emoji": "🧰", "title": "Utility", "desc": "Info and message helpers."},
+    "Automations": {"emoji": "⏰", "title": "Automations", "desc": "Keyword and scheduled messages."},
+    "Fun / Spam": {"emoji": "🎉", "title": "Fun / Spam", "desc": "Repeat sending. Use responsibly."},
+    "Stickers": {"emoji": "🖼️", "title": "Stickers", "desc": "Kang stickers into your own packs."},
+    "Productivity": {"emoji": "✅", "title": "Productivity", "desc": "Tasks and personal workflow tools."},
+    "Media": {"emoji": "🎙️", "title": "Media", "desc": "Audio and media tools."},
+    "Examples": {"emoji": "🧪", "title": "Examples", "desc": "Example managed plugin."},
 }
+
+BUILTIN_COMMANDS: dict[str, list[dict]] = {}
+
+
+def _html(text: str) -> str:
+    """Convert the help renderer's Markdown subset to escaped Telegram HTML."""
+    escaped = html.escape(text, quote=False)
+    escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
+    escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
+    escaped = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<i>\1</i>", escaped)
+    return escaped
+
+
+def _category_key(category: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", category.casefold()).strip("_")
+
+
+def _managed_commands() -> list[dict]:
+    manager = getattr(main, "plugin_manager", None)
+    if manager is None:
+        return []
+    statuses = getattr(main, "public_plugin_status", {})
+    unavailable = {
+        Path(filename).stem
+        for filename, status in statuses.items()
+        if status.get("state") != "loaded"
+    }
+    return [
+        item for item in manager.command_help()
+        if not item.get("hidden_from_help") and item["plugin"] not in unavailable
+    ]
+
+
+def _plugins_for_category(category: str) -> list[dict]:
+    category = _category_key(category)
+    plugins: dict[str, dict] = {}
+    for command in _managed_commands():
+        if _category_key(command.get("plugin_category") or "Other") != category:
+            continue
+        plugin_id = command["plugin"]
+        plugin = plugins.setdefault(
+            plugin_id,
+            {
+                "id": plugin_id,
+                "name": command.get("plugin_display_name") or plugin_id.replace("_", " ").title(),
+                "description": command.get("plugin_description", ""),
+                "commands": [],
+            },
+        )
+        plugin["commands"].append(command)
+    return sorted(plugins.values(), key=lambda item: item["name"].casefold())
+
+
+def _disabled_plugins() -> list[dict]:
+    statuses = getattr(main, "public_plugin_status", {})
+    return [
+        {"id": Path(filename).stem, "name": Path(filename).stem.replace("_", " ").title(), "note": item.get("note") or item.get("state")}
+        for filename, item in sorted(statuses.items())
+        if item.get("state") != "loaded"
+    ]
+
+
+def _categories() -> list[dict]:
+    grouped: dict[str, dict] = {}
+    for command in _managed_commands():
+        title = command.get("plugin_category") or "Other"
+        key = _category_key(title)
+        category = grouped.setdefault(key, {"key": key, "title": title, "emoji": "🧩"})
+        category["count"] = category.get("count", 0) + 1
+    if _disabled_plugins():
+        grouped["disabled"] = {"key": "disabled", "title": "Disabled", "emoji": "⏸️", "count": len(_disabled_plugins())}
+    for key, category in grouped.items():
+        category.update(CATEGORIES.get(category["title"], {}))
+        category["key"] = key
+    return sorted(grouped.values(), key=lambda item: item["title"].casefold())
+
+
+def _help_keyboard(current: str = "root") -> InlineKeyboardMarkup:
+    parts = current.split(":")
+    if parts[0] in {"detail", "command"} and len(parts) >= 3:
+        category = parts[1]
+        plugin_id = parts[2] if parts[0] == "command" and len(parts) >= 4 else None
+        plugins = _plugins_for_category(category)
+        plugin = next((item for item in plugins if item["id"] == plugin_id), None)
+        if plugin is not None:
+            return InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    f"⬅️ Back to {plugin['name']}",
+                    callback_data=f"help.plugin:{category}:{plugin_id}",
+                )
+            ]])
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton("⬅️ Back to categories", callback_data="help.root")
+        ]])
+    if parts[0] == "category" and len(parts) >= 2:
+        key = parts[1]
+        plugins = _plugins_for_category(key)
+        if len(plugins) == 1 and len(plugins[0]["commands"]) == 1:
+            return InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "⬅️ Back to categories", callback_data="help.root"
+                )
+            ]])
+        buttons = []
+        if key == "disabled":
+            buttons = []
+        elif len(plugins) > 1:
+            buttons = [InlineKeyboardButton(plugin["name"], callback_data=f"help.plugin:{key}:{plugin['id']}") for plugin in plugins]
+        elif plugins:
+            buttons = [
+                InlineKeyboardButton(
+                    f"{index + 1}. {_usage_plain(item)}",
+                    callback_data=f"help.command:{key}:{plugins[0]['id']}:{item['trigger']}",
+                )
+                for index, item in enumerate(plugins[0]["commands"])
+            ]
+        rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
+        rows.append([InlineKeyboardButton("⬅️ Back to categories", callback_data="help.root")])
+        return InlineKeyboardMarkup(rows)
+    if parts[0] == "plugin" and len(parts) >= 3:
+        plugin = next((item for item in _plugins_for_category(parts[1]) if item["id"] == parts[2]), None)
+        buttons = [] if plugin is None else [InlineKeyboardButton(f"{index + 1}. {item.get('prefix', _prefix())}{item['trigger']}", callback_data=f"help.command:{parts[1]}:{parts[2]}:{item['trigger']}") for index, item in enumerate(plugin["commands"])]
+        rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
+        category_plugins = _plugins_for_category(parts[1])
+        back_label = "⬅️ Back to plugins" if len(category_plugins) > 1 else "⬅️ Back to categories"
+        rows.append([InlineKeyboardButton(back_label, callback_data=f"help.category:{parts[1]}")])
+        return InlineKeyboardMarkup(rows)
+    buttons = [InlineKeyboardButton(f"{category['emoji']} {category['title']}", callback_data=f"help.category:{category['key']}") for category in _categories()]
+    rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
+    return InlineKeyboardMarkup(rows)
 
 
 def _prefix() -> str:
@@ -491,10 +173,7 @@ def _prefix() -> str:
 
 
 def _usage_plain(command: dict) -> str:
-    text = f"{_prefix()}{command['cmd']}"
-    if command.get("args"):
-        text += f" {command['args']}"
-    return text
+    return f"{command.get('prefix', _prefix())}{command.get('trigger', command.get('cmd', ''))}{(' ' + command['signature'].strip()) if command.get('signature') else ''}"
 
 
 def _usage_code(command: dict) -> str:
@@ -502,7 +181,38 @@ def _usage_code(command: dict) -> str:
 
 
 def _total_commands() -> int:
-    return sum(len(cat["commands"]) for cat in CATEGORIES.values())
+    return len(_managed_commands())
+
+
+def render_plugins() -> str:
+    statuses = getattr(main, "public_plugin_status", {})
+    loaded = sum(item["state"] == "loaded" for item in statuses.values())
+    total = len(statuses)
+    available_commands = len(_managed_commands())
+    not_loaded = total - loaded
+    lines = [
+        "<b>Public plugins:</b>",
+        f"Loaded: {loaded}",
+        f"Not loaded: {not_loaded}",
+        f"Total: {total}",
+        f"Total commands available: {available_commands}",
+    ]
+    notes = [
+        f"{index}. <b>{html.escape(filename)}</b>: "
+        f"{html.escape(item['note'] or item['state'])}"
+        for index, (filename, item) in enumerate(
+            (
+                (filename, item)
+                for filename, item in sorted(statuses.items())
+                if item["state"] != "loaded"
+            ),
+            start=1,
+        )
+    ]
+    if notes:
+        lines += ["", "<b>Public plugins notes, for not loaded plugins:</b>", "<blockquote>" + "\n".join(notes) + "</blockquote>"]
+    lines += ["", "<b>Private plugins:</b>", "Status unavailable."]
+    return "\n".join(lines)
 
 
 def _header() -> str:
@@ -514,48 +224,105 @@ def _header() -> str:
 
 
 def render_root() -> str:
+    categories = _categories()
     lines = [_header(), "", "**Categories**", ""]
-    for index, key in enumerate(CATEGORIES, start=1):
-        cat = CATEGORIES[key]
-        lines.append(
-            f"{index}. {cat['emoji']} **{cat['title']}** "
-            f"— {len(cat['commands'])} cmds"
-        )
-    lines += [
-        "",
-        f"Open: `{_prefix()}help <n>` or `{_prefix()}help <name>`",
-        f"Everything: `{_prefix()}help all`",
-    ]
+    for index, category in enumerate(categories, start=1):
+        if category["key"] == "disabled":
+            lines.append(f"{index}. {category['emoji']} **{category['title']}** — {category['count']} disabled plugins")
+        else:
+            category_plugins = _plugins_for_category(category["key"])
+            plugin_count = len(category_plugins)
+            command_count = sum(len(plugin["commands"]) for plugin in category_plugins)
+            plugin_unit = "plugin" if plugin_count == 1 else "plugins"
+            command_unit = "command" if command_count == 1 else "commands"
+            lines.append(
+                f"{index}. {category['emoji']} **{category['title']}** — "
+                f"{plugin_count} {plugin_unit} ({command_count} {command_unit})"
+            )
+    lines += ["", f"Everything: `{_prefix()}help all`", f"Managed commands: `{_prefix()}help managed`"]
     return "\n".join(lines)
+
+
+def _commands_for_category(key: str) -> list[dict]:
+    plugins = _plugins_for_category(key)
+    return plugins[0]["commands"] if len(plugins) == 1 else []
 
 
 def render_category(key: str) -> str:
-    cat = CATEGORIES[key]
-    lines = [f"{cat['emoji']} **{cat['title']}**", cat.get("desc", ""), ""]
-    for index, command in enumerate(cat["commands"], start=1):
-        lines.append(f"{index}. {_usage_code(command)} — {command['desc']}")
-    lines += [
-        "",
-        f"Details: `{_prefix()}help {key} <n>`  •  Menu: `{_prefix()}help`",
-    ]
+    category = next((item for item in _categories() if item["key"] == key), None)
+    if category is None:
+        return render_root()
+    if key == "disabled":
+        lines = ["⏸️ **Disabled plugins**", "Plugins unavailable until configured:", ""]
+        lines.extend(f"• **{item['name']}** — Disabled: {item['note']}" for item in _disabled_plugins())
+        return "\n".join(lines)
+    plugins = _plugins_for_category(key)
+    if len(plugins) > 1:
+        lines = [f"{category['emoji']} **{category['title']}**", category.get("desc", ""), "", "Choose a plugin:"]
+        lines.extend(f"• **{plugin['name']}** — {plugin['description']}" for plugin in plugins)
+        return "\n".join(lines)
+    if not plugins:
+        return render_root()
+    if len(plugins[0]["commands"]) == 1:
+        return _render_command_detail(key, plugins[0]["commands"], 0)
+    return _render_plugin_commands(category, plugins[0])
+
+
+def _render_plugin_commands(category: dict, plugin: dict) -> str:
+    lines = [f"{category['emoji']} **{plugin['name']}**", plugin["description"], ""]
+    for index, command in enumerate(plugin["commands"], start=1):
+        usage = _usage_code(command)
+        short = command.get("short_description") or command.get("description") or "Help details are not available yet."
+        lines.append(f"{index}. {usage} — {short}")
+        lines.append("")
+    lines += [f"Select a command below for details. Or use `{_prefix()}help <command>`."]
     return "\n".join(lines)
 
 
+def _plugin_commands(key: str, plugin_id: str) -> list[dict]:
+    plugin = next((item for item in _plugins_for_category(key) if item["id"] == plugin_id), None)
+    return plugin["commands"] if plugin else []
+
+
 def render_detail(key: str, offset: int) -> str:
-    commands = CATEGORIES[key]["commands"]
+    commands = _commands_for_category(key)
+    if not commands:
+        plugins = _plugins_for_category(key)
+        commands = plugins[0]["commands"] if len(plugins) == 1 else []
+    return _render_command_detail(key, commands, offset)
+
+
+def _render_command_detail(key: str, commands: list[dict], offset: int) -> str:
     if offset < 0 or offset >= len(commands):
         return render_category(key)
     command = commands[offset]
-    lines = [f"**{_usage_code(command)}**", "", command["desc"]]
-    if command.get("ex"):
-        lines.append("")
-        lines.append("**Examples:**")
-        for example in command["ex"]:
-            lines.append(f"• `{example.format(p=_prefix())}`")
-    lines += [
-        "",
-        f"Category: `{_prefix()}help {key}`  •  Menu: `{_prefix()}help`",
-    ]
+    lines = [f"**{_usage_code(command)}**", "", command.get("description") or "No detailed help available."]
+    options = command.get("help_options") or command.get("options", ())
+    if options:
+        lines.extend(["", "**Options:**"])
+        for option in options:
+            if hasattr(option, "name"):
+                long_name = f"--{option.name.replace('_', '-')}"
+                labels = [option.short, long_name, *option.aliases]
+                label = option.label or ", ".join(
+                    dict.fromkeys(item for item in labels if item)
+                )
+                description = option.help
+            else:
+                label = option.get("label") or option.get("short") or (
+                    "--" + option["name"].replace("_", "-")
+                )
+                description = option.get("help")
+            lines.append(
+                f"• `{label}` — {description or 'No description provided.'}"
+            )
+    if command.get("examples"):
+        lines.extend(["", "**Examples:**"])
+        for index, example in enumerate(command["examples"]):
+            note = command.get("example_notes", ())
+            suffix = f" — {note[index]}" if index < len(note) and note[index] else ""
+            lines.append(f"• `{example}`{suffix}")
+    lines.extend(["", f"Use `{_prefix()}help {key}` to go back."])
     return "\n".join(lines)
 
 
@@ -566,90 +333,291 @@ def _summarize(desc: str, limit: int = 90) -> str:
     return text
 
 
+def render_managed() -> str:
+    lines = ["**Managed plugin commands**", ""]
+    for item in _managed_commands():
+        lines.append(f"• {_usage_code(item)} — {item.get('description') or item['plugin']}")
+        for example in item["examples"]:
+            lines.append(f"  Example: `{example}`")
+    return "\n".join(lines)
+
+
 def render_all() -> str:
     lines = ["**🐱 NekoUB — All commands**", ""]
-    for cat in CATEGORIES.values():
-        lines.append(f"{cat['emoji']} **{cat['title']}**")
-        for command in cat["commands"]:
-            lines.append(
-                f"• {_usage_code(command)} — {_summarize(command['desc'])}"
-            )
+    for category in _categories():
+        if category["key"] == "disabled":
+            continue
+        lines.append(f"{category['emoji']} **{category['title']}**")
+        for plugin in _plugins_for_category(category["key"]):
+            for command in plugin["commands"]:
+                lines.append(f"• {_usage_code(command)} — {command.get('short_description') or _summarize(command.get('description', ''))}")
         lines.append("")
     text = "\n".join(lines).strip()
-    if len(text) > MAX_TEXT:
-        text = text[:MAX_TEXT] + "\n… (truncated)"
-    return text
+    return text[:MAX_TEXT] + "\n… (truncated)" if len(text) > MAX_TEXT else text
+
+
+def render_plugin_lookup(name: str) -> tuple[str, dict] | None:
+    normalized = name.casefold()
+    for category in _categories():
+        if category["key"] == "disabled":
+            continue
+        for plugin in _plugins_for_category(category["key"]):
+            names = {
+                plugin["id"].casefold(),
+                plugin["name"].casefold(),
+                plugin["name"].replace(" ", "_").casefold(),
+            }
+            if normalized in names:
+                return category["key"], plugin
+    return None
+
+
+def render_plugin_help(key: str, plugin: dict) -> str:
+    category = next(item for item in _categories() if item["key"] == key)
+    if len(plugin["commands"]) == 1:
+        detail = _render_command_detail(key, plugin["commands"], 0)
+        return f"{category['emoji']} **{plugin['name']}**\n\n{detail}"
+    return _render_plugin_commands(category, plugin)
+
+
+def _help_page_action(name: str) -> str:
+    normalized = name.casefold()
+    plugin_match = render_plugin_lookup(name)
+    if plugin_match is not None:
+        key, plugin = plugin_match
+        if len(plugin["commands"]) == 1:
+            return f"command:{key}:{plugin['id']}:{plugin['commands'][0]['trigger']}"
+        return f"plugin:{key}:{plugin['id']}"
+    matches = []
+    for category in _categories():
+        if category["key"] == "disabled":
+            continue
+        for plugin in _plugins_for_category(category["key"]):
+            for command in plugin["commands"]:
+                names = {command["trigger"].casefold(), *(alias.casefold() for alias in command["aliases"])}
+                if normalized in names:
+                    matches.append((category["key"], plugin["id"], command["trigger"]))
+    if len(matches) == 1:
+        key, plugin_id, trigger = matches[0]
+        return f"command:{key}:{plugin_id}:{trigger}"
+    return "root"
 
 
 def render_command_lookup(name: str) -> str:
     matches = []
-    for key, cat in CATEGORIES.items():
-        for index, command in enumerate(cat["commands"]):
-            if command["cmd"].lower() == name:
-                matches.append((key, index))
-
+    for category in _categories():
+        if category["key"] == "disabled":
+            continue
+        for plugin in _plugins_for_category(category["key"]):
+            for command in plugin["commands"]:
+                if name in {command["trigger"].casefold(), *(alias.casefold() for alias in command["aliases"])}:
+                    matches.append((category["key"], plugin["id"], command))
     if len(matches) == 1:
-        return render_detail(*matches[0])
+        key, plugin_id, command = matches[0]
+        commands = _plugin_commands(key, plugin_id)
+        return _render_command_detail(key, commands, commands.index(command))
     if len(matches) > 1:
-        lines = [f"**Multiple commands named `{name}`**", ""]
-        for key, index in matches:
-            command = CATEGORIES[key]["commands"][index]
-            lines.append(f"• {_usage_code(command)} — {command['desc']}")
-        lines += [
-            "",
-            f"Details: `{_prefix()}help {matches[0][0]} <n>`",
-        ]
-        return "\n".join(lines)
+        return "\n".join([f"**Multiple commands named `{name}`**", "", *(f"• {_usage_code(item)} — {item.get('short_description') or item.get('description', '')}" for _, _, item in matches)])
     return f"❓ Unknown command `{name}`.\n\n{render_root()}"
 
 
 def render(args: str) -> str:
     """Turn a help argument string into the right view."""
-    keys = list(CATEGORIES)
+    categories = _categories()
     arg = args.strip()
-
     if not arg:
         return render_root()
     if arg.lower() == "all":
         return render_all()
-
     tokens = arg.split()
-    first = tokens[0].lower()
-
-    if first.isdigit():
-        index = int(first)
-        if 1 <= index <= len(keys):
-            key = keys[index - 1]
-            if len(tokens) > 1 and tokens[1].isdigit():
-                return render_detail(key, int(tokens[1]) - 1)
-            return render_category(key)
-        return render_root()
-
-    if first in CATEGORIES:
+    first = tokens[0].casefold()
+    plugin_match = render_plugin_lookup(first)
+    if plugin_match is not None:
+        key, plugin = plugin_match
+        return render_plugin_help(key, plugin)
+    if first == "plugins":
+        return render_plugins()
+    if first == "managed":
+        return render_managed()
+    if first.isdigit() and 1 <= int(first) <= len(categories):
+        first = categories[int(first) - 1]["key"]
+    category = next((item for item in categories if item["key"] == first or item["title"].casefold() == first), None)
+    if category:
+        key = category["key"]
+        plugins = _plugins_for_category(key)
         if len(tokens) > 1 and tokens[1].isdigit():
-            return render_detail(first, int(tokens[1]) - 1)
-        return render_category(first)
-
+            return render_detail(key, int(tokens[1]) - 1)
+        if len(plugins) == 1:
+            return render_category(key)
+        return render_category(key)
     return render_command_lookup(first)
 
 
-@main.app.on_message(
-    filters.me
-    & filters.command(
-        ["help", "commands", "cmds", "menu"], prefixes=config.CMD_PREFIX
-    )
-)
-@continue_propagation
-async def help_command(client, message: Message):
-    """Show the help menu.
+class HelpPlugin(Plugin):
+    id = "help"
+    category = "Core"
+    description = "Show help for public and managed commands."
 
-    Usage:
-        .help [<category>|all] [<n>]
-    """
-    try:
-        parts = (message.text or "").split(maxsplit=1)
-        args = parts[1] if len(parts) > 1 else ""
-        await message.edit(render(args))
-    except Exception as exc:
-        logger.error(f"[HELP] Failed to render menu: {exc}")
-        await message.edit(f"❌ Failed to render help: {type(exc).__name__}")
+    @h.bot_callback_query(filters=F.regex(r"^help\."))
+    async def help_callback(
+        self,
+        bot: Client,
+        callback: CallbackQuery,
+        ctx: PluginContext["HelpPlugin"],
+    ) -> None:
+        action = callback.data.removeprefix("help.")
+        try:
+            if action == "root":
+                content = render_root()
+            elif action.startswith("category:"):
+                category = action.partition(":")[2]
+                content = render_category(category)
+            elif action.startswith("plugin:"):
+                _, category, plugin_id = action.split(":", 2)
+                plugin = next((item for item in _plugins_for_category(category) if item["id"] == plugin_id), None)
+                if plugin is None:
+                    raise ValueError("Unknown plugin")
+                category_data = next(item for item in _categories() if item["key"] == category)
+                content = _render_plugin_commands(category_data, plugin)
+            elif action.startswith("command:"):
+                _, category, plugin_id, trigger = action.split(":", 3)
+                commands = _plugin_commands(category, plugin_id)
+                command = next(item for item in commands if item["trigger"] == trigger)
+                content = _render_command_detail(category, commands, commands.index(command))
+            elif action.startswith("detail:"):
+                _, category, index = action.split(":", 2)
+                content = render_detail(category, int(index))
+            else:
+                raise ValueError("Unknown help page")
+        except (ValueError, KeyError):
+            await callback.answer("That help page is no longer available.", show_alert=True)
+            return
+        await callback.answer()
+        if callback.inline_message_id:
+            await bot.edit_inline_text(
+                callback.inline_message_id,
+                _html(content),
+                parse_mode=ParseMode.HTML,
+                reply_markup=_help_keyboard(action),
+            )
+        elif callback.message is not None:
+            await callback.message.edit_text(
+                _html(content),
+                parse_mode=ParseMode.HTML,
+                reply_markup=_help_keyboard(action),
+            )
+        else:
+            await callback.answer("This help message can no longer be updated.", show_alert=True)
+
+    @h.bot_inline_query(filters=F.regex(r"^(?:help(?:\s|$)|help\.)"))
+    async def help_inline_query(
+        self,
+        bot: Client,
+        query: InlineQuery,
+        ctx: PluginContext["HelpPlugin"],
+    ) -> None:
+        text = query.query.partition(" ")[2].strip()
+        rendered = render(text)
+        await query.answer(
+            [
+                InlineQueryResultArticle(
+                    title="NekoUB help",
+                    description="Open help menu" if not text else f"Help: {text}",
+                    input_message_content=InputTextMessageContent(
+                        rendered if text.lower() == "plugins" else _html(rendered),
+                        parse_mode=ParseMode.HTML,
+                    ),
+                    reply_markup=_help_keyboard(_help_page_action(text) if text else "root"),
+                )
+            ],
+            cache_time=0,
+            is_personal=True,
+        )
+
+    @h.bot_command(
+        "help",
+        description="Open the NekoUB inline help menu.",
+        public=False,
+        prefixes="/",
+        filters=F.private,
+    )
+    async def bot_help_command(
+        self,
+        bot: Client,
+        message: Message,
+        ctx: PluginContext["HelpPlugin"],
+        args: ParsedOptions,
+    ) -> None:
+        await message.reply_text(
+            "Choose a help page:",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("Open help", switch_inline_query="help")]]
+            ),
+        )
+
+    @h.command(
+        "plugins",
+        description="Show public plugin load status and available commands.",
+        prefixes=config.CMD_PREFIX,
+    )
+    async def plugins_command(
+        self,
+        client: Client,
+        message: Message,
+        ctx: PluginContext["HelpPlugin"],
+        args: ParsedOptions,
+    ) -> None:
+        await ctx.edit(render_plugins(), message=message, parse_mode=ParseMode.HTML)
+
+    @h.command(
+        "help",
+        aliases=("commands", "cmds", "menu"),
+        description=description,
+        examples=(
+            Example("{cmd}"),
+            Example("{cmd} stickers"),
+            Example("{cmd} managed"),
+            Example("{cmd} all"),
+        ),
+        prefixes=config.CMD_PREFIX,
+    )
+    async def help_command(
+        self,
+        client: Client,
+        message: Message,
+        ctx: PluginContext["HelpPlugin"],
+        args: ParsedOptions,
+    ) -> None:
+        """Show the help menu.
+
+        Usage:
+            .help [<category>|all] [<n>]
+        """
+        try:
+            parts = (message.text or "").split(maxsplit=1)
+            help_args = parts[1] if len(parts) > 1 else ""
+            if ctx.bot is not None and ctx.client is not None:
+                bot_info = await ctx.bot.get_me()
+                results = await ctx.client.get_inline_bot_results(
+                    bot_info.username,
+                    f"help {help_args}".strip(),
+                )
+                if not results.results:
+                    raise RuntimeError("Assistant bot returned no help results")
+                await ctx.client.send_inline_bot_result(
+                    message.chat.id,
+                    results.query_id,
+                    results.results[0].id,
+                    reply_parameters=ReplyParameters(message_id=message.id),
+                )
+                return
+            await ctx.edit(
+                _html(render(help_args)),
+                message=message,
+                reply_markup=_help_keyboard(_help_page_action(help_args.split()[0]) if help_args else "root"),
+            )
+        except Exception as exc:
+            logger.error(f"[HELP] Failed to render menu: {exc}")
+            await ctx.edit(
+                f"❌ Failed to render help: {type(exc).__name__}", message=message
+            )

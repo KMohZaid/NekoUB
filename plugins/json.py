@@ -1,87 +1,80 @@
 import json
+import os
+import tempfile
 
-from pyrogram import filters
+from pyrogram import Client
 from pyrogram.types import Message
 
 import config
-import main
-from utils import continue_propagation, get_logger
+from core.plugins import Example, ParsedOptions, Plugin, PluginContext, handlers as h
+from utils import get_logger
 
 logger = get_logger(__name__)
 
 
-@main.app.on_message(
-    filters.me & filters.command("json", prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
-async def json_command(client, message: Message):
-    """Export replied message as JSON file.
+class JsonPlugin(Plugin):
+    id = "json"
+    category = "Utility"
+    description = "Export a replied message as a JSON file."
 
-    Usage: .json (reply to a message)
-    """
-    try:
-        # Check if replying to a message
-        if not message.reply_to_message:
-            await message.edit("❌ Reply to a message to export it as JSON")
-            return
+    @h.command(
+        "json",
+        description=description,
+        examples=(Example("{cmd} (reply to a message)"),),
+        prefixes=config.CMD_PREFIX,
+        parse_mode="markdown",
+    )
+    async def json_command(
+        self,
+        client: Client,
+        message: Message,
+        ctx: PluginContext["JsonPlugin"],
+        args: ParsedOptions,
+    ) -> None:
+        """Export replied message as JSON file.
 
-        reply = message.reply_to_message
-
-        # Create filename: message_chat_id_message_id.json
-        filename = f"message_{reply.chat.id}_{reply.id}.json"
-
-        message = await client.send_message(
-            "me", "📄 Exporting message to JSON..."
-        )
-
-        await message.edit("📄 Generating JSON file...")
-
-        # Convert message to dict and then to JSON
+        Usage: .json (reply to a message)
+        """
+        command_message = message
+        temp_file = None
         try:
-            message_dict = json.loads(str(reply))
-        except:
-            # Fallback: use vars() to get all attributes
-            message_dict = {
-                key: str(value)
-                if not isinstance(
-                    value, (dict, list, str, int, float, bool, type(None))
+            reply = command_message.reply_to_message
+            if reply is None:
+                await ctx.edit(
+                    "❌ Reply to a message to export it as JSON",
+                    message=command_message,
                 )
-                else value
-                for key, value in vars(reply).items()
-                if not key.startswith("_")
-            }
+                return
 
-        # Write to JSON file
-        json_content = json.dumps(
-            message_dict, indent=4, ensure_ascii=False, default=str
-        )
+            message_dict = json.loads(str(reply))
+            json_content = json.dumps(
+                message_dict, indent=4, ensure_ascii=False, default=str
+            )
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", suffix=".json", delete=False
+            ) as output:
+                output.write(json_content)
+                temp_file = output.name
 
-        # Save to temporary file
-        temp_file = f"/tmp/{filename}"
-        with open(temp_file, "w", encoding="utf-8") as f:
-            f.write(json_content)
-
-        # Send as document
-        await client.send_document(
-            chat_id=message.chat.id,
-            document=temp_file,
-            caption=f"📄 Message JSON Export\n**Chat ID:** `{reply.chat.id}`\n**Message ID:** `{reply.id}`",
-        )
-
-        # Delete command message
-        await message.delete()
-
-        # Clean up temp file
-        import os
-
-        try:
-            os.remove(temp_file)
-        except:
-            pass
-
-        logger.info(f"Exported message {reply.id} to JSON")
-
-    except Exception as e:
-        error_msg = f"❌ Error exporting JSON: {str(e)}"
-        await message.edit(error_msg)
-        logger.error(f"Error in json command: {e}")
+            await client.send_document(
+                chat_id=command_message.chat.id,
+                document=temp_file,
+                file_name=f"message_{reply.chat.id}_{reply.id}.json",
+                caption=(
+                    f"📄 Message JSON Export\n**Chat ID:** `{reply.chat.id}`\n"
+                    f"**Message ID:** `{reply.id}`"
+                ),
+            )
+            await command_message.delete()
+            logger.info("Exported message %s to JSON", reply.id)
+        except Exception as error:
+            await ctx.edit(
+                f"❌ Error exporting JSON: {error}", message=command_message
+            )
+            logger.error("Error in json command: %s", error)
+        finally:
+            if temp_file is not None:
+                try:
+                    os.remove(temp_file)
+                except OSError:
+                    logger.warning("Could not remove temporary JSON export %s", temp_file)

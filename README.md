@@ -183,7 +183,8 @@ Automations are **per chat**, stored in `.automessages.json`, and reloaded on re
 - **`.packs search <keyword>`** - Search all public Telegram sticker packs by keyword and get their add links
 - **`.start_sticker_monitor`** - Auto-kang every sticker you send in this chat
 - **`.stop_sticker_monitor`** - Stop the sticker monitor in all chats
-- **`.help_sticker`** - Show the sticker plugin's detailed help
+- **`.sticker`** - Convert replied media into a sticker
+- **`.stickerdebug`** - Reply to a sticker to export its metadata as JSON
 
 ### ✅ Todoist
 
@@ -331,6 +332,19 @@ For personal/sensitive plugins, create them in `private_plugins/` directory:
 After adding/modifying plugins:
 - Use `.reload` command in Telegram, or
 - Restart the bot with `./run.sh`
+
+## 💖 Credits / Inspiration
+
+NekoUB was inspired by these userbot projects. Thank you to their maintainers and contributors:
+
+- [Ultroid](https://github.com/TeamUltroid/Ultroid) — I discovered it later, thought it was cool, and used modified forks.
+- [Catuserbot](https://github.com/tgcatub/catuserbot) — I used it a lot, moved to Ultroid later, and then came back to Catuserbot.
+- [UniBorg](https://github.com/SpEcHiDe/UniBorg)
+- [Userge](https://github.com/UsergeTeam/Userge) — my first Telegram userbot.
+
+I also remember **UsergeX**, which had some extras I loved, and **UltroidX**. I couldn't find either when writing this, so I'm mentioning them by name without repo links.
+
+I used to keep forks of these projects for my customizations, manually sync them with upstream, and look through what changed and how things worked whenever I had free time. I lost those forks after GitHub blocked my Actions because one repository was using them incorrectly. To get unblocked, I removed all the userbot repositories I had, including private ones, along with some other repositories. Remembering these projects while looking them up to add here brought back memories of the 2020–2021 era. ❤️‍🩹
 
 ## ⚠️ Disclaimer
 

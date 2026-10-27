@@ -1,13 +1,14 @@
-import time
+import html
 import platform
-from datetime import datetime
-from pyrogram import filters
+import time
+from pyrogram import Client, __version__ as pyrogram_version
+from pyrogram.enums import ParseMode
 from pyrogram.types import Message
-from pyrogram import __version__ as pyrogram_version
 
 import config
 import main
-from utils import get_logger, continue_propagation
+from core.plugins import Example, ParsedOptions, Plugin, PluginContext, handlers as h
+from utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -35,49 +36,64 @@ def get_uptime() -> str:
     return uptime_str.strip()
 
 
-@main.app.on_message(
-    filters.me & filters.command("alive", prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
-async def alive_command(client, message: Message):
-    """Show userbot status with cute neko theme.
+class AlivePlugin(Plugin):
+    id = "alive"
+    category = "Core"
+    description = "Show userbot status, uptime, plugins and system info."
 
-    Usage: .alive
-    """
-    try:
-        # Get user info
-        me = await client.get_me()
-        username = f"@{me.username}" if me.username else "No username"
+    @h.command(
+        "alive",
+        description=description,
+        examples=(Example("{cmd}"),),
+        prefixes=config.CMD_PREFIX,
+    )
+    async def alive_command(
+        self,
+        client: Client,
+        message: Message,
+        ctx: PluginContext["AlivePlugin"],
+        args: ParsedOptions,
+    ) -> None:
+        """Show userbot status with cute neko theme.
 
-        # Build alive message with neko theme
-        alive_msg = "**╔═══════════════════╗**\n"
-        alive_msg += "**║   NekoUB Userbot   ║**\n"
-        alive_msg += "**╚═══════════════════╝**\n\n"
+        Usage: .alive
+        """
+        try:
+            # Get user info
+            me = await client.get_me()
+            username = f"@{me.username}" if me.username else "No username"
 
-        alive_msg += "**🐱 Nya~ I'm alive and ready!**\n\n"
+            # Build an HTML status message with a monospaced banner.
+            header = """
+╔═══════════════════╗
+║       NekoUB Userbot       ║
+╚═══════════════════╝
+"""
+            alive_msg = f"{header}\n\n"
+            alive_msg += "<b>🐱 Nya~ I'm alive and ready!</b>\n\n"
 
-        alive_msg += "**┌─ Owner Info ─┐**\n"
-        alive_msg += f"**│** 👤 **Name:** {me.first_name}\n"
-        alive_msg += f"**│** 🆔 **ID:** `{me.id}`\n"
-        alive_msg += f"**│** 📝 **Username:** {username}\n"
-        alive_msg += "**└───────────────┘**\n\n"
+            alive_msg += "<b>┌─ Owner Info ─┐</b>\n"
+            alive_msg += f"│ 👤 <b>Name:</b> {html.escape(me.first_name)}\n"
+            alive_msg += f"│ 🆔 <b>ID:</b> <code>{me.id}</code>\n"
+            alive_msg += f"│ 📝 <b>Username:</b> {html.escape(username)}\n"
+            alive_msg += "└───────────────┘\n\n"
 
-        alive_msg += "**┌─ System Info ─┐**\n"
-        alive_msg += f"**│** ⏰ **Uptime:** {get_uptime()}\n"
-        alive_msg += f"**│** 🔌 **Plugins:** {len(main.loaded_plugins)}\n"
-        alive_msg += f"**│** 📚 **Pyrogram:** {pyrogram_version}\n"
-        alive_msg += f"**│** 🐍 **Python:** {platform.python_version()}\n"
-        alive_msg += f"**│** 💻 **Platform:** {platform.system()}\n"
-        alive_msg += "**└───────────────┘**\n\n"
+            alive_msg += "<b>┌─ System Info ─┐</b>\n"
+            alive_msg += f"│ ⏰ <b>Uptime:</b> {get_uptime()}\n"
+            alive_msg += f"│ 🔌 <b>Plugins:</b> {len(main.loaded_plugins)}\n"
+            alive_msg += f"│ 📚 <b>Pyrogram:</b> {pyrogram_version}\n"
+            alive_msg += f"│ 🐍 <b>Python:</b> {platform.python_version()}\n"
+            alive_msg += f"│ 💻 <b>Platform:</b> {html.escape(platform.system())}\n"
+            alive_msg += "└───────────────┘\n\n"
 
-        alive_msg += f"**✨ Prefix:** `{config.CMD_PREFIX}`\n"
-        alive_msg += "**💝 Made with love by NekoUB**"
+            alive_msg += f"<b>✨ Prefix:</b> <code>{html.escape(config.CMD_PREFIX)}</code>\n"
+            alive_msg += "<b>💝 Made with love by NekoUB</b>"
 
-        await message.edit(alive_msg)
+            await message.edit(alive_msg, parse_mode=ParseMode.HTML)
 
-        logger.info("Alive command executed")
+            logger.info("Alive command executed")
 
-    except Exception as e:
-        error_msg = f"❌ Error in alive command:\n{str(e)}"
-        await message.edit(error_msg)
-        logger.error(f"Error in alive command: {e}")
+        except Exception as e:
+            error_msg = f"❌ Error in alive command:\n{str(e)}"
+            await message.edit(error_msg)
+            logger.error(f"Error in alive command: {e}")

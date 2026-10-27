@@ -1,65 +1,80 @@
-from pyrogram import filters
+from pyrogram import Client
 from pyrogram.types import Message
 
 import config
 import main
-from utils import get_logger, continue_propagation
+from core.plugins import Example, ParsedOptions, Plugin, PluginContext, handlers as h
+from utils import get_logger
 
 logger = get_logger(__name__)
 
 
-@main.app.on_message(
-    filters.me & filters.command("kill", prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
-async def kill_command(client, message: Message):
-    """Kill running exec/eval commands.
+class KillPlugin(Plugin):
+    id = "kill"
+    category = "Utility"
+    description = "Stop all running exec/eval tasks."
 
-    Usage: .kill
-    """
-    try:
-        if not main.running_tasks:
-            await message.edit("❌ No running tasks to kill")
-            return
+    @h.command(
+        "kill",
+        description=description,
+        examples=(Example("{cmd}"),),
+        prefixes=config.CMD_PREFIX,
+        parse_mode="markdown",
+    )
+    async def kill_command(
+        self,
+        client: Client,
+        message: Message,
+        ctx: PluginContext["KillPlugin"],
+        args: ParsedOptions,
+    ) -> None:
+        """Kill running exec/eval commands.
 
-        killed_tasks = []
+        Usage: .kill
+        """
+        try:
+            if not main.running_tasks:
+                await ctx.edit("❌ No running tasks to kill", message=message)
+                return
 
-        # Cancel all running tasks
-        for task_id, task_info in list(main.running_tasks.items()):
-            task = task_info["task"]
-            task_type = task_info["type"]
-            task_msg = task_info["message"]
+            killed_tasks = []
 
-            if not task.done():
-                task.cancel()
-                killed_tasks.append(
-                    f"`{task_type}` in chat `{task_msg.chat.id}`"
-                )
-                logger.info(
-                    f"Killed {task_type} task in chat {task_msg.chat.id}"
-                )
+            # Cancel all running tasks
+            for task_id, task_info in list(main.running_tasks.items()):
+                task = task_info["task"]
+                task_type = task_info["type"]
+                task_msg = task_info["message"]
 
-                # Update the original message
-                try:
-                    await task_msg.edit(
-                        f"❌ **{task_type.upper()} killed by user**"
+                if not task.done():
+                    task.cancel()
+                    killed_tasks.append(
+                        f"`{task_type}` in chat `{task_msg.chat.id}`"
                     )
-                except Exception as e:
-                    logger.warning(f"Could not update killed task message: {e}")
+                    logger.info(
+                        f"Killed {task_type} task in chat {task_msg.chat.id}"
+                    )
 
-            # Remove from tracking
-            del main.running_tasks[task_id]
+                    # Update the original message
+                    try:
+                        await task_msg.edit(
+                            f"❌ **{task_type.upper()} killed by user**"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Could not update killed task message: {e}")
 
-        if killed_tasks:
-            output = f"🔪 **Killed {len(killed_tasks)} task(s):**\n\n"
-            output += "\n".join(f"• {task}" for task in killed_tasks)
-            await message.edit(output)
-        else:
-            await message.edit("ℹ️ All tasks were already completed")
+                # Remove from tracking
+                del main.running_tasks[task_id]
 
-        logger.info(f"Killed {len(killed_tasks)} tasks")
+            if killed_tasks:
+                output = f"🔪 **Killed {len(killed_tasks)} task(s):**\n\n"
+                output += "\n".join(f"• {task}" for task in killed_tasks)
+                await ctx.edit(output, message=message)
+            else:
+                await message.edit("ℹ️ All tasks were already completed")
 
-    except Exception as e:
-        error_msg = f"❌ Error killing tasks:\n{str(e)}"
-        await message.edit(error_msg)
-        logger.error(f"Error in kill command: {e}")
+            logger.info(f"Killed {len(killed_tasks)} tasks")
+
+        except Exception as e:
+            error_msg = f"❌ Error killing tasks:\n{str(e)}"
+            await message.edit(error_msg)
+            logger.error(f"Error in kill command: {e}")

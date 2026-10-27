@@ -9,15 +9,14 @@ from pathlib import Path
 
 import edge_tts
 import httpx
-from pyrogram import filters
+from pyrogram import Client, filters
 from pyrogram.enums import ChatAction, ParseMode
 from pyrogram.types import Message
 
 import config
-import main
+from core.plugins import Example, Option, Plugin, PluginContext, ParsedOptions, handlers as h
 from utils.media import _ffmpeg
 from utils import (
-    continue_propagation,
     get_logger,
     is_user_premium,
     split_text_into_chunks,
@@ -31,6 +30,14 @@ MIN_SPEED = 0.5
 MAX_SPEED = 2.0
 FREE_MESSAGE_LIMIT = 3700
 PREMIUM_MESSAGE_LIMIT = 7700
+
+TTS_OPTIONS = (
+    Option("multi", short="-m", aliases=("-multi", "--multi"), action="store_true", help="Enable speaker-labelled dialogue mode."),
+    Option("voice", short="-v", aliases=("-voice", "--voice"), type=str, help="Select a Kokoro voice or Edge TTS."),
+    Option("speed", short="-s", aliases=("-speed", "--speed"), type=float, help="Set speech speed from 0.5 to 2."),
+    Option("info", short="-i", aliases=("-info", "--info"), action="store_true", help="Add generation details to the voice note caption."),
+    Option("transcript", short="-t", aliases=("-transcript", "--transcript"), action="store_true", help="Send the input text in a reply."),
+)
 
 # Display name and flag as shown by the Kokoro Space.
 VOICE_LIST = (
@@ -181,12 +188,15 @@ def _resolve_voice(value: str) -> str:
 
 
 def _parse_command(raw: str) -> tuple[bool, str, float, bool, bool, str]:
-    """Parse leading flags while preserving dialogue line boundaries."""
-    multi = info = transcript = False
-    voice = "am_adam"
-    voice_selected = False
-    speed = 1.0
-    speed_selected = False
+    """Parse typed leading flags while preserving dialogue line boundaries."""
+    parsed_values = {
+        "multi": False,
+        "voice": None,
+        "speed": None,
+        "info": False,
+        "transcript": False,
+    }
+    seen: set[str] = set()
     position = 0
     while position < len(raw):
         while position < len(raw) and raw[position].isspace():
@@ -194,40 +204,55 @@ def _parse_command(raw: str) -> tuple[bool, str, float, bool, bool, str]:
         match = re.match(r"\S+", raw[position:])
         if not match:
             break
-        token = match.group(0).lower()
-        next_position = position + match.end()
-        if token in ("-m", "-multi"):
-            multi = True
-            position = next_position
-        elif token in ("-i", "-info"):
-            info = True
-            position = next_position
-        elif token in ("-t", "-transcript"):
-            transcript = True
-            position = next_position
-        elif token in ("-v", "-voice", "-s", "-speed"):
-            option = token
-            while next_position < len(raw) and raw[next_position].isspace():
-                next_position += 1
-            value_match = re.match(r"\S+", raw[next_position:])
-            if not value_match:
-                raise ValueError(f"Specify a value after {option}.")
-            value = value_match.group(0)
-            position = next_position + value_match.end()
-            if option in ("-v", "-voice"):
-                voice = _resolve_voice(value)
-                voice_selected = True
-            else:
-                speed = _speed(value)
-                speed_selected = True
-        else:
+        token = match.group(0)
+        option_token, separator, attached = token.partition("=")
+        option = next(
+            (
+                item
+                for item in TTS_OPTIONS
+                if option_token in (item.short, *item.aliases)
+                or option_token == f"--{item.name.replace('_', '-')}"
+            ),
+            None,
+        )
+        if option is None:
             break
+        if option.name in seen:
+            raise ValueError(f"Option {option_token} was provided more than once.")
+        value_start = position + match.end()
+        if option.action == "store_true":
+            if separator:
+                raise ValueError(f"Option {option_token} does not take a value.")
+            parsed_values[option.name] = True
+            position = value_start
+        else:
+            if separator:
+                value = attached
+            else:
+                while value_start < len(raw) and raw[value_start].isspace():
+                    value_start += 1
+                value_match = re.match(r"\S+", raw[value_start:])
+                if not value_match:
+                    raise ValueError(f"Specify a value after {option_token}.")
+                value = value_match.group(0)
+                value_start += value_match.end()
+            try:
+                parsed_values[option.name] = option.type(value)
+            except ValueError as exc:
+                raise ValueError(f"Option {option_token} must be a valid {option.type.__name__}.") from exc
+            position = value_start
+        seen.add(option.name)
     text = raw[position:].strip()
+    multi = parsed_values["multi"]
+    voice_selected = parsed_values["voice"] is not None
+    speed_selected = parsed_values["speed"] is not None
+    voice = _resolve_voice(parsed_values["voice"] or "adam")
+    speed = _speed(str(parsed_values["speed"] if speed_selected else 1.0))
     if multi and (voice_selected or speed_selected):
         raise ValueError(
             "Multi mode cannot use global -v or -s; set the voice and optional speed on each speaker line."
         )
-    return multi, voice, speed, info, transcript, text
+    return multi, voice, speed, parsed_values["info"], parsed_values["transcript"], text
 
 
 def _parse_dialogue(text: str) -> list[tuple[str, float, str]]:
@@ -488,89 +513,109 @@ async def _show_error(client, chat_id: int, reply_id: int | None, error: str):
     )
 
 
-@main.app.on_message(
-    filters.me & filters.command(["tts", "say"], prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
-async def tts_command(client, message: Message):
-    raw = (message.text or "").split(maxsplit=1)
-    raw_args = raw[1] if len(raw) > 1 else ""
-    if not raw_args.strip() and not message.reply_to_message:
-        await message.edit(_format_help(), parse_mode=ParseMode.HTML)
-        return
+class TTSPlugin(Plugin):
+    id = "tts"
+    category = "Media"
+    description = "Convert text to speech with Kokoro or Edge TTS."
 
-    reply = message.reply_to_message
-    chat_id = message.chat.id
-    command_id = message.id
-    original_reply_id = reply.id if reply else None
-    reply_text = (reply.text or reply.caption or "") if reply else ""
-    try:
-        await message.delete()
-    except Exception as exc:
-        logger.warning(f"[TTS] Could not delete command message: {exc}")
+    @h.command(
+        "say",
+        aliases=("tts",),
+        description="Convert text to speech.",
+        help_options=TTS_OPTIONS,
+        examples=(Example("{cmd} Hello, how are you?"), Example("{cmd} -v heart Hello there!")),
+        prefixes=config.CMD_PREFIX,
+        filters=filters.me,
+    )
+    async def tts_command(
+        self,
+        client: Client,
+        message: Message,
+        ctx: PluginContext["TTSPlugin"],
+        args: ParsedOptions,
+    ) -> None:
+        raw = (message.text or "").split(maxsplit=1)
+        raw_args = raw[1] if len(raw) > 1 else ""
+        if not raw_args.strip() and not message.reply_to_message:
+            await message.edit(_format_help(), parse_mode=ParseMode.HTML)
+            return
 
-    try:
-        multi, voice, speed, info, transcript, text = _parse_command(raw_args)
-        if not text and reply_text:
-            text = reply_text
-        if not text:
-            raise ValueError("Provide text or reply to a text message.")
-        if multi:
-            turns = _parse_dialogue(text)
-        else:
-            turns = [(voice, speed, text)]
-    except ValueError as exc:
-        await _show_error(client, chat_id, original_reply_id or command_id, str(exc))
-        return
+        reply = message.reply_to_message
+        chat_id = message.chat.id
+        command_id = message.id
+        original_reply_id = reply.id if reply else None
+        reply_text = (reply.text or reply.caption or "") if reply else ""
+        try:
+            multi, voice, speed, info, transcript, text = _parse_command(raw_args)
+        except ValueError as exc:
+            await _show_error(client, chat_id, original_reply_id or command_id, str(exc))
+            return
+        try:
+            await message.delete()
+        except Exception as exc:
+            logger.warning(f"[TTS] Could not delete command message: {exc}")
 
-    stop_action = asyncio.Event()
-    action_task = asyncio.create_task(_keep_recording_action(client, chat_id, stop_action))
-    started = asyncio.get_running_loop().time()
-    try:
-        with tempfile.TemporaryDirectory(prefix="nekoub-tts-") as folder:
-            output = await _synthesize_turns(turns, Path(folder))
-            duration, waveform = _voice_metadata(output)
-            elapsed = asyncio.get_running_loop().time() - started
-            duration_text = f"{duration // 60}:{duration % 60:02d}"
+        try:
+            if not text and reply_text:
+                text = reply_text
+            if not text:
+                raise ValueError("Provide text or reply to a text message.")
             if multi:
-                voices = []
-                for turn_voice, _, _ in turns:
-                    label = "Edge TTS" if turn_voice == EDGE_VOICE else VOICE_NAMES[turn_voice]
-                    if label not in voices:
-                        voices.append(label)
-                voice_label = ", ".join(voices)
+                turns = _parse_dialogue(text)
             else:
-                voice_label = "Edge TTS" if voice == EDGE_VOICE else VOICE_NAMES[voice]
-            metadata = (
-                f"Kokoro 82M{' multi-voice' if multi else ''} · CPU · "
-                f"{len(text)} chars · {voice_label} · generated in "
-                f"{elapsed:.1f}s · speech {duration_text}"
-                if voice != EDGE_VOICE
-                else (
-                    f"Edge TTS · {len(text)} chars · {voice_label} · "
-                    f"generated in {elapsed:.1f}s · speech {duration_text}"
+                turns = [(voice, speed, text)]
+        except ValueError as exc:
+            await _show_error(client, chat_id, original_reply_id or command_id, str(exc))
+            return
+
+        stop_action = asyncio.Event()
+        action_task = asyncio.create_task(_keep_recording_action(client, chat_id, stop_action))
+        started = asyncio.get_running_loop().time()
+        try:
+            with tempfile.TemporaryDirectory(prefix="nekoub-tts-") as folder:
+                output = await _synthesize_turns(turns, Path(folder))
+                duration, waveform = _voice_metadata(output)
+                elapsed = asyncio.get_running_loop().time() - started
+                duration_text = f"{duration // 60}:{duration % 60:02d}"
+                if multi:
+                    voices = []
+                    for turn_voice, _, _ in turns:
+                        label = "Edge TTS" if turn_voice == EDGE_VOICE else VOICE_NAMES[turn_voice]
+                        if label not in voices:
+                            voices.append(label)
+                    voice_label = ", ".join(voices)
+                else:
+                    voice_label = "Edge TTS" if voice == EDGE_VOICE else VOICE_NAMES[voice]
+                metadata = (
+                    f"Kokoro 82M{' multi-voice' if multi else ''} · CPU · "
+                    f"{len(text)} chars · {voice_label} · generated in "
+                    f"{elapsed:.1f}s · speech {duration_text}"
+                    if voice != EDGE_VOICE
+                    else (
+                        f"Edge TTS · {len(text)} chars · {voice_label} · "
+                        f"generated in {elapsed:.1f}s · speech {duration_text}"
+                    )
                 )
-            )
-            caption = metadata if info else ""
-            if info and transcript:
-                caption_limit = 4090 if await _get_premium_status(client) else 1020
-                if len(text) + len(metadata) + 2 <= caption_limit:
-                    caption = f"{metadata}\n\n{_esc(text)}"
-            voice_message = await client.send_voice(
-                chat_id,
-                str(output),
-                caption=caption,
-                parse_mode=ParseMode.HTML,
-                duration=duration,
-                waveform=waveform,
-                reply_to_message_id=original_reply_id,
-            )
-            if transcript:
-                await _send_transcription(client, voice_message, text)
-    except Exception as exc:
-        logger.error(f"[TTS] Synthesis or sending failed: {exc}", exc_info=True)
-        await _show_error(client, chat_id, original_reply_id or command_id, f"TTS failed: {type(exc).__name__}: {exc}")
-    finally:
-        stop_action.set()
-        action_task.cancel()
-        await asyncio.gather(action_task, return_exceptions=True)
+                caption = metadata if info else ""
+                if info and transcript:
+                    caption_limit = 4090 if await _get_premium_status(client) else 1020
+                    if len(text) + len(metadata) + 2 <= caption_limit:
+                        caption = f"{metadata}\n\n{_esc(text)}"
+                voice_message = await client.send_voice(
+                    chat_id,
+                    str(output),
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                    duration=duration,
+                    waveform=waveform,
+                    reply_to_message_id=original_reply_id,
+                )
+                if transcript:
+                    await _send_transcription(client, voice_message, text)
+        except Exception as exc:
+            logger.error(f"[TTS] Synthesis or sending failed: {exc}", exc_info=True)
+            await _show_error(client, chat_id, original_reply_id or command_id, f"TTS failed: {type(exc).__name__}: {exc}")
+        finally:
+            stop_action.set()
+            action_task.cancel()
+            await asyncio.gather(action_task, return_exceptions=True)

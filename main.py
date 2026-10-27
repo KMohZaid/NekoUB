@@ -1,22 +1,31 @@
 import asyncio
 import importlib.util
+import logging
 import os
 import signal
 import sys
 import threading
 from pathlib import Path
 
-from pyrogram import Client
+from pyrogram import idle
 from pyrogram.enums import ParseMode
 
 import config
+from core.plugins import Plugin
+from core.plugins.client import PluginClient
+from core.plugins.manager import PluginManager
 from utils import get_logger
 
 logger = get_logger(__name__)
+logging.getLogger("pyrogram.session.session").setLevel(logging.WARNING)
 
 # Global variables
-app = None
+app: PluginClient | None = None
+bot: PluginClient | None = None
 loaded_plugins = {}
+public_plugin_status: dict[str, dict[str, str | None]] = {}
+loaded_plugin_handlers = {}  # Track legacy public plugin handlers by module.
+plugin_manager = None
 running_tasks = {}  # Track running exec/eval tasks for .kill command
 
 
@@ -42,12 +51,13 @@ def signal_handler(signum, frame):
         logger.debug(f"Error cancelling tasks: {e}")
 
     # Try graceful stop
-    if app and hasattr(app, "stop"):
-        try:
-            app.stop()
-            logger.info("Bot stopped successfully")
-        except Exception as e:
-            logger.error(f"Error stopping bot: {e}")
+    for client in (bot, app):
+        if client and hasattr(client, "stop"):
+            try:
+                client.stop()
+                logger.info("Bot client stopped successfully")
+            except Exception as e:
+                logger.error(f"Error stopping bot client: {e}")
 
     # Force exit after 2 seconds if still running
     def hard_exit():
@@ -77,7 +87,7 @@ def get_parse_mode():
 
 
 def load_plugin(plugin_path: Path) -> bool:
-    """Load a single plugin from file path."""
+    """Load a public legacy plugin or activate a managed plugin declaration."""
     try:
         plugin_name = plugin_path.stem
 
@@ -85,13 +95,11 @@ def load_plugin(plugin_path: Path) -> bool:
         if plugin_name.startswith("__") or not plugin_path.suffix == ".py":
             return False
 
-        # Determine the module prefix based on parent directory
-        parent_dir = plugin_path.parent.name
-        module_prefix = (
-            parent_dir
-            if parent_dir in ["plugins", "private_plugins"]
-            else "plugins"
-        )
+        public_plugin_dir = Path(__file__).parent / "plugins"
+        if plugin_path.parent.resolve() != public_plugin_dir.resolve():
+            logger.warning("Plugin loading is restricted to the public plugins directory")
+            return False
+        module_prefix = "plugins"
 
         # Load the module
         spec = importlib.util.spec_from_file_location(
@@ -102,38 +110,97 @@ def load_plugin(plugin_path: Path) -> bool:
         # Add to sys.modules so it can import other modules
         sys.modules[f"{module_prefix}.{plugin_name}"] = module
 
+        # Record dispatcher changes so legacy public modules can be reloaded
+        # without clearing handlers owned by other modules.
+        dispatcher = getattr(app, "dispatcher", None) if app else None
+        before = {
+            group: {id(handler) for handler in handlers}
+            for group, handlers in getattr(dispatcher, "groups", {}).items()
+        }
         # Execute the module
-        spec.loader.exec_module(module)
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            if dispatcher is not None:
+                for group, handlers in list(dispatcher.groups.items()):
+                    prior = before.get(group, set())
+                    for handler in list(handlers):
+                        if id(handler) not in prior:
+                            app.remove_handler(handler, group)
+            sys.modules.pop(f"{module_prefix}.{plugin_name}", None)
+            raise
+
+        managed_classes = [
+            value
+            for value in vars(module).values()
+            if isinstance(value, type)
+            and issubclass(value, Plugin)
+            and value is not Plugin
+            and value.__module__ == module.__name__
+        ]
+        if managed_classes:
+            if plugin_manager is None:
+                raise RuntimeError("Managed plugin manager is not initialized")
+            if len(managed_classes) != 1:
+                raise ValueError(
+                    f"{plugin_path.name}: expected exactly one Plugin subclass, "
+                    f"found {len(managed_classes)}"
+                )
+            plugin_instance = managed_classes[0]()
+            disabled_reason = plugin_instance.disabled_reason()
+            if disabled_reason:
+                if dispatcher is not None:
+                    for group, handlers in list(dispatcher.groups.items()):
+                        prior = before.get(group, set())
+                        for handler in list(handlers):
+                            if id(handler) not in prior:
+                                app.remove_handler(handler, group)
+                sys.modules.pop(f"{module_prefix}.{plugin_name}", None)
+                public_plugin_status[plugin_path.name] = {
+                    "state": "skipped",
+                    "note": str(disabled_reason),
+                }
+                logger.info("Skipped plugin %s: %s", plugin_path.name, disabled_reason)
+                return False
+            plugin_manager.activate(plugin_instance, module_name=module.__name__, module=module, source_path=plugin_path)
+        elif dispatcher is not None:
+            registrations = []
+            for group, handlers in dispatcher.groups.items():
+                prior = before.get(group, set())
+                registrations.extend(
+                    (handler, group)
+                    for handler in handlers
+                    if id(handler) not in prior
+                )
+            loaded_plugin_handlers[plugin_name] = registrations
 
         # Store the loaded module
         loaded_plugins[plugin_name] = module
 
         logger.info(f"Loaded plugin: {plugin_name}")
+        public_plugin_status[plugin_path.name] = {"state": "loaded", "note": None}
         return True
-
     except Exception as e:
+        public_plugin_status[plugin_path.name] = {
+            "state": "failed",
+            "note": f"{type(e).__name__}: {e}",
+        }
         logger.error(
             f"Failed to load plugin {plugin_path.name}: {e}", exc_info=True
         )
         return False
 
 
-def load_all_plugins():
-    """Load all plugins from the plugins and private_plugins directories."""
+def load_all_plugins(*, skip_paths: set[Path] | None = None):
+    """Load public plugins, optionally skipping already managed source files."""
+    skip_paths = {path.resolve() for path in (skip_paths or set())}
     global loaded_plugins
-    loaded_plugins.clear()
 
-    # Load from both plugins and private_plugins directories
-    plugin_dirs = [
-        ("plugins", Path(__file__).parent / "plugins"),
-        ("private_plugins", Path(__file__).parent / "private_plugins"),
-    ]
+    # Discover public plugins only. private_plugins is intentionally excluded.
+    plugin_dirs = [("plugins", Path(__file__).parent / "plugins")]
 
     public_loaded = 0
     public_total = 0
-    private_loaded = 0
-    private_total = 0
-
     for dir_type, plugins_dir in plugin_dirs:
         if not plugins_dir.exists():
             if dir_type == "plugins":
@@ -144,20 +211,26 @@ def load_all_plugins():
         all_files = list(plugins_dir.glob("*.py"))
 
         # Filter out __init__.py and other excluded files
-        plugin_files = [f for f in all_files if not f.stem.startswith("__")]
+        plugin_files = [
+            f for f in all_files
+            if not f.stem.startswith("_") and f.suffix == ".py"
+        ]
+        for plugin_file in plugin_files:
+            public_plugin_status.setdefault(
+                plugin_file.name,
+                {"state": "skipped", "note": "Plugin was not loaded"},
+            )
 
         loaded_count = 0
         for plugin_file in plugin_files:
+            if plugin_file.resolve() in skip_paths:
+                continue
             if load_plugin(plugin_file):
                 loaded_count += 1
 
         # Track separately
-        if dir_type == "plugins":
-            public_loaded = loaded_count
-            public_total = len(plugin_files)
-        else:
-            private_loaded = loaded_count
-            private_total = len(plugin_files)
+        public_loaded = loaded_count
+        public_total = len(plugin_files)
 
         if plugin_files:
             logger.info(
@@ -165,52 +238,61 @@ def load_all_plugins():
             )
 
     # Log totals
-    total_loaded = public_loaded + private_loaded
-    total_files = public_total + private_total
-    logger.info(
-        f"Total: {total_loaded}/{total_files} plugins ({public_loaded} public, {private_loaded} private)"
-    )
+    logger.info("Loaded %s/%s public plugins", public_loaded, public_total)
 
 
 def reload_plugins():
-    """Reload all plugins."""
-    # Remove old handlers by clearing each group
+    """Reload managed and legacy public plugins without clearing unrelated handlers."""
+    managed_paths: set[Path] = set()
+    if plugin_manager is not None:
+        for plugin_id in list(plugin_manager.active):
+            active = plugin_manager.active[plugin_id]
+            if active.source_path is not None:
+                managed_paths.add(active.source_path.resolve())
+            try:
+                plugin_manager.reload(plugin_id)
+            except Exception as e:
+                logger.error(
+                    "Failed to reload managed plugin %s: %s",
+                    plugin_id,
+                    e,
+                    exc_info=True,
+                )
+
+    # Remove only handlers installed by legacy plugin imports.
     if app and hasattr(app, "dispatcher"):
-        try:
-            # Clear handlers from each group
-            for group in list(app.dispatcher.groups.keys()):
-                if group in app.dispatcher.groups:
-                    app.dispatcher.groups[group].clear()
-            logger.info("Cleared all handler groups")
-        except Exception as e:
-            logger.error(f"Error clearing handler groups: {e}")
+        for module_name, registrations in list(loaded_plugin_handlers.items()):
+            for handler, group in reversed(registrations):
+                try:
+                    app.remove_handler(handler, group)
+                except Exception:
+                    logger.exception("Failed removing legacy handler from %s", module_name)
 
-    # Remove loaded modules from sys.modules
-    modules_to_remove = []
-    for module_name in list(sys.modules.keys()):
-        if module_name.startswith("plugins.") or module_name.startswith(
-            "private_plugins."
-        ):
-            modules_to_remove.append(module_name)
+    for module in loaded_plugins.values():
+        module_name = getattr(module, "__name__", "")
+        if module_name.startswith("plugins."):
+            sys.modules.pop(module_name, None)
+    loaded_plugins.clear()
+    loaded_plugin_handlers.clear()
+    if plugin_manager is not None:
+        loaded_plugins.update(
+            {
+                active.source_path.stem: active.module
+                for active in plugin_manager.active.values()
+                if active.source_path is not None and active.module is not None
+            }
+        )
 
-    for module_name in modules_to_remove:
-        try:
-            del sys.modules[module_name]
-            logger.debug(f"Removed module: {module_name}")
-        except Exception as e:
-            logger.error(f"Error removing module {module_name}: {e}")
-
-    # Load plugins again
     try:
-        load_all_plugins()
+        load_all_plugins(skip_paths=managed_paths)
         logger.info("Plugins reloaded successfully")
     except Exception as e:
-        logger.error(f"Error loading plugins: {e}", exc_info=True)
+        logger.error("Error loading plugins: %s", e, exc_info=True)
 
 
 def main():
     """Main entry point."""
-    global app
+    global app, bot, plugin_manager
 
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
@@ -230,9 +312,9 @@ def main():
     # Get parse mode
     parse_mode = get_parse_mode()
 
-    # Create Pyrogram client with custom settings
+    # Create Kurigram client with custom settings
     if config.SESSION_STRING:
-        app = Client(
+        app = PluginClient(
             config.CLIENT_NAME,
             api_id=config.API_ID,
             api_hash=config.API_HASH,
@@ -242,7 +324,7 @@ def main():
             parse_mode=parse_mode,
         )
     else:
-        app = Client(
+        app = PluginClient(
             config.CLIENT_NAME,
             api_id=config.API_ID,
             api_hash=config.API_HASH,
@@ -250,6 +332,33 @@ def main():
             workers=config.WORKERS,
             parse_mode=parse_mode,
         )
+
+    # Optional assistant bot client. Userbot handlers still receive `client`;
+    # bot handlers are registered on this client and receive it as `bot`.
+    if config.BOT_TOKEN:
+        bot = PluginClient(
+            f"{config.CLIENT_NAME}_bot",
+            api_id=config.API_ID,
+            api_hash=config.API_HASH,
+            bot_token=config.BOT_TOKEN,
+            app_version=config.APP_VERSION,
+            workers=config.WORKERS,
+            parse_mode=parse_mode,
+        )
+
+    # Initialize the managed public plugin manager with both client roles.
+    plugin_manager = PluginManager(
+        app,
+        Path(__file__).parent / "plugins",
+        prefix=config.CMD_PREFIX,
+        config={
+            key: value
+            for key, value in vars(config).items()
+            if key.isupper() and key != "BOT_TOKEN"
+        },
+        user_client=app,
+        bot_client=bot,
+    )
 
     # Make app globally accessible for plugins
     sys.modules[__name__].app = app
@@ -263,17 +372,50 @@ def main():
     try:
         from utils.telegram_logging import install as install_log_forwarder
 
-        install_log_forwarder(app.loop, app)
+        install_log_forwarder(asyncio.get_event_loop(), app)
     except Exception as exc:
         logger.error(f"Could not install Telegram log forwarder: {exc}")
 
-    # Load all plugins
+    # Load public plugins only. Existing private plugins are intentionally excluded.
     load_all_plugins()
 
-    # Start the client
-    logger.info("🐱 NekoUB started successfully! Nya~")
-    print("\n✨ NekoUB is now online and ready to serve!\n")
-    app.run()
+    # Start clients together when assistant-bot support is configured.
+    async def start_clients() -> None:
+        clients = [app, bot] if bot is not None else [app]
+        await asyncio.gather(*(client.start() for client in clients))
+        try:
+            user = await app.get_me()
+            user_name = " ".join(
+                part for part in (user.first_name, user.last_name) if part
+            )
+            logger.info(
+                "Userbot account: %s (@%s), ID: %s",
+                user_name,
+                user.username or "no username",
+                user.id,
+            )
+            if bot is not None:
+                assistant = await bot.get_me()
+                assistant_name = " ".join(
+                    part
+                    for part in (assistant.first_name, assistant.last_name)
+                    if part
+                )
+                logger.info(
+                    "Assistant bot account: %s (@%s), ID: %s",
+                    assistant_name,
+                    assistant.username or "no username",
+                    assistant.id,
+                )
+            else:
+                logger.info("Assistant bot account: not configured")
+            logger.info("🐱 NekoUB started successfully! Nya~")
+            print("\n✨ NekoUB is now online and ready to serve!\n")
+            await idle()
+        finally:
+            await asyncio.gather(*(client.stop() for client in reversed(clients)))
+
+    asyncio.get_event_loop().run_until_complete(start_clients())
 
 
 if __name__ == "__main__":
