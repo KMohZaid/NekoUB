@@ -9,6 +9,18 @@ from plugins import ai
 
 
 class RecentContextTests(unittest.IsolatedAsyncioTestCase):
+    def test_ai_help_documents_context_count_option(self):
+        declarations = ai.AIPlugin.ai_command.__nekoub_handlers__
+        command_options = next(options.command for event, options in declarations if options.command)
+
+        context_option = next(
+            option for option in command_options.help_options if option.name == "context"
+        )
+        self.assertEqual(context_option.short, "-c")
+        self.assertIn("--context", context_option.aliases)
+        self.assertEqual(context_option.type, int)
+        self.assertIn("last n text messages", context_option.help.lower())
+
     async def test_fetches_latest_text_and_caption_messages_with_sender_names(self):
         messages = [
             SimpleNamespace(id=12, text=None, caption=None, from_user=SimpleNamespace(first_name="Media")),

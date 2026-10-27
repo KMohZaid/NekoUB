@@ -18,7 +18,7 @@ from pyrogram.types import (
 )
 
 import config
-from core.plugins import Example, Plugin, PluginContext, ParsedOptions, handlers as h
+from core.plugins import Example, Option, Plugin, PluginContext, ParsedOptions, handlers as h
 from utils import (
     get_logger,
     is_user_premium,
@@ -862,8 +862,18 @@ class AIPlugin(Plugin):
         ),
         examples=(
             Example("{cmd} Explain this error", "Ask the configured model a direct question."),
+            Example("{cmd} -c 10 Explain this error", "Include the last 10 text messages as context."),
             Example("{cmd} search latest Python release", "Search the web and get a summary with sources."),
             Example("{cmd} reset", "Clear the saved conversation for this chat."),
+        ),
+        help_options=(
+            Option(
+                "context",
+                short="-c",
+                type=int,
+                help="Include the last N text messages as context.",
+                aliases=("--context",),
+            ),
         ),
         prefixes=config.CMD_PREFIX,
         filters=filters.me,
