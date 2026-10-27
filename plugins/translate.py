@@ -100,7 +100,7 @@ async def translate_text(
 
 class TranslatePlugin(Plugin):
     id = "translate"
-    category = "Utility"
+    category = "AI & Tools"
     description = "Translate text, replied messages, and voice notes."
 
     @h.command(

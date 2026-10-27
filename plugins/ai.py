@@ -421,14 +421,24 @@ async def _ai_search(client, message: Message, query: str, chat_id: int) -> None
 
 class AIPlugin(Plugin):
     id = "ai"
-    category = "AI"
+    category = "AI & Tools"
     description = "Chat with the configured AI model and search the web."
 
     @h.command(
         "ai",
         aliases=("ask",),
-        description="Chat with the configured AI model or search the web.",
-        examples=(Example("{cmd} <prompt>"), Example("{cmd} search <query>")),
+        short_description="Chat with the configured AI or search the web.",
+        description=(
+            "Send a prompt to the configured AI model. Reply to a message to include it as context, "
+            "or use the fixed subcommands `search`, `reset`, `model`, and `sys` to search the web, "
+            "clear the conversation, or view and update AI settings. With no prompt, reply to a message "
+            "to ask about it."
+        ),
+        examples=(
+            Example("{cmd} Explain this error", "Ask the configured model a direct question."),
+            Example("{cmd} search latest Python release", "Search the web and get a summary with sources."),
+            Example("{cmd} reset", "Clear the saved conversation for this chat."),
+        ),
         prefixes=config.CMD_PREFIX,
         filters=filters.me,
     )

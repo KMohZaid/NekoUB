@@ -183,7 +183,8 @@ Automations are **per chat**, stored in `.automessages.json`, and reloaded on re
 - **`.packs search <keyword>`** - Search all public Telegram sticker packs by keyword and get their add links
 - **`.start_sticker_monitor`** - Auto-kang every sticker you send in this chat
 - **`.stop_sticker_monitor`** - Stop the sticker monitor in all chats
-- **`.help_sticker`** - Show the sticker plugin's detailed help
+- **`.sticker`** - Convert replied media into a sticker
+- **`.stickerdebug`** - Reply to a sticker to export its metadata as JSON
 
 ### ✅ Todoist
 

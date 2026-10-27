@@ -1,12 +1,13 @@
 import asyncio
 import importlib.util
+import logging
 import os
 import signal
 import sys
 import threading
 from pathlib import Path
 
-from pyrogram import compose
+from pyrogram import idle
 from pyrogram.enums import ParseMode
 
 import config
@@ -16,11 +17,13 @@ from core.plugins.manager import PluginManager
 from utils import get_logger
 
 logger = get_logger(__name__)
+logging.getLogger("pyrogram.session.session").setLevel(logging.WARNING)
 
 # Global variables
 app: PluginClient | None = None
 bot: PluginClient | None = None
 loaded_plugins = {}
+public_plugin_status: dict[str, dict[str, str | None]] = {}
 loaded_plugin_handlers = {}  # Track legacy public plugin handlers by module.
 plugin_manager = None
 running_tasks = {}  # Track running exec/eval tasks for .kill command
@@ -138,7 +141,28 @@ def load_plugin(plugin_path: Path) -> bool:
         if managed_classes:
             if plugin_manager is None:
                 raise RuntimeError("Managed plugin manager is not initialized")
-            plugin_manager.activate_module(module, plugin_path)
+            if len(managed_classes) != 1:
+                raise ValueError(
+                    f"{plugin_path.name}: expected exactly one Plugin subclass, "
+                    f"found {len(managed_classes)}"
+                )
+            plugin_instance = managed_classes[0]()
+            disabled_reason = plugin_instance.disabled_reason()
+            if disabled_reason:
+                if dispatcher is not None:
+                    for group, handlers in list(dispatcher.groups.items()):
+                        prior = before.get(group, set())
+                        for handler in list(handlers):
+                            if id(handler) not in prior:
+                                app.remove_handler(handler, group)
+                sys.modules.pop(f"{module_prefix}.{plugin_name}", None)
+                public_plugin_status[plugin_path.name] = {
+                    "state": "skipped",
+                    "note": str(disabled_reason),
+                }
+                logger.info("Skipped plugin %s: %s", plugin_path.name, disabled_reason)
+                return False
+            plugin_manager.activate(plugin_instance, module_name=module.__name__, module=module, source_path=plugin_path)
         elif dispatcher is not None:
             registrations = []
             for group, handlers in dispatcher.groups.items():
@@ -154,9 +178,13 @@ def load_plugin(plugin_path: Path) -> bool:
         loaded_plugins[plugin_name] = module
 
         logger.info(f"Loaded plugin: {plugin_name}")
+        public_plugin_status[plugin_path.name] = {"state": "loaded", "note": None}
         return True
-
     except Exception as e:
+        public_plugin_status[plugin_path.name] = {
+            "state": "failed",
+            "note": f"{type(e).__name__}: {e}",
+        }
         logger.error(
             f"Failed to load plugin {plugin_path.name}: {e}", exc_info=True
         )
@@ -187,6 +215,11 @@ def load_all_plugins(*, skip_paths: set[Path] | None = None):
             f for f in all_files
             if not f.stem.startswith("_") and f.suffix == ".py"
         ]
+        for plugin_file in plugin_files:
+            public_plugin_status.setdefault(
+                plugin_file.name,
+                {"state": "skipped", "note": "Plugin was not loaded"},
+            )
 
         loaded_count = 0
         for plugin_file in plugin_files:
@@ -347,13 +380,42 @@ def main():
     load_all_plugins()
 
     # Start clients together when assistant-bot support is configured.
-    logger.info("🐱 NekoUB started successfully! Nya~")
-    print("\n✨ NekoUB is now online and ready to serve!\n")
-    if bot is not None:
-        compose_clients = [app, bot]
-        asyncio.get_event_loop().run_until_complete(compose(compose_clients))
-    else:
-        app.run()
+    async def start_clients() -> None:
+        clients = [app, bot] if bot is not None else [app]
+        await asyncio.gather(*(client.start() for client in clients))
+        try:
+            user = await app.get_me()
+            user_name = " ".join(
+                part for part in (user.first_name, user.last_name) if part
+            )
+            logger.info(
+                "Userbot account: %s (@%s), ID: %s",
+                user_name,
+                user.username or "no username",
+                user.id,
+            )
+            if bot is not None:
+                assistant = await bot.get_me()
+                assistant_name = " ".join(
+                    part
+                    for part in (assistant.first_name, assistant.last_name)
+                    if part
+                )
+                logger.info(
+                    "Assistant bot account: %s (@%s), ID: %s",
+                    assistant_name,
+                    assistant.username or "no username",
+                    assistant.id,
+                )
+            else:
+                logger.info("Assistant bot account: not configured")
+            logger.info("🐱 NekoUB started successfully! Nya~")
+            print("\n✨ NekoUB is now online and ready to serve!\n")
+            await idle()
+        finally:
+            await asyncio.gather(*(client.stop() for client in reversed(clients)))
+
+    asyncio.get_event_loop().run_until_complete(start_clients())
 
 
 if __name__ == "__main__":

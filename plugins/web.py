@@ -6,7 +6,7 @@ from pyrogram.enums import ParseMode
 from pyrogram.types import Message
 
 import config
-from core.plugins import ParsedOptions, Plugin, PluginContext, handlers as h
+from core.plugins import Example, ParsedOptions, Plugin, PluginContext, handlers as h
 from utils import get_logger, is_user_premium, split_text_into_chunks
 from utils.websearch import fetch_text
 from utils.websearch import search as _shared_search
@@ -205,11 +205,24 @@ async def _open_result(
 
 class WebPlugin(Plugin):
     id = "web"
-    category = "Utility"
+    category = "AI & Tools"
     description = "Search the web and read pages."
 
-    @h.command("web", aliases=("search",), description=description,
-               prefixes=config.CMD_PREFIX, filters=filters.me)
+    @h.command(
+        "web",
+        aliases=("search",),
+        signature="<query> | next | prev",
+        short_description="Search the web and page through results.",
+        description="Search for a query, or use the fixed `next` and `prev` forms to page through the last search. Open a numbered result with `.open <n>`, or read a URL directly with `.read <url>`.",
+        examples=(
+            Example("{cmd} Python 3.14", "Search the web for Python 3.14."),
+            Example("{cmd} next", "Show the next page of the previous search."),
+            Example("{prefix}open 2", "Read result number 2 from the last search."),
+            Example("{prefix}read example.com", "Fetch and display readable text from a URL."),
+        ),
+        prefixes=config.CMD_PREFIX,
+        filters=filters.me,
+    )
     async def web_command(self, client: Client, message: Message,
                           ctx: PluginContext["WebPlugin"], parsed: ParsedOptions) -> None:
         """Search the web / page through results."""
@@ -235,7 +248,14 @@ class WebPlugin(Plugin):
             return
         await _do_search(message, arg, 0)
 
-    @h.command("next", prefixes=config.CMD_PREFIX, filters=filters.me)
+    @h.command(
+        "next",
+        short_description="Show the next page of web results.",
+        description="Continue paging through the most recent web search in this chat.",
+        examples=(Example("{cmd}", "Show the next results page."),),
+        prefixes=config.CMD_PREFIX,
+        filters=filters.me,
+    )
     async def next_command(self, client: Client, message: Message,
                            ctx: PluginContext["WebPlugin"], parsed: ParsedOptions) -> None:
         state = _state.get(message.chat.id)
@@ -247,7 +267,14 @@ class WebPlugin(Plugin):
             return
         await _do_search(message, state["query"], state["page"] + 1)
 
-    @h.command("prev", prefixes=config.CMD_PREFIX, filters=filters.me)
+    @h.command(
+        "prev",
+        short_description="Show the previous page of web results.",
+        description="Return to the previous page of the most recent web search in this chat.",
+        examples=(Example("{cmd}", "Return to the previous results page."),),
+        prefixes=config.CMD_PREFIX,
+        filters=filters.me,
+    )
     async def prev_command(self, client: Client, message: Message,
                            ctx: PluginContext["WebPlugin"], parsed: ParsedOptions) -> None:
         state = _state.get(message.chat.id)
@@ -259,7 +286,15 @@ class WebPlugin(Plugin):
             return
         await _do_search(message, state["query"], state["page"] - 1)
 
-    @h.command("open", prefixes=config.CMD_PREFIX, filters=filters.me)
+    @h.command(
+        "open",
+        signature="<result number>",
+        short_description="Open a numbered result from your latest search.",
+        description="Fetch and display the page for a result number shown in the most recent `.web` search results.",
+        examples=(Example("{cmd} 1", "Open the first result from the latest search."),),
+        prefixes=config.CMD_PREFIX,
+        filters=filters.me,
+    )
     async def open_command(self, client: Client, message: Message,
                            ctx: PluginContext["WebPlugin"], parsed: ParsedOptions) -> None:
         arg = " ".join(parsed.positional).strip()
@@ -271,8 +306,16 @@ class WebPlugin(Plugin):
             return
         await _open_result(client, message, int(arg))
 
-    @h.command("read", aliases=("browse", "url"), prefixes=config.CMD_PREFIX,
-               filters=filters.me)
+    @h.command(
+        "read",
+        aliases=("browse", "url"),
+        signature="<url>",
+        short_description="Fetch readable text from a URL.",
+        description="Read a web page directly by URL. The scheme is optional; URLs without `http://` or `https://` are treated as HTTPS.",
+        examples=(Example("{cmd} https://example.com", "Fetch readable text from the page."),),
+        prefixes=config.CMD_PREFIX,
+        filters=filters.me,
+    )
     async def read_command(self, client: Client, message: Message,
                            ctx: PluginContext["WebPlugin"], parsed: ParsedOptions) -> None:
         url = " ".join(parsed.positional).strip()

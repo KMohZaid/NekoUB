@@ -6,7 +6,8 @@ from pyrogram.types import Message
 
 import config
 import main
-from core.plugins import Example, ParsedOptions, Plugin, PluginContext, handlers as h
+from core.plugins import Example, Option, ParsedOptions, Plugin, PluginContext, handlers as h
+from core.plugins.errors import parse_options
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -54,88 +55,33 @@ def parse_delay(delay_str):
     return None
 
 
-def parse_spam_args(text):
-    """Parse spam command arguments.
+SPAM_OPTIONS = (
+    Option("count", short="-c", aliases=("-count",), type=int, help="Set how many messages to send; count can also be the first argument."),
+    Option("delay", short="-d", aliases=("-delay",), type=str, default=f"{config.SPAM_DELAY}s", help="Set the interval between messages, such as 10s, 5m, or 1h."),
+    Option("delete", aliases=("-del", "-delete"), action="store_true", help="Delete each sent message after 2.5 seconds."),
+    Option("reply", short="-r", aliases=("-reply",), action="store_true", help="Send each repeated message as a reply to the replied-to message."),
+    Option("ignore_limit", aliases=("-ignore", "-nolimit"), action="store_true", help="Bypass the configured maximum count. Use carefully."),
+)
 
-    Returns: dict with keys: count, delay, delete_after, reply_mode, message_text
-    """
-    # Remove command prefix
-    parts = text.split(maxsplit=1)
-    if len(parts) < 2:
-        return None
 
-    args_str = parts[1]
-
-    result = {
-        "count": None,
-        "delay": config.SPAM_DELAY,
-        "delete_after": None,
-        "reply_mode": False,
-        "ignore_limit": False,
-        "message_text": None,
+def parse_spam_args(text: str, parsed: ParsedOptions | None = None) -> dict | None:
+    """Parse typed spam options while retaining count-first command syntax."""
+    parsed = parsed or parse_options(text, SPAM_OPTIONS, "spam")
+    count = parsed.count
+    message_parts = list(parsed.positional)
+    if count is None and message_parts and message_parts[0].isdigit():
+        count = int(message_parts.pop(0))
+    delay = parse_delay(parsed.delay)
+    if delay is None:
+        raise ValueError("Delay must be a number of seconds, minutes (m), or hours (h).")
+    return {
+        "count": count,
+        "delay": delay,
+        "delete_after": 2.5 if parsed.delete else None,
+        "reply_mode": parsed.reply,
+        "ignore_limit": parsed.ignore_limit,
+        "message_text": " ".join(message_parts) or None,
     }
-
-    # Split and parse flags manually
-    tokens = args_str.split()
-    i = 0
-    message_parts = []
-
-    while i < len(tokens):
-        token = tokens[i]
-
-        # Check for flags
-        if token in ["-c", "-count"]:
-            # Next token should be count
-            if i + 1 < len(tokens):
-                try:
-                    result["count"] = int(tokens[i + 1])
-                    i += 2
-                    continue
-                except ValueError:
-                    pass
-        elif token in ["-d", "-delay"]:
-            # Next token should be delay
-            if i + 1 < len(tokens):
-                delay_val = parse_delay(tokens[i + 1])
-                if delay_val is not None:
-                    result["delay"] = delay_val
-                    i += 2
-                    continue
-        elif token in ["-del", "-delete"]:
-            # No argument, just set flag
-            result["delete_after"] = 2.5
-            i += 1
-            continue
-        elif token in ["-r", "-reply"]:
-            # No argument, just set flag
-            result["reply_mode"] = True
-            i += 1
-            continue
-        elif token in ["-ignore", "-nolimit"]:
-            # No argument, just set flag
-            result["ignore_limit"] = True
-            i += 1
-            continue
-
-        # If we get here, it's part of the message or count (if -c not used)
-        # Try to parse as count if count is not set yet
-        if result["count"] is None:
-            try:
-                result["count"] = int(token)
-                i += 1
-                continue
-            except ValueError:
-                pass
-
-        # Otherwise, it's part of the message
-        message_parts.append(token)
-        i += 1
-
-    # Join message parts
-    if message_parts:
-        result["message_text"] = " ".join(message_parts)
-
-    return result
 
 
 class SpamPlugin(Plugin):
@@ -146,11 +92,20 @@ class SpamPlugin(Plugin):
     @h.command(
         "spam",
         aliases=("spam_stop", "spam_help", "spam_stat"),
-        description=description,
+        signature="[flags] <count> <text> (or reply to a message)",
+        short_description="Repeat a message with optional count, delay, and reply behavior.",
+        description=(
+            "Send the given text repeatedly, or reply to a message to copy it repeatedly. "
+            "Count is required, either as the first number or with `-c`; the configured limit applies "
+            "unless `-ignore` is used. The aliases `.spam_stop`, `.spam_help`, and `.spam_stat` stop "
+            "the active run, show help, and display progress."
+        ),
+        options=SPAM_OPTIONS,
         examples=(
-            Example("{cmd} 10 Hello World"),
-            Example("{cmd} -d 5s 3 Hi"),
-            Example("{cmd} -del -c 5 Test"),
+            Example("{cmd} 10 Hello World", "Send the text ten times using the configured delay."),
+            Example("{cmd} -d 5s 3 Hi", "Send ‘Hi’ three times, five seconds apart."),
+            Example("{cmd} -del -c 5 Test", "Send five messages and auto-delete each after 2.5 seconds."),
+            Example("{cmd} -r 5 Hi", "Reply five times to the message you replied to."),
         ),
         prefixes=config.CMD_PREFIX,
         parse_mode="markdown",
@@ -254,7 +209,8 @@ class SpamPlugin(Plugin):
                 return
 
             # Handle spam command
-            args = parse_spam_args(message.text)
+            parsed_spam_args = parse_spam_args(message.text or "", args)
+            args = parsed_spam_args
 
             if args is None:
                 await message.edit(

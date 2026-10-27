@@ -504,7 +504,58 @@ class AutomessagesPlugin(Plugin):
     @h.command(
         "am",
         aliases=("auto", "automessage", "automessages"),
-        description=description,
+        description="Create and manage per-chat keyword and scheduled automated messages.",
+        short_description="Create or manage automated messages.",
+        help_entries=(
+            {
+                "signature": "",
+                "short_description": "Show automation help and trigger syntax.",
+                "description": "Show automation syntax, flags, time formats, and management commands. Automations are per chat and schedules survive restarts.",
+                "examples": (Example("{cmd}"),),
+            },
+            {
+                "signature": "<match> on <output>",
+                "short_description": "Send output when a keyword is matched.",
+                "description": "Create a keyword automation. Use -exact to match a whole word, -reply to reply to the trigger message, and -tag to mention the sender.",
+                "examples": (Example("{cmd} hello on Hi there!"),),
+            },
+            {
+                "signature": "[match] reply <output>",
+                "short_description": "Send output when someone replies to you.",
+                "description": "Create an automation that fires when someone replies to one of your messages. An optional match limits it to messages containing that text.",
+                "examples": (Example("{cmd} reply On it!"), Example("{cmd} boss reply On it!")),
+            },
+            {
+                "signature": "[match] tag <output>",
+                "short_description": "Send output when someone mentions or replies to you.",
+                "description": "Create an automation triggered when someone mentions or replies to you. An optional match limits the message text. The mention alias is also accepted.",
+                "examples": (Example("{cmd} /ft tag Got it!"),),
+            },
+            {
+                "signature": "every <time> <output>",
+                "short_description": "Repeat a message on an interval.",
+                "description": "Create a repeating message. Time accepts units such as 30s, 15m, 1h, 1d, or combinations such as 1h30m.",
+                "examples": (Example("{cmd} every 1h Stand up!"),),
+            },
+            {
+                "signature": "at <HH:MM> <output>",
+                "short_description": "Send a message daily at a local time.",
+                "description": "Create a daily message using server local time. Use 24-hour HH:MM or forms such as 9:00 am and 9pm.",
+                "examples": (Example("{cmd} at 09:00 Good morning"),),
+            },
+            {
+                "signature": "in <time> <output>",
+                "short_description": "Send a one-time delayed message.",
+                "description": "Create a one-shot message that fires after the specified duration, then removes itself.",
+                "examples": (Example("{cmd} in 10m On my way"),),
+            },
+            {
+                "signature": "list | del <id> | on <id> | off <id> | clear",
+                "short_description": "List, delete, enable, disable, or clear automations.",
+                "description": "Manage this chat's automations. Use list to see entries, del to remove one, on/off to enable or pause one, and clear to remove all.",
+                "examples": (Example("{cmd} list"), Example("{cmd} del 2"), Example("{cmd} off 2")),
+            },
+        ),
         prefixes=config.CMD_PREFIX,
         parse_mode="markdown",
     )

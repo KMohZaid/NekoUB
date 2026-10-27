@@ -6,7 +6,7 @@ from pathlib import Path
 from types import ModuleType
 from unittest.mock import Mock
 
-from core.plugins import Example, Plugin, handlers as h
+from core.plugins import Example, Option, Plugin, handlers as h
 from core.plugins.manager import PluginManager
 from pyrogram import filters
 
@@ -134,6 +134,67 @@ class PluginManagerTests(unittest.TestCase):
             self.manager.activate(Duplicate())
         self.client.register_managed_handler.assert_not_called()
 
+    def test_command_help_expands_documented_command_forms(self):
+        class FormsPlugin(Plugin):
+            id = "forms"
+
+            @h.command(
+                "am",
+                help_entries=(
+                    {"signature": "", "short_description": "Show help."},
+                    {"signature": "<match> on <output>", "short_description": "Match a keyword."},
+                ),
+            )
+            async def automations(self, client, message, ctx, args):
+                pass
+
+        self.manager.activate(FormsPlugin())
+        commands = self.manager.command_help()
+        self.assertEqual([item["signature"] for item in commands], ["", "<match> on <output>"])
+        self.assertEqual(commands[1]["short_description"], "Match a keyword.")
+
+    def test_command_help_exposes_option_metadata(self):
+        class OptionPlugin(Plugin):
+            id = "option_help"
+
+            @h.command(
+                "sample",
+                options=(Option("count", short="-c", type=int, help="Repeat count."),),
+                help_options=(Option("count", short="-c", type=int, help="Repeat count."),),
+            )
+            async def sample(self, client, message, ctx, args):
+                pass
+
+        self.manager.activate(OptionPlugin())
+        command = self.manager.command_help()[0]
+        self.assertEqual(command["help_options"][0].help, "Repeat count.")
+        from importlib.util import module_from_spec, spec_from_file_location
+        help_path = Path(__file__).resolve().parents[1] / "plugins" / "help.py"
+        previous_config = sys.modules.get("config")
+        previous_main = sys.modules.get("main")
+        previous_utils = sys.modules.get("utils")
+        config_module = ModuleType("config")
+        config_module.CMD_PREFIX = "."
+        main_module = ModuleType("main")
+        main_module.loaded_plugins = {}
+        main_module.public_plugin_status = {}
+        main_module.plugin_manager = self.manager
+        utils_module = ModuleType("utils")
+        utils_module.get_logger = lambda name: Mock()
+        sys.modules.update(config=config_module, main=main_module, utils=utils_module)
+        try:
+            spec = spec_from_file_location("test_plugins.option_help", help_path)
+            module = module_from_spec(spec)
+            spec.loader.exec_module(module)
+            detail = module.render_command_lookup("sample")
+            self.assertIn("• `-c, --count` — Repeat count.", detail)
+        finally:
+            for name, previous in (("config", previous_config), ("main", previous_main), ("utils", previous_utils)):
+                if previous is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = previous
+
     def test_command_help_includes_all_prefixes_and_renders_examples(self):
         class PrefixPlugin(Plugin):
             id = "prefixes"
@@ -176,6 +237,10 @@ class PluginManagerTests(unittest.TestCase):
         config_module.CMD_PREFIX = "."
         main_module = ModuleType("main")
         main_module.loaded_plugins = {}
+        main_module.public_plugin_status = {
+            "todoist.py": {"state": "skipped", "note": "missing TODOIST_TOKEN <set>"},
+            "alive.py": {"state": "loaded", "note": None},
+        }
         main_module.plugin_manager = None
         utils_module = ModuleType("utils")
         utils_module.get_logger = lambda name: Mock()
@@ -207,6 +272,29 @@ class PluginManagerTests(unittest.TestCase):
                 and not handler.options.bot
             )
             self.assertEqual(command.aliases, ("commands", "cmds", "menu"))
+            callback_declaration = next(
+                handler for handler in declaration.handlers
+                if handler.event == "bot_callback_query"
+            )
+            inline_declaration = next(
+                handler for handler in declaration.handlers
+                if handler.event == "bot_inline_query"
+            )
+            self.assertFalse(callback_declaration.options.public)
+            self.assertFalse(inline_declaration.options.public)
+            bot_help_command = next(
+                handler for handler in declaration.handlers
+                if handler.options.command is not None
+                and handler.options.command.trigger == "help"
+            )
+            self.assertFalse(bot_help_command.options.public)
+            keyboard = module._help_keyboard()
+            self.assertEqual([len(row) for row in keyboard.inline_keyboard], [1])
+            self.assertIn("Disabled", module.render_root())
+            category_keyboard = module._help_keyboard("category:disabled")
+            category_buttons = [button for row in category_keyboard.inline_keyboard[:-1] for button in row]
+            self.assertEqual(category_buttons, [])
+            self.assertEqual(category_keyboard.inline_keyboard[-1][0].callback_data, "help.root")
         finally:
             for name, previous in (
                 ("config", previous_config),
@@ -227,6 +315,10 @@ class PluginManagerTests(unittest.TestCase):
         config_module.CMD_PREFIX = "."
         main_module = ModuleType("main")
         main_module.loaded_plugins = {}
+        main_module.public_plugin_status = {
+            "todoist.py": {"state": "skipped", "note": "missing TODOIST_TOKEN <set>"},
+            "alive.py": {"state": "loaded", "note": None},
+        }
         main_module.plugin_manager = None
         utils_module = ModuleType("utils")
         utils_module.get_logger = lambda name: Mock()
@@ -240,35 +332,241 @@ class PluginManagerTests(unittest.TestCase):
             module = module_from_spec(spec)
             sys.modules[spec.name] = module
             spec.loader.exec_module(module)
-            managed_names = {
-                "alive", "ping", "reload", "help", "exec", "eval", "kill",
-                "info", "id", "json", "save", "spam", "spam_stop", "spam_stat",
-                "spam_help",
-            }
-            listed_names = {
-                command["cmd"]
-                for category in module.CATEGORIES.values()
-                for command in category["commands"]
-            }
-            self.assertTrue(managed_names.isdisjoint(listed_names))
+            self.assertEqual(module._total_commands(), 0)
+            main_module.loaded_plugins = {}
             main_module.plugin_manager = Mock()
             main_module.plugin_manager.command_help.return_value = [
                 {
+                    "plugin": "ai",
+                    "plugin_category": "AI & Tools",
+                    "plugin_description": "Chat with AI.",
+                    "trigger": "ai",
+                    "prefix": ".",
+                    "prefixes": (".",),
+                    "signature": "<prompt>",
+                    "options": (),
+                    "description": "Chat with the configured AI model.",
+                    "short_description": "Ask the AI a question.",
+                    "aliases": (),
+                    "examples": (".ai Explain this error",),
+                    "example_notes": ("Ask the configured model directly.",),
+                },
+                {
+                    "plugin": "alive",
+                    "plugin_category": "Core",
+                    "plugin_description": "Show userbot status.",
+                    "trigger": "alive",
+                    "prefix": ".",
+                    "prefixes": (".",),
+                    "options": (),
+                    "description": "Show status.",
+                    "aliases": (),
+                    "examples": (".alive",),
+                },
+                {
                     "plugin": "ping",
+                    "plugin_category": "Core",
+                    "plugin_description": "Check userbot latency.",
                     "trigger": "ping",
                     "prefix": ".",
                     "prefixes": (".",),
                     "options": (),
                     "description": "Check latency.",
                     "aliases": (),
+                    "examples": (".ping",),
+                },
+                {
+                    "plugin": "sticker",
+                    "plugin_category": "Stickers",
+                    "plugin_description": "Manage stickers.",
+                    "trigger": "kang",
+                    "prefix": ".",
+                    "prefixes": (".",),
+                    "signature": "[pack] [emoji] [-a] [-t theme] [-d] [-s]",
+                    "options": (),
+                    "help_options": (
+                        {"name": "append", "short": "-a", "help": "Append emoji."},
+                    ),
+                    "example_notes": ("Use the automatic pack.", "Select a pack."),
+                    "description": "Add replied media to a pack.",
+                    "short_description": "Short sticker plugin command.",
+                    "aliases": (),
+                    "examples": (".kang", ".kang <pack>"),
+                },
+                {
+                    "plugin": "sticker",
+                    "plugin_category": "Stickers",
+                    "plugin_description": "Manage stickers.",
+                    "trigger": "sticker",
+                    "prefix": ".",
+                    "prefixes": (".",),
+                    "signature": "(reply to media)",
+                    "options": (),
+                    "description": "Detailed sticker help.",
+                    "short_description": "Convert replied media into a sticker.",
+                    "aliases": (),
+                    "examples": (".sticker",),
+                },
+                {
+                    "plugin": "todoist",
+                    "plugin_category": "Productivity",
+                    "plugin_description": "Todoist tasks.",
+                    "trigger": "todo",
+                    "prefix": ".",
+                    "prefixes": (".",),
+                    "options": (),
+                    "description": "Create tasks.",
+                    "aliases": (),
                     "examples": (),
-                }
+                },
+                {
+                    "plugin": "todoist",
+                    "plugin_category": "Productivity",
+                    "plugin_description": "Todoist tasks.",
+                    "trigger": "todo list",
+                    "prefix": ".",
+                    "prefixes": (".",),
+                    "options": (),
+                    "description": "List tasks.",
+                    "aliases": (),
+                    "examples": (),
+                },
+                {
+                    "plugin": "web",
+                    "plugin_category": "AI & Tools",
+                    "plugin_description": "Search the web.",
+                    "trigger": "web",
+                    "prefix": ".",
+                    "prefixes": (".",),
+                    "options": (),
+                    "description": "Search the web.",
+                    "aliases": (),
+                    "examples": (),
+                },
+                {
+                    "plugin": "translate",
+                    "plugin_category": "AI & Tools",
+                    "plugin_description": "Translate text.",
+                    "trigger": "translate",
+                    "prefix": ".",
+                    "prefixes": (".",),
+                    "options": (),
+                    "description": "Translate text.",
+                    "aliases": (),
+                    "examples": (),
+                },
+            ]
+            main_module.loaded_plugins = {name: object() for name in ("ai", "alive", "ping", "sticker", "todoist", "web", "translate")}
+            self.assertEqual(module._total_commands(), 7)
+            ai_detail = module.render_category("ai_tools")
+            self.assertIn("Choose a plugin:", ai_detail)
+            self.assertIn("**Ai**", ai_detail)
+            self.assertIn("**Translate**", ai_detail)
+            self.assertIn("**Web**", ai_detail)
+            ai_keyboard = module._help_keyboard("category:ai_tools")
+            self.assertEqual(
+                [button.text for row in ai_keyboard.inline_keyboard[:-1] for button in row],
+                ["Ai", "Translate", "Web"],
+            )
+            self.assertEqual(
+                ai_keyboard.inline_keyboard[-1][0].callback_data,
+                "help.root",
+            )
+            self.assertEqual(
+                [item["id"] for item in module._plugins_for_category("Core")],
+                ["alive", "ping"],
+            )
+            root = module.render_root()
+            self.assertIn("2 plugins", root)
+            self.assertIn("**Core** — 2 plugins (2 commands)", root)
+            self.assertIn("**AI & Tools** — 3 plugins (3 commands)", root)
+            self.assertIn("**Stickers** — 1 plugin (2 commands)", root)
+            self.assertNotIn("**Tools**", root)
+            core_keyboard = module._help_keyboard("category:core")
+            self.assertEqual(
+                [button.callback_data for row in core_keyboard.inline_keyboard[:-1] for button in row],
+                ["help.plugin:core:alive", "help.plugin:core:ping"],
+            )
+            sticker_plugin_help = module.render("sticker")
+            self.assertIn("**Sticker**", sticker_plugin_help)
+            self.assertEqual(module._help_page_action("sticker"), "plugin:stickers:sticker")
+            self.assertEqual(
+                module._help_page_action("kang"), "command:stickers:sticker:kang"
+            )
+            self.assertIn(".kang", sticker_plugin_help)
+            self.assertIn(".sticker", sticker_plugin_help)
+            sticker_plugin_keyboard = module._help_keyboard("plugin:stickers:sticker")
+            sticker_plugin_buttons = [
+                button
+                for row in sticker_plugin_keyboard.inline_keyboard[:-1]
+                for button in row
             ]
             self.assertEqual(
-                module._total_commands(),
-                sum(len(cat["commands"]) for cat in module.CATEGORIES.values()) + 1,
+                [button.callback_data for button in sticker_plugin_buttons],
+                [
+                    "help.command:stickers:sticker:kang",
+                    "help.command:stickers:sticker:sticker",
+                ],
             )
-            self.assertEqual(module.render_all().count("`.ping`"), 1)
+            self.assertEqual(
+                [button.text for button in sticker_plugin_buttons],
+                ["1. .kang", "2. .sticker"],
+            )
+            self.assertEqual(
+                sticker_plugin_keyboard.inline_keyboard[-1][0].text,
+                "⬅️ Back to categories",
+            )
+            self.assertEqual(
+                module._help_keyboard("command:stickers:sticker:kang").inline_keyboard[0][0].text,
+                "⬅️ Back to Sticker",
+            )
+            sticker_category = module.render_category("stickers")
+            self.assertIn(".kang", sticker_category)
+            self.assertEqual(sticker_category.count(".kang"), 1)
+            self.assertNotIn(".help_sticker", sticker_category)
+            self.assertIn("\n\n", sticker_category)
+            self.assertIn("Short sticker plugin command.", sticker_category)
+            sticker_keyboard = module._help_keyboard("category:stickers")
+            self.assertEqual(
+                [button.callback_data for row in sticker_keyboard.inline_keyboard[:-1] for button in row],
+                [
+                    "help.command:stickers:sticker:kang",
+                    "help.command:stickers:sticker:sticker",
+                ],
+            )
+            detail = module.render_command_lookup("kang")
+            self.assertIn("Add replied media to a pack.", detail)
+            self.assertIn("Options:", detail)
+            self.assertIn("• `-a` — Append emoji.", detail)
+            self.assertIn("• `.kang` — Use the automatic pack.", detail)
+            self.assertIn("• `.kang <pack>` — Select a pack.", detail)
+            sticker_name_help = module.render("sticker")
+            self.assertIn("**Sticker**", sticker_name_help)
+            self.assertIn("Manage stickers.", sticker_name_help)
+            self.assertIn("Convert replied media", sticker_name_help)
+            self.assertNotIn("Detailed sticker help.", sticker_name_help)
+            self.assertEqual(
+                module._help_keyboard("command:stickers:sticker:kang")
+                .inline_keyboard[0][0].callback_data,
+                "help.plugin:stickers:sticker",
+            )
+            self.assertEqual(
+                module._help_keyboard("command:core:alive:alive")
+                .inline_keyboard[0][0].callback_data,
+                "help.plugin:core:alive",
+            )
+            self.assertIn("Disabled", module.render_root())
+            disabled_keyboard = module._help_keyboard("category:disabled")
+            self.assertFalse(any(
+                button.callback_data.endswith(":todoist")
+                for row in disabled_keyboard.inline_keyboard for button in row
+            ))
+            report = module.render_plugins()
+            self.assertIn("Loaded: 1", report)
+            self.assertIn("Not loaded: 1", report)
+            self.assertIn("Total commands available: 7", report)
+            self.assertIn("<blockquote>1. <b>todoist.py</b>: missing TODOIST_TOKEN &lt;set&gt;</blockquote>", report)
+            self.assertIn("Private plugins:</b>\nStatus unavailable.", report)
         finally:
             for name, previous in (
                 ("config", previous_config),

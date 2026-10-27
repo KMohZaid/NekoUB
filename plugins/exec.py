@@ -62,8 +62,10 @@ class ExecPlugin(Plugin):
 
     @h.command(
         "exec",
+        signature="<shell command>",
+        short_description="Run a shell command and return its output.",
         description=description,
-        examples=(Example("{cmd} ls -la"),),
+        examples=(Example("{cmd} ls -la", "List files in the current working directory."),),
         prefixes=config.CMD_PREFIX,
         parse_mode="markdown",
     )

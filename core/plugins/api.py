@@ -51,6 +51,8 @@ class Option:
     action: str = "store"
     append: bool = False
     help: str = ""
+    aliases: tuple[str, ...] = ()
+    label: str | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -62,9 +64,11 @@ class Option:
         if self.required and self.default is not None:
             raise ValueError("Required options cannot also define a default")
         if self.short is not None and (
-            len(self.short) != 2 or not self.short.startswith("-")
+            not self.short.startswith("-") or len(self.short) < 2
         ):
-            raise ValueError("Short option must use a form such as '-v'")
+            raise ValueError("Short option must start with '-' and include a name")
+        if any(not alias or not alias.startswith(("-", "#")) for alias in self.aliases):
+            raise ValueError("Option aliases must use a command option or marker prefix")
         if self.action not in {"store", "store_true", "store_false"}:
             raise ValueError(f"Unsupported option action: {self.action}")
         if self.append and self.action != "store":
@@ -77,10 +81,16 @@ class CommandOptions:
 
     trigger: str
     aliases: tuple[str, ...] = ()
+    signature: str = ""
     description: str = ""
+    short_description: str = ""
+    help_entries: tuple[Mapping[str, Any], ...] = ()
+    help_options: tuple[Option | Mapping[str, str], ...] = ()
+    example_notes: tuple[str, ...] = ()
     category: str | None = None
     examples: tuple[Example, ...] = ()
     options: tuple[Option, ...] = ()
+    hidden_from_help: bool = False
     parse_mode: ParseMode | str = ParseMode.HTML
     prefixes: str | tuple[str, ...] = "."
 
@@ -103,10 +113,16 @@ def command(
     trigger: str,
     *,
     aliases: Sequence[str] = (),
+    signature: str = "",
     description: str = "",
+    short_description: str = "",
+    help_entries: Sequence[Mapping[str, Any]] = (),
+    help_options: Sequence[Option | Mapping[str, str]] = (),
+    example_notes: Sequence[str] = (),
     category: str | None = None,
     examples: Sequence[Example] = (),
     options: Sequence[Option] = (),
+    hidden_from_help: bool = False,
     filters: Any = None,
     parse_mode: ParseMode | str = ParseMode.HTML,
     prefixes: str | tuple[str, ...] = ".",
@@ -118,10 +134,19 @@ def command(
     metadata = CommandOptions(
         trigger=trigger,
         aliases=tuple(aliases),
+        signature=signature,
         description=description,
+        short_description=short_description,
+        help_entries=tuple(dict(entry) for entry in help_entries),
+        help_options=tuple(
+            option if isinstance(option, Option) else dict(option)
+            for option in help_options
+        ),
+        example_notes=tuple(example_notes),
         category=category,
         examples=tuple(examples),
         options=tuple(options),
+        hidden_from_help=hidden_from_help,
         parse_mode=parse_mode,
         prefixes=prefixes,
     )
@@ -199,11 +224,27 @@ def _wrap_handler(
         from pyrogram import ContinuePropagation
 
         is_bot_handler = declaration.options.bot or declaration.event.startswith("bot_")
-        if is_bot_handler and not getattr(client, "is_bot", False):
-            raise RuntimeError("Bot handler was attached to a non-bot client")
+        if is_bot_handler:
+            is_configured_bot = (
+                client is bot_client
+                if bot_client is not None
+                else bool(
+                    getattr(client, "is_bot", False)
+                    or getattr(client, "bot_token", None)
+                )
+            )
+            if not is_configured_bot:
+                raise RuntimeError("Bot handler was attached to a non-bot client")
         if declaration.event in {
-            "callback_query", "inline_query", "bot_callback_query", "bot_inline_query"
-        } and not declaration.options.public:
+            "callback_query",
+            "inline_query",
+            "bot_callback_query",
+            "bot_inline_query",
+        } and not declaration.options.public or (
+            is_bot_handler
+            and declaration.event == "command"
+            and not declaration.options.public
+        ):
             owner_client = user_client or (None if is_bot_handler else client)
             owner = getattr(owner_client, "me", None) if owner_client else None
             if owner is None and owner_client is not None:
@@ -306,6 +347,11 @@ class Plugin:
     id: str = ""
     category: str | None = None
     description: str = ""
+    display_name: str = ""
+
+    def disabled_reason(self) -> str | None:
+        """Return why this plugin should not load, or None when it is ready."""
+        return None
 
     def declarations(self) -> tuple[HandlerDeclaration, ...]:
         return tuple(_method_declarations(self))

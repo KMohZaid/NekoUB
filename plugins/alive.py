@@ -64,12 +64,12 @@ class AlivePlugin(Plugin):
             username = f"@{me.username}" if me.username else "No username"
 
             # Build an HTML status message with a monospaced banner.
-            banner = (
-                "╔═══════════════════╗\n"
-                "║   NekoUB Userbot   ║\n"
-                "╚═══════════════════╝"
-            )
-            alive_msg = f"<pre>{banner}</pre>\n\n"
+            header = """
+╔═══════════════════╗
+║       NekoUB Userbot       ║
+╚═══════════════════╝
+"""
+            alive_msg = f"{header}\n\n"
             alive_msg += "<b>🐱 Nya~ I'm alive and ready!</b>\n\n"
 
             alive_msg += "<b>┌─ Owner Info ─┐</b>\n"

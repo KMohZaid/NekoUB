@@ -30,7 +30,8 @@ import config
 import main
 from plugins import sticker_index
 from utils.media import image_to_sticker, video_to_sticker
-from core.plugins import Plugin, PluginContext, ParsedOptions, handlers as h
+from core.plugins import Example, Option, Plugin, PluginContext, ParsedOptions, handlers as h
+from core.plugins.errors import parse_options
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -2224,44 +2225,33 @@ def _looks_like_pack_ref(token: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z0-9_.@+-]+", token))
 
 
-def parse_kang_args(text: str) -> tuple[str | None, str | None, str, bool, bool, bool]:
-    """Split kang args into pack, theme, emojis, append, show, and duplicate options."""
-    tokens = text.split()
-    pack_ref: str | None = None
-    theme: str | None = None
-    append_mode = False
-    show_sticker = False
-    allow_duplicates = False
-    emoji_tokens: list[str] = []
+KANG_OPTIONS = (
+    Option("append_mode", short="-a", action="store_true", help="Append supplied emojis to the sticker's existing emoji list."),
+    Option("theme", short="-t", type=str, help="Select or create a themed sticker pack volume."),
+    Option("duplicate", short="-d", aliases=("-duplicate",), action="store_true", help="Allow adding a duplicate sticker."),
+    Option("show", short="-s", aliases=("-show", "--show", "-send", "--send"), action="store_true", help="Send the matching sticker after processing."),
+)
 
-    i = 0
-    while i < len(tokens):
-        token = tokens[i]
-        if token == "-a":
-            append_mode = True
-        elif token in ("-d", "-duplicate", "--duplicate"):
-            allow_duplicates = True
-        elif token in ("-s", "-show", "--show", "-send", "--send"):
-            show_sticker = True
-        elif token == "-t":
-            if i + 1 < len(tokens):
-                theme = tokens[i + 1]
-                i += 1
-        elif token.startswith("-") and len(token) > 1:
-            pass
-        elif pack_ref is None and theme is None and _looks_like_pack_ref(token):
+
+def parse_kang_args(
+    text: str, parsed: ParsedOptions | None = None
+) -> tuple[str | None, str | None, str, bool, bool, bool]:
+    """Parse typed flags, then split remaining positional args into pack and emojis."""
+    parsed = parsed or parse_options(text, KANG_OPTIONS, "kang")
+    pack_ref: str | None = None
+    emoji_tokens: list[str] = []
+    for token in parsed.positional:
+        if pack_ref is None and parsed.theme is None and _looks_like_pack_ref(token):
             pack_ref = token
         else:
             emoji_tokens.append(token)
-        i += 1
-
     return (
         pack_ref,
-        theme,
+        parsed.theme,
         " ".join(emoji_tokens),
-        append_mode,
-        show_sticker,
-        allow_duplicates,
+        parsed.append_mode,
+        parsed.show,
+        parsed.duplicate,
     )
 
 
@@ -2347,38 +2337,43 @@ async def packs_search(client, message: Message, query: str) -> None:
     )
 
 
-async def packs_command(client, message: Message):
+PACKS_OPTIONS = (
+    Option("count", short="-c", aliases=("-count",), action="store_true", help="Show owned and overall pack counts."),
+    Option("emoji", short="-e", aliases=("-emoji",), action="store_true", help="Filter to emoji packs."),
+    Option("animated", short="-a", aliases=("-animated",), action="store_true", help="Include animated and video packs."),
+    Option("normal", short="-n", aliases=("-normal",), action="store_true", help="Include static and mixed packs."),
+    Option("sticker", short="-s", aliases=("-sticker",), action="store_true", help="Include regular sticker packs."),
+)
+
+
+async def packs_command(
+    client, message: Message, parsed: ParsedOptions | None = None
+):
     global _pack_index
     logger.info(f"[STICKER] packs command received in chat={message.chat.id}")
 
-    raw = (message.text or "").split(maxsplit=1)
-    args = raw[1].strip() if len(raw) > 1 else ""
-    tokens = args.split()
+    parsed = parsed or parse_options(message.text or "", PACKS_OPTIONS, "packs")
+    tokens = list(parsed.positional)
 
     if tokens and tokens[0].lower() in ("search", "find"):
         await packs_search(client, message, " ".join(tokens[1:]))
         return
 
-    count_only = False
+    count_only = parsed.count
     page = 1
     selected_types: set[str] = set()
+    if parsed.emoji:
+        selected_types.add("emoji")
+    if parsed.animated:
+        selected_types.update(("animated", "mixed"))
+    if parsed.normal:
+        selected_types.update(("normal", "mixed"))
+    if parsed.sticker:
+        selected_types.update(("normal", "animated", "mixed"))
     for token in tokens:
-        flag = token.lower()
-        if flag in ("-c", "-count"):
-            count_only = True
-        elif flag in ("-e", "-emoji"):
-            selected_types.add("emoji")
-        elif flag in ("-a", "-animated"):
-            selected_types.add("animated")
-            selected_types.add("mixed")
-        elif flag in ("-n", "-normal"):
-            selected_types.add("normal")
-            selected_types.add("mixed")
-        elif flag in ("-s", "-sticker"):
-            selected_types.update(("normal", "animated", "mixed"))
-        elif flag.isdigit() and page == 1:
-            page = int(flag)
-        elif flag not in ("search", "find"):
+        if token.isdigit() and page == 1:
+            page = int(token)
+        else:
             await message.edit(
                 f"Usage: <code>{_esc(config.CMD_PREFIX)}packs [page] "
                 "[-c] [-e] [-a] [-n] [-s]</code> or "
@@ -2601,7 +2596,9 @@ async def sticker_debug_command(client, message: Message):
         await message.edit(f"Could not fetch sticker pack data: {type(exc).__name__}: {exc}")
 
 
-async def kang_command(client, message: Message):
+async def kang_command(
+    client, message: Message, parsed_options: ParsedOptions | None = None
+):
     logger.info(
         f"[STICKER] .kang handler received chat={message.chat.id} message={message.id}"
     )
@@ -2623,9 +2620,6 @@ async def kang_command(client, message: Message):
         )
         return
 
-    raw = (message.text or "").split(maxsplit=1)
-    args = raw[1] if len(raw) > 1 else ""
-
     (
         pack_ref,
         theme,
@@ -2633,7 +2627,7 @@ async def kang_command(client, message: Message):
         append_mode,
         show_sticker,
         allow_duplicates,
-    ) = parse_kang_args(args)
+    ) = parse_kang_args(message.text or "", parsed_options)
 
     if not await _send_reaction(client, message, "👨‍💻", context="start"):
         await _send_reaction(client, message, "👀", context="start-fallback")
@@ -2736,341 +2730,124 @@ async def monitor_sticker_handler(client, message: Message):
     await enqueue_sticker(client, message, None, message, None, False)
 
 
-# ============================================================
-# Help command
-# ============================================================
-
-
-async def help_sticker(client, message: Message):
-    prefix = html.escape(config.CMD_PREFIX, quote=False)
-    logger.info(
-        "[STICKER] .help_sticker received chat=%s message=%s",
-        message.chat.id,
-        message.id,
-    )
-    help_text = (
-        "<b>Sticker Plugin — Help</b>\n\n"
-        "Reply to a sticker, photo, GIF, or video when using <code>kang</code>.\n\n"
-        "<b>📥 Add to your automatic pack</b>\n"
-        "<blockquote>"
-        f"<code>{prefix}kang</code> adds the replied media to your current automatic volume.\n\n"
-        "Photos become static stickers. GIFs and videos become video stickers.\n"
-        "Static and video stickers share regular packs, with up to 120 stickers per volume."
-        "</blockquote>\n\n"
-        "<b>🎯 Choose a destination</b>\n"
-        "<blockquote>"
-        f"<code>{prefix}kang PACK</code> adds the sticker to an existing pack you own (use its number, short name, or id).\n"
-        f"Find its number, short name, and id with <code>{prefix}packs</code>.\n"
-        f"\nExamples: <code>{prefix}kang 2</code> or <code>{prefix}kang mypack</code>.\n\n"
-        "A bare word is looked up as a pack reference only. If no pack matches, the command reports that it was not found; it does not create a theme.\n\n"
-        f"Use <code>{prefix}kang -t THEME</code> to explicitly select or create a themed volume.\n"
-        f"Example: <code>{prefix}kang -t fun</code>.\n\n"
-        "Add <code>-s</code> to send the matching sticker from the destination pack after processing. Aliases: <code>-show</code> and <code>-send</code>.\n"
-        "Add <code>-d</code> or <code>-duplicate</code> to skip duplicate checking and allow adding duplicates."
-        "</blockquote>\n\n"
-        "<b>😀 Emoji options</b>\n"
-        "<blockquote>"
-        f"<code>{prefix}kang 🐱</code> replaces the sticker's current emoji with 🐱.\n"
-        f"<code>{prefix}kang 🐱 🌟</code> replaces it with both emojis.\n"
-        f"<code>{prefix}kang -a 🐱</code> appends 🐱 to the source sticker's existing emoji(s).\n"
-        f"<code>{prefix}kang -t anime -a 🐱</code> adds the sticker to the anime theme and appends 🐱.\n\n"
-        "With no emoji argument, the source emoji is kept when available. Up to 6 emojis are allowed. With <code>-a</code>, existing and added emojis count toward the same limit."
-        "</blockquote>\n\n"
-        "<b>🔔 Kang reactions</b>\n"
-        "<blockquote>"
-        "👨‍💻 Processing started (👀 fallback if unavailable)\n"
-        "👍 Sticker added successfully\n"
-        "💔 An error or failure occurred\n"
-        "🤬 The sticker already exists in an automatic volume pack"
-        "</blockquote>\n\n"
-        "<b>📚 Packs and tools</b>\n"
-        "<blockquote>"
-        f"<code>{prefix}packs</code> lists your packs with numbers, names, ids, counts, and page navigation.\n"
-        f"<code>{prefix}packs search &lt;keyword&gt;</code> searches public sticker packs.\n\n"
-        "Pack filters: <code>-c</code> counts · <code>-e</code> emoji · <code>-a</code> animated/video · <code>-n</code> static · <code>-s</code> regular sticker packs.\n\n"
-        f"Reply to a sticker with <code>{prefix}stickerdebug</code> to export sticker and pack details, including raw Telegram data, as JSON."
-        "</blockquote>\n\n"
-        "<b>More sticker help</b>\n"
-        "<blockquote>"
-        f"📝 Naming: <code>{prefix}help_sticker_naming</code>\n"
-        f"👀 Monitoring: <code>{prefix}help_sticker_monitor</code>\n"
-        f"🔎 Duplicate checks: <code>{prefix}help_sticker_duplicate_check</code>"
-        "</blockquote>"
-    )
-    try:
-        await message.edit(
-            help_text,
-            parse_mode=ParseMode.HTML,
-        )
-        logger.info(
-            "[STICKER] .help_sticker edited successfully chat=%s message=%s",
-            message.chat.id,
-            message.id,
-        )
-    except Exception as exc:
-        logger.exception(
-            "[STICKER] .help_sticker edit failed chat=%s message=%s parse_mode=HTML text_length=%s",
-            message.chat.id,
-            message.id,
-            len(help_text),
-        )
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", encoding="utf-8", suffix=".txt", delete=False
-            ) as output:
-                output.write(help_text)
-                debug_path = output.name
-            await client.send_document(
-                -1003566654764,
-                debug_path,
-                file_name=f"help-sticker-error-{message.id}.txt",
-                caption=(
-                    f".help_sticker edit failed in chat {message.chat.id}, "
-                    f"message {message.id}: {type(exc).__name__}: {exc}"
-                ),
-            )
-            logger.info(
-                "[STICKER] Sent .help_sticker error details to debug chat for message=%s",
-                message.id,
-            )
-        except Exception:
-            logger.exception(
-                "[STICKER] Could not send .help_sticker error details to debug chat=%s",
-                -1003566654764,
-            )
-        finally:
-            if "debug_path" in locals():
-                try:
-                    os.unlink(debug_path)
-                except OSError:
-                    logger.exception(
-                        "[STICKER] Could not remove temporary help error file path=%s",
-                        debug_path,
-                    )
-        raise
-
-
-async def help_sticker_monitor(client, message: Message):
-    prefix = html.escape(config.CMD_PREFIX, quote=False)
-    await message.edit(
-        "<b>👀 Sticker Monitoring</b>\n\n"
-        "<b>Start monitoring</b>\n"
-        "<blockquote>"
-        f"Send <code>{prefix}start_sticker_monitor</code> in every chat you want monitored.\n\n"
-        "Monitoring is enabled separately for each chat. It watches new sticker messages you send after starting it."
-        "</blockquote>\n\n"
-        "<b>What gets added</b>\n"
-        "<blockquote>"
-        "Each outgoing sticker is queued for the automatic pack and keeps its existing emoji. Normal duplicate checks and volume limits apply.\n\n"
-        "Only sticker messages are watched. Photos, GIFs, videos, messages from other people, and old messages are ignored."
-        "</blockquote>\n\n"
-        "<b>Stop and restart behavior</b>\n"
-        "<blockquote>"
-        f"Send <code>{prefix}stop_sticker_monitor</code> to disable monitoring. It clears the monitor list for all chats.\n\n"
-        "The monitor list is kept only in memory and resets when NekoUB restarts. Run the start command again in each chat after a restart."
-        "</blockquote>",
-        parse_mode=ParseMode.HTML,
-    )
-
-
-def _naming_valid(template: str, required: set[str]) -> bool:
-    fields = set(re.findall(r"\{([^{}]+)\}", template))
-    return bool(template) and required.issubset(fields) and fields.issubset(_NAMING_FIELDS)
-
-
-def _sticker_naming_help_text() -> str:
-    user = me_user
-    user_id = user.id
-    display = html.escape(get_base_display(user), quote=False)
-    auto_name = _strip_quotes(config.STICKERSET_NAME_FORMAT)
-    auto_title = _strip_quotes(config.STICKERSET_TITLE_FORMAT)
-    theme_name = _strip_quotes(config.THEMED_STICKERSET_SHORTNAME)
-    theme_title = _strip_quotes(config.THEMED_STICKERSET_DISPLAY_NAME)
-
-    auto_name_ok = _naming_valid(auto_name, {"index"})
-    auto_title_ok = _naming_valid(auto_title, {"index"})
-    theme_name_ok = _naming_valid(theme_name, {"suffix", "index"})
-    theme_title_ok = _naming_valid(theme_title, {"suffix", "index"})
-
-    lines = ["<b>📝 Sticker Pack Naming — Volume 2 examples</b>", ""]
-    if not auto_name_ok:
-        lines.append("⚠️ Auto short-name template is unset or invalid (must include <code>{index}</code>). Using the base format.")
-    if not auto_title_ok:
-        lines.append("⚠️ Auto title template is unset or invalid (must include <code>{index}</code>). Using the base format.")
-
-    auto_name_example = (
-        _format_all(auto_name, user, 2) if auto_name_ok else f"{user_id}_vol2"
-    )
-    auto_title_example = (
-        _format_all(auto_title, user, 2)
-        if auto_title_ok else f"{display}'s Pack Vol. 2"
-    )
-    lines.extend(
-        (
-            "<b>Automatic pack</b>",
-            "<blockquote>"
-            f"Short name: <code>{html.escape(auto_name_example)}</code>\n"
-            f"Title: <code>{html.escape(auto_title_example)}</code>"
-            "</blockquote>",
-            "",
-        )
-    )
-
-    if not theme_name_ok:
-        lines.append("⚠️ Themed short-name template is unset or invalid (must include <code>{suffix}</code> and <code>{index}</code>). Using the base format.")
-    if not theme_title_ok:
-        lines.append("⚠️ Themed title template is unset or invalid (must include <code>{suffix}</code> and <code>{index}</code>). Using the base format.")
-
-    theme_name_example = (
-        _format_all(theme_name, user, 2, suffix="anime")
-        if theme_name_ok else f"{user_id}_anime_vol2"
-    )
-    theme_title_example = (
-        _format_all(theme_title, user, 2, suffix="anime")
-        if theme_title_ok else f"{display}'s anime Pack Vol. 2"
-    )
-    lines.extend(
-        (
-            "<b>Themed pack (<code>-t anime</code>)</b>",
-            "<blockquote>"
-            f"Short name: <code>{html.escape(theme_name_example)}</code>\n"
-            f"Title: <code>{html.escape(theme_title_example)}</code>"
-            "</blockquote>",
-            "",
-            "<b>Template fields</b>",
-            "<blockquote>"
-            "Available fields: <code>{user_id}</code>, <code>{first_name}</code>, "
-            "<code>{username}</code>, <code>{base}</code>, and <code>{index}</code>. "
-            "Themed templates also support <code>{suffix}</code>.\n\n"
-            "Auto short names must include <code>{index}</code>; the value is used "
-            "exactly as formatted, so include the volume number yourself. Themed "
-            "short names and titles must include both <code>{suffix}</code> and "
-            "<code>{index}</code>.\n\n"
-            "Unset or invalid fields fall back independently to the base examples "
-            "above. Base short names use your numeric user id."
-            "</blockquote>",
-        )
-    )
-    return "\n".join(lines)
-
-
-async def help_sticker_duplicate_check(client, message: Message):
-    prefix = html.escape(config.CMD_PREFIX, quote=False)
-    await message.edit(
-        "<b>🔎 Sticker Duplicate Checking</b>\n\n"
-        "Duplicate searches are limited to the destination family selected by your kang command. They do not scan every pack you own.\n\n"
-        "<b>Automatic pack</b>\n"
-        "<blockquote>"
-        f"<code>{prefix}kang</code> checks the volumes belonging to your automatic pack before adding.\n"
-        "</blockquote>\n\n"
-        "<b>Themed packs</b>\n"
-        "<blockquote>"
-        f"<code>{prefix}kang -t fun</code> checks the volumes for the <code>fun</code> theme only.\n"
-        "</blockquote>\n\n"
-        "<b>One specified pack</b>\n"
-        "<blockquote>"
-        f"<code>{prefix}kang mypack</code> checks only that specified pack. A numeric pack id or list number also targets only its resolved pack.\n"
-        "</blockquote>\n\n"
-        "<b>How matching works</b>\n"
-        "<blockquote>"
-        "The checker first compares Telegram's file unique ID when available. If that does not match, it compares compatible media using file type/size and a downloaded fingerprint. A match is treated as already present and gets the 🤬 reaction.\n\n"
-        "Fingerprint comparisons require fetching sticker files, which can take time when a selected volume contains many similar-sized stickers. Other pack families are not part of that scan.\n"
-        "</blockquote>\n\n"
-        "<b>Allow a duplicate</b>\n"
-        "<blockquote>"
-        f"Add <code>-d</code> or <code>-duplicate</code>, e.g. <code>{prefix}kang -d</code> or <code>{prefix}kang mypack -d</code>, to skip duplicate checks and let Telegram accept or reject the add.\n"
-        "</blockquote>",
-        parse_mode=ParseMode.HTML,
-    )
-
-
-async def help_sticker_naming(client, message: Message):
-    await ensure_me(client)
-    await message.edit(
-        _sticker_naming_help_text(),
-        parse_mode=ParseMode.HTML,
-    )
-
-
 class StickerPlugin(Plugin):
     id = "sticker"
-    category = "Utility"
+    category = "Stickers"
     description = "Manage sticker packs and process stickers."
 
-    @h.command("start_sticker_monitor", prefixes=config.CMD_PREFIX, filters=filters.me)
+    @h.command(
+        "start_sticker_monitor",
+        short_description="Monitor stickers you send in this chat.",
+        description="Start watching stickers you send in this chat and queue them for your automatic pack. Monitoring is stored in memory and must be enabled again after a restart.",
+        examples=(Example("{cmd}", "Start monitoring in the current chat."),),
+        prefixes=config.CMD_PREFIX,
+        filters=filters.me,
+    )
     async def start_sticker_monitor_handler(
         self, client: Client, message: Message, ctx: PluginContext["StickerPlugin"],
         parsed: ParsedOptions,
     ) -> None:
         await start_sticker_monitor(client, message)
 
-    @h.command("stop_sticker_monitor", prefixes=config.CMD_PREFIX, filters=filters.me)
+    @h.command(
+        "stop_sticker_monitor",
+        short_description="Stop sticker monitoring in every chat.",
+        description="Stop monitoring and clear the in-memory monitor list for all chats. This command does not delete stickers already added to your packs.",
+        examples=(Example("{cmd}", "Stop monitoring in every chat."),),
+        prefixes=config.CMD_PREFIX,
+        filters=filters.me,
+    )
     async def stop_sticker_monitor_handler(
         self, client: Client, message: Message, ctx: PluginContext["StickerPlugin"],
         parsed: ParsedOptions,
     ) -> None:
         await stop_sticker_monitor(client, message)
 
-    @h.command("packs", aliases=("mypacks",), prefixes=config.CMD_PREFIX, filters=filters.me)
+    @h.command(
+        "packs",
+        aliases=("mypacks",),
+        signature="[search <keyword>] [-c] [-e] [-a] [-n] [-s]",
+        short_description="List your sticker packs or search public packs.",
+        description="List your own sticker packs with paging, or add `search <keyword>` to search public packs. Filters: -c count only, -e emoji packs, -a animated/video packs, -n static packs, -s regular sticker packs. Combine filters as needed.",
+        options=PACKS_OPTIONS,
+        examples=(
+            Example("{cmd}", "List your packs."),
+            Example("{cmd} search cats", "Search public packs for cats."),
+            Example("{cmd} -e", "Show emoji packs."),
+        ),
+        prefixes=config.CMD_PREFIX,
+        filters=filters.me,
+    )
     async def packs_handler(
         self, client: Client, message: Message, ctx: PluginContext["StickerPlugin"],
         parsed: ParsedOptions,
     ) -> None:
-        await packs_command(client, message)
+        await packs_command(client, message, parsed)
 
-    @h.command("sticker", prefixes=config.CMD_PREFIX, filters=filters.me)
+    @h.command("sticker", signature="(reply to media)", short_description="Convert replied media into a sticker.", description="Reply to a photo, GIF, or video to convert it into a sticker. Sticker output behavior depends on the source media type.", examples=(Example("{cmd} (reply to a photo)"),), prefixes=config.CMD_PREFIX, filters=filters.me)
     async def sticker_handler(
         self, client: Client, message: Message, ctx: PluginContext["StickerPlugin"],
         parsed: ParsedOptions,
     ) -> None:
         await sticker_command(client, message)
 
-    @h.command("stickerdebug", prefixes=config.CMD_PREFIX, filters=filters.me)
+    @h.command(
+        "stickerdebug",
+        signature="(reply to a sticker)",
+        short_description="Export sticker and pack metadata as JSON.",
+        description="Reply to a sticker to send a JSON document containing sticker metadata, its pack details, and raw Telegram fields. It is intended for debugging sticker issues.",
+        examples=(Example("{cmd} (reply to a sticker)", "Export details for the replied sticker."),),
+        prefixes=config.CMD_PREFIX,
+        filters=filters.me,
+    )
     async def sticker_debug_handler(
         self, client: Client, message: Message, ctx: PluginContext["StickerPlugin"],
         parsed: ParsedOptions,
     ) -> None:
         await sticker_debug_command(client, message)
 
-    @h.command("kang", prefixes=config.CMD_PREFIX, filters=filters.me)
+    @h.command(
+        "kang",
+        signature="[pack] [emoji] [-a] [-t theme] [-d] [-s]",
+        short_description="Add replied media to an automatic, themed, or named sticker pack.",
+        description=(
+            "Reply to a sticker, photo, GIF, or video. With no destination, add it to your automatic pack. "
+            "Give a pack number, short name, or id to add to a pack you own; use -t THEME to select or create a themed volume. "
+            "A bare word is resolved only as a pack reference. Photos become static stickers; GIFs and videos become video stickers. "
+            "Packs are split into volumes of up to 120 stickers. With no emoji argument the source emoji is kept; up to 6 emojis are supported. "
+            "-a appends to the source emojis; -d skips duplicate checking. Duplicate checks only scan the selected destination pack family. "
+            "Pack names can be customized with the STICKERSET_* settings in the environment file."
+        ),
+        options=KANG_OPTIONS,
+        help_entries=(
+            {
+                "signature": "[pack] [emoji] [-a] [-t theme] [-d] [-s]",
+                "description": (
+                    "Reply to a sticker, photo, GIF, or video. With no destination, add it to your automatic pack. "
+                    "Choose an owned pack by number, short name, or id, or use -t THEME to select or create a themed volume. "
+                    "No emoji keeps the source emoji; up to 6 emojis are supported. -a appends instead of replacing. "
+                    "Duplicate checks scan only the selected destination pack family; -d bypasses those checks. "
+                    "Pack names can be customized with the STICKERSET_* settings in the environment file."
+                ),
+            },
+        ),
+        examples=(
+            Example("{cmd}", "Add the replied media to your automatic pack."),
+            Example("{cmd} 2 🐱", "Add it to pack number 2 and set its emoji to 🐱."),
+            Example("{cmd} -t anime -a 🐱", "Use the anime themed volume and append 🐱 to its emoji list."),
+            Example("{cmd} mypack -d", "Add it to mypack even if it is already present."),
+        ),
+        prefixes=config.CMD_PREFIX,
+        filters=filters.me,
+    )
     async def kang_handler(
         self, client: Client, message: Message, ctx: PluginContext["StickerPlugin"],
         parsed: ParsedOptions,
     ) -> None:
-        await kang_command(client, message)
+        await kang_command(client, message, parsed)
 
     @h.message(filters=filters.me & filters.sticker)
     async def monitor_sticker(
         self, client: Client, message: Message, ctx: PluginContext["StickerPlugin"]
     ) -> None:
         await monitor_sticker_handler(client, message)
-
-    @h.command("help_sticker", prefixes=config.CMD_PREFIX, filters=filters.me)
-    async def help_handler(
-        self, client: Client, message: Message, ctx: PluginContext["StickerPlugin"],
-        parsed: ParsedOptions,
-    ) -> None:
-        await help_sticker(client, message)
-
-    @h.command("help_sticker_monitor", prefixes=config.CMD_PREFIX, filters=filters.me)
-    async def help_monitor_handler(
-        self, client: Client, message: Message, ctx: PluginContext["StickerPlugin"],
-        parsed: ParsedOptions,
-    ) -> None:
-        await help_sticker_monitor(client, message)
-
-    @h.command(
-        "help_sticker_duplicate_check", prefixes=config.CMD_PREFIX, filters=filters.me
-    )
-    async def help_duplicate_check_handler(
-        self, client: Client, message: Message, ctx: PluginContext["StickerPlugin"],
-        parsed: ParsedOptions,
-    ) -> None:
-        await help_sticker_duplicate_check(client, message)
-
-    @h.command("help_sticker_naming", prefixes=config.CMD_PREFIX, filters=filters.me)
-    async def help_naming_handler(
-        self, client: Client, message: Message, ctx: PluginContext["StickerPlugin"],
-        parsed: ParsedOptions,
-    ) -> None:
-        await help_sticker_naming(client, message)

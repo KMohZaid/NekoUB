@@ -103,8 +103,10 @@ class EvalPlugin(Plugin):
 
     @h.command(
         "eval",
+        signature="<python code>",
+        short_description="Evaluate Python code and show the result.",
         description=description,
-        examples=(Example('{cmd} print("hello")'),),
+        examples=(Example('{cmd} print("hello")', "Run a short Python statement."),),
         prefixes=config.CMD_PREFIX,
         parse_mode="markdown",
     )

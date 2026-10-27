@@ -33,7 +33,11 @@ def resolve_parse_mode(value: Any) -> ParseMode | Any:
 
 @dataclass(slots=True)
 class PluginContext(Generic[PluginT]):
-    """Framework helpers for one managed handler invocation."""
+    """Framework helpers for one managed handler invocation.
+
+    ``config`` is the shared application settings mapping supplied to the
+    PluginManager. The app loads environment-backed values in ``config.py``.
+    """
 
     client: Client[Any] | None
     update: Any
@@ -44,7 +48,7 @@ class PluginContext(Generic[PluginT]):
     parse_mode: ParseMode | str = ParseMode.HTML
 
     def get_config(self, key: str, default: Any = None) -> Any:
-        """Return a plugin setting, falling back to ``default``."""
+        """Return a shared application setting, falling back to ``default``."""
         return self.config.get(key, default)
 
     def get_config_typed(self, key: str, value_type: type[Any], default: Any = None) -> Any:

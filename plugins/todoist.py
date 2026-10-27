@@ -14,7 +14,7 @@ from pyrogram.types import Message
 from todoist_api_python.api import TodoistAPI
 
 import config
-from core.plugins import ParsedOptions, Plugin, PluginContext, handlers as h
+from core.plugins import Example, Option, ParsedOptions, Plugin, PluginContext, handlers as h
 from utils import get_logger
 
 logger = get_logger(__name__)
@@ -737,13 +737,36 @@ def _reserve_todo_message(message: Message) -> bool:
 
 class TodoistPlugin(Plugin):
     id = "todoist"
-    category = "Utility"
+    category = "Productivity"
     description = "Create and list Todoist tasks from Telegram messages."
+
+    def disabled_reason(self) -> str | None:
+        return INIT_ERROR
 
     @h.command(
         "todo",
         aliases=("todoist",),
-        description=description,
+        signature="<title> [#desc |text|] [#tags |a, b|] [#pN] [#due |when|] | list [page]",
+        short_description="Create a task with optional details or list saved tasks.",
+        description=(
+            "Create a Todoist task from the remaining title text, or use `list [page]` to view tasks. "
+            "Replying to a Telegram message includes its quoted content in the task description. "
+            "Optional markers add a description, labels, priority, or a natural-language due date."
+        ),
+        help_options=(
+            Option("description", aliases=("#desc",), label="#desc |text|", help="Set the task description to the text between vertical bars."),
+            Option("tags", aliases=("#tags", "#tag"), label="#tags |a, b| or #tag <name>", help="Apply labels, creating missing labels in Todoist."),
+            Option("priority", aliases=("#p1", "#p2", "#p3", "#p4"), label="#pN", help="Set priority from #p1 (very urgent) through #p4 (low)."),
+            Option("due", aliases=("#due",), label="#due |when|", help="Set a due date using Todoist's natural-language date format."),
+            Option("list", label="list [page]", help="List tasks, optionally selecting a page number."),
+        ),
+        examples=(
+            Example("{cmd} Buy milk", "Create a task with the title ‘Buy milk’."),
+            Example("{cmd} Fix login #desc |500 on submit| #tags |backend| #p1", "Add a description and label, with very urgent priority."),
+            Example("{cmd} Meeting #due |tomorrow 5pm|", "Create a task due tomorrow at 5pm."),
+            Example("{cmd} list", "Show the first page of tasks."),
+            Example("{cmd} list 2", "Show the second page of tasks."),
+        ),
         prefixes=config.CMD_PREFIX,
         filters=filters.me & ~filters.scheduled,
     )

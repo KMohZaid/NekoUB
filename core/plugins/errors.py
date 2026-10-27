@@ -64,17 +64,31 @@ def parse_options(
         }:
             tokens = tokens[1:]
 
-    by_long = {
-        f"--{option.name.replace('_', '-').lower()}": option
+    by_long: dict[str, Option] = {}
+    by_short: dict[str, Option] = {}
+    for option in definitions:
+        long_name = f"--{option.name.replace('_', '-').lower()}"
+        if long_name in by_long:
+            raise ValueError("Duplicate option name or short alias")
+        by_long[long_name] = option
+        for alias in (option.short, *option.aliases):
+            if alias is None:
+                continue
+            target = by_long if alias.startswith("--") else by_short
+            if alias in target and target[alias] is not option:
+                raise ValueError("Duplicate option name or short alias")
+            target[alias] = option
+
+    values = {
+        option.name: (
+            option.default
+            if option.default is not None
+            else option.action == "store_false"
+            if option.action in {"store_true", "store_false"}
+            else None
+        )
         for option in definitions
     }
-    by_short = {option.short: option for option in definitions if option.short}
-    if len(by_long) != len(definitions) or len(by_short) != sum(
-        option.short is not None for option in definitions
-    ):
-        raise ValueError("Duplicate option name or short alias")
-
-    values = {option.name: option.default for option in definitions if option.default is not None}
     seen: set[str] = set()
     positional: list[str] = []
     index = 0
@@ -90,12 +104,23 @@ def parse_options(
             positional.append(token)
             continue
 
+        if token in by_short:
+            option = by_short[token]
+            if option.action in {"store_true", "store_false"}:
+                if option.name in seen and not option.append:
+                    raise OptionParseError(
+                        f"Option <code>{token}</code> was provided more than once."
+                    )
+                _store(values, option, option.action == "store_true")
+                seen.add(option.name)
+                continue
+            token = option.short or f"--{option.name.replace('_', '-')}"
         if token.startswith("--"):
             name, separator, attached = token.partition("=")
             option = by_long.get(name)
             if option is None:
                 raise OptionParseError(f"Unknown option <code>{name}</code>.")
-            if name in seen and not option.append:
+            if option.name in seen and not option.append:
                 raise OptionParseError(
                     f"Option <code>{name}</code> was provided more than once."
                 )
@@ -119,7 +144,7 @@ def parse_options(
                     index += 1
                 value = _convert(option, raw, name)
             _store(values, option, value)
-            seen.add(name)
+            seen.add(option.name)
             continue
 
         cluster = token[1:]
@@ -129,7 +154,7 @@ def parse_options(
             option = by_short.get(name)
             if option is None:
                 raise OptionParseError(f"Unknown option <code>{name}</code>.")
-            if name in seen and not option.append:
+            if option.name in seen and not option.append:
                 raise OptionParseError(
                     f"Option <code>{name}</code> was provided more than once."
                 )
@@ -157,12 +182,12 @@ def parse_options(
                     offset += 1
                 value = _convert(option, raw, name)
             _store(values, option, value)
-            seen.add(name)
+            seen.add(option.name)
 
     required_missing = [
         f"--{option.name.replace('_', '-')}"
         for option in definitions
-        if option.required and option.name not in values
+        if option.required and values.get(option.name) is None
     ]
     if required_missing:
         rendered = ", ".join(f"<code>{name}</code>" for name in required_missing)

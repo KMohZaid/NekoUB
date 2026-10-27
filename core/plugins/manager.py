@@ -267,22 +267,36 @@ class PluginManager:
                 else:
                     example_prefix = prefixes[0] if prefixes else ""
                 prefix = prefixes[0] if prefixes else ""
-                commands.append(
-                    {
-                        "plugin": plugin_id,
-                        "prefix": prefix,
-                        "prefixes": tuple(prefixes),
-                        "category": command.category or declaration.category,
-                        "trigger": command.trigger,
-                        "aliases": command.aliases,
-                        "description": command.description,
-                        "examples": tuple(
-                            example.render(command.trigger, example_prefix)
-                            for example in command.examples
-                        ),
-                        "options": command.options,
-                    }
-                )
+                entries = command.help_entries or ({},)
+                for entry in entries:
+                    commands.append(
+                        {
+                            "plugin": plugin_id,
+                            "plugin_category": declaration.category,
+                            "plugin_description": declaration.description,
+                            "plugin_display_name": getattr(
+                                self.active[plugin_id].instance, "display_name", ""
+                            ),
+                            "prefix": prefix,
+                            "prefixes": tuple(prefixes),
+                            "category": command.category or declaration.category,
+                            "trigger": command.trigger,
+                            "aliases": command.aliases,
+                            "signature": entry.get("signature", command.signature),
+                            "description": entry.get("description", command.description),
+                            "short_description": entry.get("short_description", command.short_description),
+                            "hidden_from_help": command.hidden_from_help,
+                            "examples": tuple(
+                                example.render(command.trigger, example_prefix)
+                                for example in entry.get("examples", command.examples)
+                            ),
+                            "example_notes": tuple(
+                                example.note or "" for example in entry.get("examples", command.examples)
+                            ) if entry.get("examples", command.examples) else command.example_notes,
+                            "help_options": command.help_options,
+                            "options": command.options,
+                        }
+                    )
         return commands
 
     def _validate(self, plugin: Plugin) -> PluginDeclaration:
@@ -403,3 +417,8 @@ def _validate_options(options: tuple[Any, ...]) -> None:
             if option.short in short_names:
                 raise ValueError(f"Duplicate option {option.short}")
             short_names.add(option.short)
+        for alias in option.aliases:
+            names = long_names if alias.startswith("--") else short_names
+            if alias in names:
+                raise ValueError(f"Duplicate option {alias}")
+            names.add(alias)
