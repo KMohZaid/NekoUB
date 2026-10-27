@@ -8,7 +8,14 @@ from urllib.parse import urlparse
 import httpx
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
-from pyrogram.types import InlineQuery, Message, ReplyParameters
+from pyrogram.types import (
+    InlineQuery,
+    InlineQueryResultArticle,
+    InputRichMessage,
+    InputRichMessageContent,
+    Message,
+    ReplyParameters,
+)
 
 import config
 from core.plugins import Example, Plugin, PluginContext, ParsedOptions, handlers as h
@@ -32,16 +39,97 @@ MAX_AI_MESSAGES = 3
 INLINE_RESPONSE_TTL = 300.0
 
 RICH_MARKDOWN_DIRECTIVE = (
-    "Write answers using Telegram Rich Markdown, preserving its syntax rather "
-    "than flattening it. Use formatting such as **bold**, *italic*, ~~strike~~, "
+    "You are a friendly, natural, and conversational assistant for everyday questions, "
+    "not a coding-only bot. Do not default to a coding or tutorial answer: respond to "
+    "the actual topic and the user's intent, whether it is casual chat, advice, "
+    "explanations, recommendations, planning, creative work, or code. Match the "
+    "structure to the question and use a relaxed, clear tone without sounding stiff, "
+    "overly formal, or like a textbook. Be concise when the question is simple; a "
+    "short direct answer is better than a forced essay. Add detail when it helps, "
+    "and ask a brief follow-up only when needed. When the user asks for a detailed "
+    "answer, prioritize depth over the default brevity: explain the ideas clearly and "
+    "fully, with enough context and examples to make the answer genuinely useful. Keep "
+    "the tone conversational and enjoyable, as if explaining something to a curious "
+    "friend, rather than writing a dry reference entry. Use clean Rich Markdown sections "
+    "and whitespace to make a detailed answer easy to read on a phone. Put optional "
+    "deep dives and large code blocks in relevant collapsed sections so the main answer "
+    "stays easy to scan; do not collapse essential explanation or force sections into "
+    "a short answer. Follow the user's requested level of detail while keeping the "
+    "answer accurate and on-topic. Use at least one relevant emoji in a substantial "
+    "answer to make it engaging. Use emoji sparingly, not on every line. Keep "
+    "technical and coding explanations casual and friendly rather than formal, while "
+    "staying precise.\n\n"
+    "Every response MUST use Telegram Rich Markdown, preserving its syntax rather "
+    "than flattening it. Never answer in plain text when Rich Markdown can express "
+    "the structure. Use formatting such as **bold**, *italic*, ~~strike~~, "
     "`inline code`, ||spoilers||, headings, paragraphs, horizontal rules, "
     "unordered/ordered/task lists, blockquotes and expandable blockquotes where "
-    "useful. Prefer URL buttons for important external resources, using Telegram's "
+    "useful. Use a descriptive heading for substantial answers, but do not add a "
+    "heading to a short direct answer. Use real Markdown lists for explanatory "
+    "answers, sequences or groups, with **bold labels** for key terms. Do not "
+    "output a list of labels as unformatted paragraphs. Keep simple factual replies "
+    "brief, but still format them naturally.\n\n"
+    "Treat the message as a small, readable mobile UI: make the main point easy to "
+    "spot, keep paragraphs short, and use whitespace to separate ideas. Use emoji "
+    "in section headings or labels when they help scanning, choosing relevant emoji "
+    "sparingly; do not add emojis to every line. Do not add emojis when they would "
+    "feel distracting, inappropriate, or out of tone. Use a table for a real comparison "
+    "or compact structured data when it improves readability; do not use a table "
+    "for prose, a tiny list, or a simple answer. Do not use a table when it would "
+    "be too wide or awkward on a phone; use a short list instead. Use examples, "
+    "quotes, or code blocks only when they genuinely help explain the answer. "
+    "For a detailed explanation, use this visual pattern as a guide, adapting it "
+    "to the topic rather than copying it mechanically: start with a one-sentence "
+    "overview; use 2–5 short sections with headings like '### 🌟 The big idea' "
+    "or '### 🎮 How it works'; turn groups of facts into real Markdown bullets "
+    "or numbered lists; use a compact Markdown table for a meaningful comparison; "
+    "finish with a brief takeaway when it helps. For detailed explanations, "
+    "Markdown structure is required, not optional. Use actual Markdown headings "
+    "and lists; start every list item with '- ' or a numbered marker. Never leave "
+    "list items as bare lines or use 'Label: text' paragraphs as a substitute for "
+    "bullets. Use a compact Markdown table when the topic has meaningful categories "
+    "or comparisons, and ensure it has a header row, separator row, and the same "
+    "number of cells in every row. Never write pipe-separated pseudo-tables without "
+    "the separator row. For every detailed franchise overview, include a Markdown "
+    "comparison table; do not omit it when the franchise has multiple media or "
+    "formats. Use this exact structure and fill each row with useful detail: "
+    "'| Part | What it is | What people do with it |\\n| --- | --- | --- |\\n| Video games | ... | ... |\\n| Anime | ... | ... |\\n| Trading card game | ... | ... |'. "
+    "For a detailed Pokémon overview, the table must include rows for video games, "
+    "anime, and trading card game. For other franchises, adapt the rows to their "
+    "main parts. For Pokémon, cover the video games, anime, and trading card game, "
+    "with a concise description of what each offers. Use descriptive "
+    "Markdown links to verified official resources, not bare link labels; for Pokémon, "
+    "link the official site [Pokémon Official](https://www.pokemon.com/) and "
+    "[Pokédex](https://www.pokemon.com/us/pokedex/). Never invent URLs; omit links "
+    "you cannot verify. End detailed overviews with a useful, concise **TL;DR** that "
+    "summarizes the main points, not a generic closing paragraph. Use code blocks and "
+    "code examples only when they directly help answer the question. For other topics, "
+    "adapt this structure to the subject and do not force franchise-specific sections "
+    "or links. Before sending, check the rendered structure: headings are headings, "
+    "list items have markers, tables have complete Markdown syntax, and links are "
+    "clickable. Prefer Telegram URL buttons for important resources whose "
+    "destinations are known. For Pokémon, show a button for the official Pokédex "
+    "with url=\"https://www.pokemon.com/us/pokedex/\" and a separate "
+    "button for the official Pokémon site. Use short descriptive labels, and never "
+    "output a bare resource name in place of a clickable link or button. Do not copy "
+    "plain-text formatting from conversation history.\n\n"
+    "Prefer URL buttons for important external resources, using Telegram's "
     "HTML syntax, for example <tg-button type=\"url\" style=\"success\" "
     "url=\"https://example.com\">Open resource</tg-button>; a Markdown "
     "[label](url) is only an inline text link, not a button, so do not use it "
     "when the user needs a tappable button. Use buttons sparingly "
-    "and only when the destination is useful. Also use inline links, "
+    "and only when the destination is useful. For answers longer than about 2,500 "
+    "visible characters, keep the complete paragraph or section that crosses the "
+    "threshold visible, then place the continuation at the nearest completed "
+    "paragraph or section boundary inside a collapsed "
+    "<details><summary>Show more</summary>...</details> section. Count visible text "
+    "rather than Markdown syntax or link URLs. Allow the visible portion to exceed "
+    "the threshold slightly rather than splitting a paragraph, list, table, or code "
+    "block. Keep the opening and essential answer visible, and put optional depth "
+    "after it. Treat prior assistant replies in "
+    "conversation history as context for meaning only, not as examples of the "
+    "format to copy; apply the formatting instructions to every new answer. Also "
+    "use inline links, "
     "email/phone/user links, and emoji or date-time links where relevant. Use "
     "tables only when they clarify comparisons. "
     "Use inline math with $...$, display math with $$...$$, or fenced ```math "
@@ -53,16 +141,22 @@ RICH_MARKDOWN_DIRECTIVE = (
     "footnotes, underline, superscript, subscript, and other supported Rich "
     "Markdown syntax when useful, not as decoration. Organize long answers into "
     "useful <details open><summary>Section</summary>...</details> sections. For "
-    "answers longer than about 3,500 characters, keep the complete useful opening "
-    "(roughly 3,000–4,000 characters) visible, then place the remaining optional "
-    "depth inside a collapsed <details><summary>Show more</summary>...</details> "
-    "section. This gives a clear native Show more control while keeping the answer "
-    "useful before expansion. Do not truncate at 4,000 characters. Use <details> "
+    "answers longer than about 2,500 visible characters (excluding Markdown "
+    "syntax and link URLs), keep the complete "
+    "paragraph or section that crosses the threshold visible, then place the "
+    "continuation at the nearest completed paragraph or section boundary inside "
+    "a collapsed <details><summary>Show more</summary>...</details> section. Count "
+    "visible text rather than Markdown syntax or link URLs; allow the visible part "
+    "to exceed the threshold slightly instead of splitting a paragraph, list, table, "
+    "or code block. Keep the essential opening visible and put optional depth after it. "
+    "This gives a clear native Show more control while keeping the answer useful. "
+    "Use <details> "
     "collapsed only for the continuation or optional material, not the whole "
     "answer. Do not force every syntax into every response."
 )
 PLAIN_TEXT_DIRECTIVE = RICH_MARKDOWN_DIRECTIVE
 RICH_MESSAGE_LIMIT = 32768
+SHOW_MORE_VISIBLE_LIMIT = 2500
 RICH_MESSAGE_TRUNCATION = "\n\n[Response shortened to fit Telegram's rich-message limit.]"
 
 # chat_id -> list of {"role", "content"}
@@ -95,33 +189,141 @@ def _format_token_count(value: int) -> str:
     return exact
 
 
+def _estimate_tokens(text: str) -> int:
+    return (len(text) + 3) // 4
+
+
+def _estimate_prompt_tokens(messages: list[dict]) -> tuple[int, int]:
+    if not messages:
+        return 0, 0
+    current_prompt = messages[-1].get("content", "")
+    history_text = "\n".join(
+        str(message.get("content", "")) for message in messages[:-1]
+    )
+    return _estimate_tokens(history_text), _estimate_tokens(current_prompt)
+
+
 def _append_token_usage(
-    content: str, usage: dict | None, *, elapsed_seconds: float | None = None
+    content: str,
+    usage: dict | None,
+    *,
+    elapsed_seconds: float | None = None,
+    prompt_estimate: tuple[int, int] | None = None,
 ) -> str:
-    footer_parts = []
+    footer_lines = []
+    input_tokens = output_tokens = cached_tokens = None
     if isinstance(usage, dict):
         input_tokens = usage.get("prompt_tokens", usage.get("input_tokens"))
         output_tokens = usage.get("completion_tokens", usage.get("output_tokens"))
-        if isinstance(input_tokens, int) and isinstance(output_tokens, int):
-            total = usage.get("total_tokens")
-            if not isinstance(total, int):
-                total = input_tokens + output_tokens
-            footer_parts.extend(
-                (
-                    f"Input tokens: {_format_token_count(input_tokens)}",
-                    f"Output tokens: {_format_token_count(output_tokens)}",
-                    f"Total: {_format_token_count(total)}",
-                )
+        details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details")
+        if isinstance(details, dict):
+            cached_tokens = details.get(
+                "cached_tokens", details.get("cache_read_input_tokens")
             )
-    if elapsed_seconds is not None:
-        footer_parts.append(f"Time: {elapsed_seconds:.1f}s")
-    return f"{content}\n\n{' · '.join(footer_parts)}" if footer_parts else content
+
+    first_line = []
+    if isinstance(input_tokens, int):
+        first_line.append(f"Input tokens: {_format_token_count(input_tokens)}")
+    if isinstance(output_tokens, int):
+        first_line.append(f"Output tokens: {_format_token_count(output_tokens)}")
+    if first_line:
+        footer_lines.append(" · ".join(first_line))
+
+    prompt_line = []
+    if prompt_estimate is not None:
+        history_tokens, current_tokens = prompt_estimate
+        prompt_line.append(
+            f"Prompt tokens: ~{_format_token_count(history_tokens + current_tokens)} "
+            f"(history ~{_format_token_count(history_tokens)} + "
+            f"current ~{_format_token_count(current_tokens)})"
+        )
+    if isinstance(cached_tokens, int):
+        prompt_line.append(f"Cached tokens: {_format_token_count(cached_tokens)}")
+    if prompt_line:
+        footer_lines.append(" · ".join(prompt_line))
+
+    if isinstance(input_tokens, int) and isinstance(output_tokens, int):
+        total = usage.get("total_tokens") if isinstance(usage, dict) else None
+        if not isinstance(total, int):
+            total = input_tokens + output_tokens
+        total_line = [f"Total: {_format_token_count(total)}"]
+        if elapsed_seconds is not None:
+            total_line.append(f"Time: {elapsed_seconds:.1f}s")
+        footer_lines.append(" · ".join(total_line))
+    elif elapsed_seconds is not None:
+        footer_lines.append(f"Time: {elapsed_seconds:.1f}s")
+
+    return f"{content}\n\n---\n\n{'\n'.join(footer_lines)}" if footer_lines else content
+
+
+_RICH_VISIBLE_MARKUP_RE = re.compile(r"```[\w+-]*\n?|\*\*|__|~~|\|\||`|<[^>]+>")
+_RICH_LINK_RE = re.compile(r"!?\[([^\]]*)\]\(([^)]+)\)")
+
+
+def _visible_rich_text_length(text: str) -> int:
+    text = _RICH_LINK_RE.sub(lambda match: match.group(1), text)
+    return len(_RICH_VISIBLE_MARKUP_RE.sub("", text))
+
+
+def _collapse_long_answer(content: str, threshold: int = SHOW_MORE_VISIBLE_LIMIT) -> str:
+    has_third_main_heading = sum(
+        1 for line in content.splitlines() if re.match(r"^##\s+", line)
+    ) >= 3
+    if _visible_rich_text_length(content) <= threshold and not has_third_main_heading:
+        return content
+
+    lines = content.splitlines(keepends=True)
+    visible_length = 0
+    inside_fence = False
+    split_index = None
+    main_heading_count = 0
+
+    for index, line in enumerate(lines):
+        if line.lstrip().startswith("```"):
+            inside_fence = not inside_fence
+        if not inside_fence and re.match(r"^##\s+", line):
+            main_heading_count += 1
+            if main_heading_count == 3:
+                split_index = index
+                break
+
+        visible_length += _visible_rich_text_length(line)
+        if inside_fence:
+            continue
+        if main_heading_count >= 3:
+            split_index = index
+            break
+        if has_third_main_heading or visible_length < threshold:
+            continue
+
+        is_table_row = line.lstrip().startswith("|")
+        next_line_is_table = (
+            index + 1 < len(lines) and lines[index + 1].lstrip().startswith("|")
+        )
+        if is_table_row or next_line_is_table:
+            continue
+        if line.strip() == "":
+            split_index = index + 1
+            break
+
+    if split_index is None or split_index >= len(lines):
+        return content
+
+    visible_text = "".join(lines[:split_index]).rstrip()
+    remaining_text = "".join(lines[split_index:]).strip()
+    if not remaining_text:
+        return content
+
+    return (
+        f"{visible_text}\n\n<details><summary>Show more</summary>\n\n"
+        f"{remaining_text}\n\n</details>"
+    )
 
 
 def _prepare_rich_answer(content: str) -> str:
     if not content or not content.strip():
         raise ValueError("The model returned an empty rich answer.")
-    content = content.strip()
+    content = _collapse_long_answer(content.strip())
     if len(content.encode("utf-8")) <= RICH_MESSAGE_LIMIT:
         return content
     marker = RICH_MESSAGE_TRUNCATION
@@ -143,34 +345,20 @@ def _take_inline_response(key: str) -> str | None:
     return text
 
 
-async def _answer_ai_inline_query(client, query_id: str, key: str, bot_token: str) -> None:
+async def _answer_ai_inline_query(query: InlineQuery, key: str) -> None:
     text = _take_inline_response(key)
     results = []
     if text is not None:
         results.append(
-            {
-                "type": "article",
-                "id": key,
-                "title": "AI response",
-                "input_message_content": {"rich_message": {"markdown": text}},
-            }
+            InlineQueryResultArticle(
+                title="AI response",
+                id=key,
+                input_message_content=InputRichMessageContent(
+                    InputRichMessage(markdown=text)
+                ),
+            )
         )
-    response = await client.post(
-        f"https://api.telegram.org/bot{bot_token}/answerInlineQuery",
-        json={
-            "inline_query_id": query_id,
-            "results": results,
-            "cache_time": 0,
-            "is_personal": True,
-        },
-    )
-    try:
-        data = response.json()
-    except Exception as exc:
-        raise RuntimeError("Telegram returned a non-JSON inline-query response") from exc
-    if response.status_code != 200 or not isinstance(data, dict) or not data.get("ok"):
-        detail = data.get("description", "Telegram inline-query request failed") if isinstance(data, dict) else "Telegram inline-query request failed"
-        raise RuntimeError(detail)
+    await query.answer(results, cache_time=0, is_personal=True)
 
 
 def _origin() -> str:
@@ -178,11 +366,23 @@ def _origin() -> str:
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
-def _headers() -> dict:
+def _headers(api_key: str) -> dict:
     headers = {"Content-Type": "application/json"}
-    if config.AI_API_KEY:
-        headers["Authorization"] = f"Bearer {config.AI_API_KEY}"
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     return headers
+
+
+def _providers(chat_id: int) -> list[tuple[str, str, str]]:
+    providers = [
+        (provider["url"], provider["key"], provider["model"])
+        for provider in config.AI_PROVIDERS
+    ]
+    override = _overrides.get(chat_id, {}).get("model")
+    if providers and override:
+        url, key, _model_name = providers[0]
+        providers[0] = (url, key, override)
+    return providers
 
 
 def _esc(text: str) -> str:
@@ -432,59 +632,73 @@ def _error_message(response: httpx.Response) -> str:
     return f"HTTP {response.status_code}"
 
 
-async def _complete(messages: list, chat_id: int) -> tuple[str | None, str | None, dict | None]:
-    """Return (content, error, usage). Handles the gateway's 202 deferred queue."""
-    model = _model(chat_id)
+async def _complete(
+    messages: list, chat_id: int
+) -> tuple[str | None, str | None, dict | None]:
+    """Return (content, error, usage), trying providers in configured order."""
+    # TODO: Evaluate an LLM library (e.g. LiteLLM or LangChain) for provider
+    # routing and conversation/context management; keep httpx for now.
+    last_error = None
     async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-        response = await client.post(
-            f"{config.AI_API_URL.rstrip('/')}/chat/completions",
-            headers=_headers(),
-            json={"model": model, "messages": messages},
-        )
-
-        # Deferred queue: 202 + poll the result endpoint until it's ready.
-        if response.status_code == 202:
+        providers = _providers(chat_id)
+        for index, (api_url, api_key, model) in enumerate(providers):
             try:
-                info = response.json()
-            except Exception:
-                info = {}
-            result_url = info.get("result_url") or (
-                f"/v1/requests/{info.get('id')}"
-            )
-            delay = float(info.get("retry_after") or 5)
-            for _ in range(MAX_POLLS):
-                await asyncio.sleep(max(1.0, delay))
-                poll = await client.get(
-                    _origin() + result_url, headers=_headers()
+                response = await client.post(
+                    f"{api_url.rstrip('/')}/chat/completions",
+                    headers=_headers(api_key),
+                    json={"model": model, "messages": messages},
                 )
-                if poll.status_code == 202:
+
+                # Deferred queue: 202 + poll the result endpoint until it's ready.
+                if response.status_code == 202:
                     try:
-                        delay = float(
-                            poll.json().get("retry_after") or delay
-                        )
+                        info = response.json()
                     except Exception:
-                        pass
+                        info = {}
+                    result_url = info.get("result_url") or f"/v1/requests/{info.get('id')}"
+                    delay = float(info.get("retry_after") or 5)
+                    for _ in range(MAX_POLLS):
+                        await asyncio.sleep(max(1.0, delay))
+                        parsed = urlparse(api_url)
+                        origin = f"{parsed.scheme}://{parsed.netloc}"
+                        poll = await client.get(
+                            origin + result_url, headers=_headers(api_key)
+                        )
+                        if poll.status_code == 202:
+                            try:
+                                delay = float(poll.json().get("retry_after") or delay)
+                            except Exception:
+                                pass
+                            continue
+                        response = poll
+                        break
+                    else:
+                        last_error = "Timed out waiting for the deferred response."
+                        continue
+
+                if response.status_code != 200:
+                    last_error = _error_message(response)
                     continue
-                response = poll
-                break
-            else:
-                return None, "Timed out waiting for the deferred response.", None
 
-        if response.status_code != 200:
-            return None, _error_message(response), None
+                try:
+                    data = response.json()
+                except Exception:
+                    last_error = "The endpoint returned a non-JSON response."
+                    continue
 
-        try:
-            data = response.json()
-        except Exception:
-            return None, "The endpoint returned a non-JSON response.", None
+                content = _extract_content(data)
+                if not content:
+                    last_error = _error_message(response) if "error" in data else (
+                        "The model returned an empty response."
+                    )
+                    continue
+                usage = data.get("usage")
+                return content, None, usage if isinstance(usage, dict) else None
+            except Exception as exc:
+                logger.warning("[AI] Provider %s failed: %s", index + 1, type(exc).__name__)
+                last_error = f"Request failed: {type(exc).__name__}"
 
-        content = _extract_content(data)
-        if not content:
-            return None, _error_message(response) if "error" in data else (
-                "The model returned an empty response."
-            ), None
-        usage = data.get("usage")
-        return content, None, usage if isinstance(usage, dict) else None
+    return None, last_error or "The AI request failed.", None
 
 
 async def _ai_search(client, message: Message, query: str, chat_id: int) -> None:
@@ -579,13 +793,8 @@ class AIPlugin(Plugin):
         ctx: PluginContext["AIPlugin"],
     ) -> None:
         key = query.query.partition(".")[2]
-        token = getattr(ctx.bot, "bot_token", None) or config.BOT_TOKEN
-        if not token:
-            await query.answer([])
-            return
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                await _answer_ai_inline_query(client, query.id, key, token)
+            await _answer_ai_inline_query(query, key)
         except Exception as exc:
             logger.warning(f"[AI] inline query failed: {type(exc).__name__}")
             raise
@@ -705,9 +914,13 @@ class AIPlugin(Plugin):
             context = f"Context (replied message):\n{reply_text}\n\n"
             prompt = context + (arg or "Summarize or respond to the above.")
 
-        if not config.AI_API_KEY and "127.0.0.1" not in config.AI_API_URL:
+        if not any(
+            api_key or "127.0.0.1" in api_url
+            for api_url, api_key, _provider_model in _providers(chat_id)
+        ):
             await message.edit(
-                "❌ No AI_API_KEY configured. Set it in .env.",
+                "❌ No AI provider configured. Set AI_API_URL_N, AI_API_KEY_N, "
+                "and AI_MODEL_N in .env.",
                 parse_mode=ParseMode.HTML,
             )
             return
@@ -747,7 +960,10 @@ class AIPlugin(Plugin):
 
         elapsed_seconds = time.monotonic() - started_at
         content = _append_token_usage(
-            content, usage, elapsed_seconds=elapsed_seconds
+            content,
+            usage,
+            elapsed_seconds=elapsed_seconds,
+            prompt_estimate=_estimate_prompt_tokens(messages),
         )
         key = _stage_inline_response(_prepare_rich_answer(content))
         try:
