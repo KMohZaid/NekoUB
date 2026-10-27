@@ -239,23 +239,22 @@ class RichAnswerPreparationTests(unittest.TestCase):
         self.assertIn(table, visible)
         self.assertIn(continuation, collapsed)
 
-    def test_collapses_before_third_main_heading(self):
+    def test_collapses_before_third_numbered_section_without_character_threshold(self):
         answer = (
-            "# Overview\n\nIntroduction.\n\n"
-            "## First section\n\nFirst details.\n\n"
-            "## Second section\n\nSecond details.\n\n"
-            "## Third section\n\nThird details.\n\n"
-            "## Fourth section\n\nMore details."
+            "Python in depth: build a bot 🐍\n\n"
+            "Introduction.\n\n"
+            "1. Set up Python\n\nInstall it.\n\n"
+            "2. Python’s basic building blocks\n\nLearn variables.\n\n"
+            "3. Build the bot\n\nWrite code."
         )
 
-        prepared = ai._collapse_long_answer(answer, threshold=40)
+        prepared = ai._collapse_long_answer(answer, threshold=100000)
 
-        self.assertIn("## Second section", prepared.split("<details>", 1)[0])
-        self.assertTrue(
-            prepared.split("<details><summary>Show more</summary>", 1)[1]
-            .lstrip()
-            .startswith("## Third section")
+        visible, collapsed = prepared.split(
+            "<details><summary>Show more</summary>", maxsplit=1
         )
+        self.assertIn("2. Python’s basic building blocks", visible)
+        self.assertTrue(collapsed.lstrip().startswith("3. Build the bot"))
 
     def test_visible_length_ignores_markdown_and_link_url_syntax(self):
         self.assertEqual(
@@ -339,12 +338,18 @@ class RichAnswerPreparationTests(unittest.TestCase):
 
     def test_prompt_uses_casual_tone_and_relevant_emojis(self):
         for instruction in (
-            "Use at least one relevant emoji in a substantial answer",
-            "Use emoji sparingly, not on every line",
+            "Use a relevant emoji in the title and section headings",
+            "do not decorate every line",
             "Keep technical and coding explanations casual",
         ):
             with self.subTest(instruction=instruction):
                 self.assertIn(instruction, ai.RICH_MARKDOWN_DIRECTIVE)
+
+    def test_prompt_emphasizes_emoji_in_titles_and_section_headings(self):
+        self.assertIn(
+            "Use a relevant emoji in the title and section headings",
+            ai.RICH_MARKDOWN_DIRECTIVE,
+        )
 
     def test_rich_markdown_prompt_requires_formatted_structured_answers(self):
         for instruction in (

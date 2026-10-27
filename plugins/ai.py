@@ -55,8 +55,9 @@ RICH_MARKDOWN_DIRECTIVE = (
     "deep dives and large code blocks in relevant collapsed sections so the main answer "
     "stays easy to scan; do not collapse essential explanation or force sections into "
     "a short answer. Follow the user's requested level of detail while keeping the "
-    "answer accurate and on-topic. Use at least one relevant emoji in a substantial "
-    "answer to make it engaging. Use emoji sparingly, not on every line. Keep "
+    "answer accurate and on-topic. Use a relevant emoji in the title and section "
+    "headings of a substantial answer to make it engaging, but do not decorate every "
+    "line. Keep "
     "technical and coding explanations casual and friendly rather than formal, while "
     "staying precise.\n\n"
     "Every response MUST use Telegram Rich Markdown, preserving its syntax rather "
@@ -266,34 +267,25 @@ def _visible_rich_text_length(text: str) -> int:
 
 
 def _collapse_long_answer(content: str, threshold: int = SHOW_MORE_VISIBLE_LIMIT) -> str:
-    has_third_main_heading = sum(
-        1 for line in content.splitlines() if re.match(r"^##\s+", line)
-    ) >= 3
-    if _visible_rich_text_length(content) <= threshold and not has_third_main_heading:
-        return content
-
+    section_heading = re.compile(r"^(?:##\s+|\d+\.\s+)")
     lines = content.splitlines(keepends=True)
     visible_length = 0
     inside_fence = False
+    section_count = 0
     split_index = None
-    main_heading_count = 0
 
     for index, line in enumerate(lines):
         if line.lstrip().startswith("```"):
             inside_fence = not inside_fence
-        if not inside_fence and re.match(r"^##\s+", line):
-            main_heading_count += 1
-            if main_heading_count == 3:
+        heading_match = section_heading.match(line) if not inside_fence else None
+        if heading_match:
+            section_count += 1
+            if section_count == 3:
                 split_index = index
                 break
 
         visible_length += _visible_rich_text_length(line)
-        if inside_fence:
-            continue
-        if main_heading_count >= 3:
-            split_index = index
-            break
-        if has_third_main_heading or visible_length < threshold:
+        if inside_fence or visible_length < threshold:
             continue
 
         is_table_row = line.lstrip().startswith("|")
