@@ -20,13 +20,15 @@ class RecentContextTests(unittest.IsolatedAsyncioTestCase):
                 yield item
 
         client = Mock()
-        client.get_chat_history = Mock(side_effect=lambda _chat, **kwargs: history(**kwargs))
+        client.search_messages = Mock(side_effect=lambda _chat, **kwargs: history(**kwargs))
         command = Mock(chat=Mock(id=7), id=13)
 
         result = await ai._recent_context(client, command, 2)
 
         self.assertEqual(result, "Lee: first\nSam: second")
-        client.get_chat_history.assert_called_once_with(7, limit=100, offset_id=13)
+        client.search_messages.assert_called_once_with(
+            7, query="", max_id=13, limit=100
+        )
 
     async def test_paginates_using_oldest_returned_message_id(self):
         pages = [
@@ -39,13 +41,15 @@ class RecentContextTests(unittest.IsolatedAsyncioTestCase):
                 yield item
 
         client = Mock()
-        client.get_chat_history = Mock(side_effect=lambda _chat, **kwargs: history(**kwargs))
+        client.search_messages = Mock(side_effect=lambda _chat, **kwargs: history(**kwargs))
         command = Mock(chat=Mock(id=7), id=13)
 
         result = await ai._recent_context(client, command, 2)
 
         self.assertEqual(result, "Unknown: old\nUnknown: new")
-        self.assertEqual(client.get_chat_history.call_args_list[1].kwargs["offset_id"], 11)
+        self.assertEqual(
+            client.search_messages.call_args_list[1].kwargs["max_id"], 11
+        )
 
 
 class InlineResponseStagingTests(unittest.TestCase):
@@ -366,6 +370,10 @@ class RichAnswerPreparationTests(unittest.TestCase):
             ai._append_token_usage("Answer", None, elapsed_seconds=1.2),
             "Answer\n\n---\n\nTime: 1.2s",
         )
+
+    def test_active_prompt_requires_complete_markdown_table_syntax(self):
+        self.assertIn("header row", ai.RICH_MARKDOWN_DIRECTIVE)
+        self.assertIn("separator row", ai.RICH_MARKDOWN_DIRECTIVE)
 
     def test_active_prompt_is_the_original_rich_markdown_directive(self):
         self.assertTrue(ai.RICH_MARKDOWN_DIRECTIVE.startswith(

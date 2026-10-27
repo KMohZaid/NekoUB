@@ -490,9 +490,15 @@ class PluginManagerTests(unittest.TestCase):
             sticker_plugin_help = module.render("sticker")
             self.assertIn("**Sticker**", sticker_plugin_help)
             self.assertEqual(module._help_page_action("sticker"), "plugin:stickers:sticker")
+            self.assertEqual(module._help_page_action("ai"), "command:ai_tools:ai:ai")
             self.assertEqual(
                 module._help_page_action("kang"), "command:stickers:sticker:kang"
             )
+            ai_action = module._help_page_action("ai")
+            self.assertEqual(ai_action, "command:ai_tools:ai:ai")
+            ai_back_button = module._help_keyboard(ai_action).inline_keyboard[-1][0]
+            self.assertEqual(ai_back_button.text, "⬅️ Back to plugins")
+            self.assertEqual(ai_back_button.callback_data, "help.category:ai_tools")
             self.assertIn(".kang", sticker_plugin_help)
             self.assertIn(".sticker", sticker_plugin_help)
             sticker_plugin_keyboard = module._help_keyboard("plugin:stickers:sticker")
@@ -553,7 +559,7 @@ class PluginManagerTests(unittest.TestCase):
             self.assertEqual(
                 module._help_keyboard("command:core:alive:alive")
                 .inline_keyboard[0][0].callback_data,
-                "help.plugin:core:alive",
+                "help.category:core",
             )
             self.assertIn("Disabled", module.render_root())
             disabled_keyboard = module._help_keyboard("category:disabled")

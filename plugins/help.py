@@ -121,6 +121,13 @@ def _help_keyboard(current: str = "root") -> InlineKeyboardMarkup:
         plugins = _plugins_for_category(category)
         plugin = next((item for item in plugins if item["id"] == plugin_id), None)
         if plugin is not None:
+            if len(plugin["commands"]) == 1:
+                return InlineKeyboardMarkup([[
+                    InlineKeyboardButton(
+                        "⬅️ Back to plugins",
+                        callback_data=f"help.category:{category}",
+                    )
+                ]])
             return InlineKeyboardMarkup([[
                 InlineKeyboardButton(
                     f"⬅️ Back to {plugin['name']}",
@@ -385,6 +392,8 @@ def _help_page_action(name: str) -> str:
     plugin_match = render_plugin_lookup(name)
     if plugin_match is not None:
         key, plugin = plugin_match
+        if len(plugin["commands"]) == 1:
+            return f"command:{key}:{plugin['id']}:{plugin['commands'][0]['trigger']}"
         return f"plugin:{key}:{plugin['id']}"
     matches = []
     for category in _categories():

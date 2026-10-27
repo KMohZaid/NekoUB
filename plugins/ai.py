@@ -165,6 +165,8 @@ RICH_MARKDOWN_DIRECTIVE = (
     "unordered/ordered/task lists, blockquotes and expandable blockquotes where "
     "useful. Use links, email/phone/user links, styled URL buttons, and emoji or "
     "date-time links when relevant. Use tables only when they clarify comparisons. "
+    "Every Markdown table must include a header row, a separator row, and the "
+    "same number of columns in each row. "
     "Use inline math with $...$, display math with $$...$$, or fenced ```math "
     "blocks for equations. Use fenced code blocks with a language tag. Use "
     "footnotes, underline, superscript, subscript, and other supported Rich "
@@ -535,12 +537,12 @@ def _strip_markdown(text: str) -> str:
     return text.strip()
 
 
-async def _send_processing_reaction(client, message: Message) -> bool:
+async def _send_reaction(client, message: Message, emoji: str) -> bool:
     try:
         if hasattr(message, "react"):
-            await message.react("👨‍💻")
+            await message.react(emoji)
         elif hasattr(client, "send_reaction"):
-            await client.send_reaction(message.chat.id, message.id, "👨‍💻")
+            await client.send_reaction(message.chat.id, message.id, emoji)
         else:
             return False
         return True
@@ -605,22 +607,23 @@ def _system(chat_id: int) -> str:
 async def _recent_context(client, message: Message, count: int) -> str:
     """Fetch the latest text/caption messages before the command."""
     collected = []
-    offset_id = message.id
+    max_id = message.id
     while len(collected) < min(count, MAX_CONTEXT_MESSAGES):
         batch = []
-        async for item in client.get_chat_history(
+        async for item in client.search_messages(
             message.chat.id,
+            query="",
+            max_id=max_id,
             limit=CONTEXT_PAGE_SIZE,
-            offset_id=offset_id,
         ):
             batch.append(item)
         if not batch:
             break
 
         oldest_id = min(item.id for item in batch)
-        if oldest_id >= offset_id:
+        if oldest_id >= max_id:
             break
-        offset_id = oldest_id
+        max_id = oldest_id
         for item in batch:
             text = (item.text or item.caption or "").strip()
             if not text:
@@ -980,6 +983,7 @@ class AIPlugin(Plugin):
 
         prompt = arg
         if context_count:
+            await _send_reaction(client, message, "👀")
             recent = await _recent_context(client, message, context_count)
             if recent:
                 prompt = f"Recent chat messages:\n{recent}\n\n{prompt}".strip()
@@ -1009,7 +1013,7 @@ class AIPlugin(Plugin):
         messages.extend(history)
         messages.append({"role": "user", "content": prompt})
 
-        await _send_processing_reaction(client, message)
+        await _send_reaction(client, message, "👨‍💻")
         started_at = time.monotonic()
         try:
             content, error, usage = await _complete(messages, chat_id)
