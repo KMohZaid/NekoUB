@@ -64,6 +64,7 @@ class PluginManager:
         self.active: dict[str, ActivePlugin] = {}
         self.status: dict[str, str] = {}
         self._module_owners: dict[str, str] = {}
+        self._reload_generation = 0
 
     def load_all(self) -> dict[str, str]:
         self.plugin_dir.mkdir(parents=True, exist_ok=True)
@@ -196,9 +197,38 @@ class PluginManager:
                 registered_client.remove_managed_handler(handler, registered_group)
             raise
 
-        if previous is not None:
-            for registered_client, handler, registered_group in reversed(previous.handlers):
-                registered_client.remove_managed_handler(handler, registered_group)
+        removed_previous: list[tuple[Any, Any, int, str]] = []
+        try:
+            if previous is not None:
+                previous_handlers = zip(
+                    previous.handlers, previous.declaration.handlers
+                )
+                for (registered_client, handler, registered_group), item in reversed(
+                    list(previous_handlers)
+                ):
+                    registered_client.remove_managed_handler(handler, registered_group)
+                    removed_previous.append(
+                        (registered_client, handler, registered_group, item.event)
+                    )
+        except Exception:
+            for registered_client, handler, registered_group in reversed(staged):
+                try:
+                    registered_client.remove_managed_handler(handler, registered_group)
+                except Exception:
+                    logger.exception("Could not roll back staged handler for %s", plugin.id)
+            for registered_client, handler, registered_group, event in reversed(
+                removed_previous
+            ):
+                try:
+                    registered_client.register_managed_handler(
+                        handler,
+                        registered_group,
+                        plugin_id=plugin.id,
+                        event=event,
+                    )
+                except Exception:
+                    logger.exception("Could not restore previous handler for %s", plugin.id)
+            raise
         self.registry.plugins[plugin.id] = declaration
         self.active[plugin.id] = ActivePlugin(
             plugin,
@@ -220,12 +250,16 @@ class PluginManager:
         if path is None or not path.is_file():
             raise FileNotFoundError(path or f"source path for plugin {plugin_id!r}")
         # Load into an isolated module name; only swap after staging succeeds.
-        candidate_name = f"plugins._candidate_{plugin_id}"
+        self._reload_generation += 1
+        candidate_name = f"plugins._candidate_{plugin_id}_{self._reload_generation}"
+        canonical_name = f"plugins.{path.stem}"
+        previous_canonical = sys.modules.get(canonical_name)
         spec = importlib.util.spec_from_file_location(candidate_name, path)
         if spec is None or spec.loader is None:
             raise ImportError(f"Unable to create module spec for {path}")
         module = importlib.util.module_from_spec(spec)
         sys.modules[candidate_name] = module
+        sys.modules[canonical_name] = module
         try:
             spec.loader.exec_module(module)
             candidates = [
@@ -242,8 +276,12 @@ class PluginManager:
             self.activate(candidates[0], module_name=candidate_name, module=module, replace=True)
         except Exception:
             sys.modules.pop(candidate_name, None)
+            if previous_canonical is None:
+                sys.modules.pop(canonical_name, None)
+            else:
+                sys.modules[canonical_name] = previous_canonical
             raise
-        if current.module_name != "<memory>":
+        if current.module_name != "<memory>" and current.module_name != canonical_name:
             sys.modules.pop(current.module_name, None)
         self._module_owners.pop(current.module_name, None)
 
@@ -403,22 +441,34 @@ class PluginManager:
         if active.module_name != "<memory>":
             sys.modules.pop(active.module_name, None)
         self.active.pop(active.declaration.plugin_id, None)
+        if active.source_path is not None:
+            canonical_name = f"plugins.{active.source_path.stem}"
+            if not any(
+                other.source_path is not None
+                and f"plugins.{other.source_path.stem}" == canonical_name
+                for other in self.active.values()
+            ):
+                sys.modules.pop(canonical_name, None)
 
 
 def _validate_options(options: tuple[Any, ...]) -> None:
     long_names: set[str] = set()
     short_names: set[str] = set()
     for option in options:
-        long_name = option.name.replace("_", "-").casefold()
+        long_name = f"--{option.name.replace('_', '-').casefold()}"
         if long_name in long_names:
-            raise ValueError(f"Duplicate option --{long_name}")
+            raise ValueError(f"Duplicate option {long_name}")
         long_names.add(long_name)
         if option.short:
             if option.short in short_names:
                 raise ValueError(f"Duplicate option {option.short}")
             short_names.add(option.short)
+
+    aliases: set[tuple[str, str]] = set()
+    for option in options:
         for alias in option.aliases:
             names = long_names if alias.startswith("--") else short_names
-            if alias in names:
+            key = ("long" if alias.startswith("--") else "short", alias.casefold())
+            if alias in names or key in aliases:
                 raise ValueError(f"Duplicate option {alias}")
-            names.add(alias)
+            aliases.add(key)

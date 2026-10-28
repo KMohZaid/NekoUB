@@ -263,6 +263,105 @@ class PluginManagerTests(unittest.TestCase):
         self.assertEqual(self.manager.active["demo"].source_path, plugin_path)
         self.assertEqual(self.client.register_managed_handler.call_count, 2)
 
+    def test_reloads_use_a_fresh_candidate_module_each_time(self):
+        plugin_path = Path(self.temp_dir.name) / "demo_plugin.py"
+        plugin_path.write_text(
+            "from core.plugins import Plugin, handlers as h\n"
+            "class Demo(Plugin):\n"
+            "    id = 'demo'\n"
+            "    @h.command('hello')\n"
+            "    async def hello(self, client, message, ctx, args): pass\n",
+            encoding="utf-8",
+        )
+        self.manager.load_path(plugin_path)
+        self.manager.reload("demo")
+        first_name = self.manager.active["demo"].module_name
+        self.manager.reload("demo")
+        second_name = self.manager.active["demo"].module_name
+        self.assertNotEqual(first_name, second_name)
+        self.assertNotIn(first_name, sys.modules)
+        self.assertIs(sys.modules[second_name], self.manager.active["demo"].module)
+        self.manager._deactivate(self.manager.active["demo"])
+        self.assertNotIn("plugins.demo_plugin", sys.modules)
+
+    def test_alias_cannot_collide_with_a_later_option_short_name(self):
+        class AliasCollision(Plugin):
+            id = "alias_collision"
+
+            @h.command(
+                "hello",
+                options=(
+                    Option("first", aliases=("-x",)),
+                    Option("second", short="-x"),
+                ),
+            )
+            async def hello(self, client, message, ctx, args):
+                pass
+
+        with self.assertRaisesRegex(ValueError, "Duplicate option"):
+            self.manager.activate(AliasCollision())
+        self.client.register_managed_handler.assert_not_called()
+
+    def test_long_alias_cannot_collide_with_later_long_option(self):
+        class AliasCollision(Plugin):
+            id = "alias_collision"
+
+            @h.command(
+                "hello",
+                options=(
+                    Option("first", aliases=("--second",)),
+                    Option("second"),
+                ),
+            )
+            async def hello(self, client, message, ctx, args):
+                pass
+
+        with self.assertRaisesRegex(ValueError, "Duplicate option"):
+            self.manager.activate(AliasCollision())
+        self.client.register_managed_handler.assert_not_called()
+
+    def test_reload_removes_staged_handlers_when_replacing_old_handlers_fails(self):
+        plugin_path = Path(self.temp_dir.name) / "demo_plugin.py"
+        plugin_path.write_text(
+            "from core.plugins import Plugin, handlers as h\n"
+            "class Demo(Plugin):\n"
+            "    id = 'demo'\n"
+            "    @h.command('hello')\n"
+            "    async def hello(self, client, message, ctx, args): pass\n",
+            encoding="utf-8",
+        )
+        plugin_path.write_text(
+            "from core.plugins import Plugin, handlers as h\n"
+            "class Demo(Plugin):\n"
+            "    id = 'demo'\n"
+            "    @h.command('hello')\n"
+            "    async def hello(self, client, message, ctx, args): pass\n"
+            "    @h.command('goodbye')\n"
+            "    async def goodbye(self, client, message, ctx, args): pass\n",
+            encoding="utf-8",
+        )
+        self.manager.load_path(plugin_path)
+        active_before = self.manager.active["demo"]
+        removed_handlers = []
+
+        def fail_after_one_old_handler(handler, group):
+            if handler in [item[1] for item in active_before.handlers]:
+                if removed_handlers:
+                    raise RuntimeError("remove failed")
+                removed_handlers.append(handler)
+
+        self.client.remove_managed_handler.side_effect = fail_after_one_old_handler
+        with self.assertRaisesRegex(RuntimeError, "remove failed"):
+            self.manager.reload("demo")
+        self.assertIs(self.manager.active["demo"], active_before)
+        self.assertEqual(self.manager.registry.plugins["demo"], active_before.declaration)
+        self.assertEqual(len(removed_handlers), 1)
+        self.assertEqual(self.client.remove_managed_handler.call_count, 4)
+        self.assertEqual(
+            self.client.register_managed_handler.call_args.kwargs["event"],
+            "command",
+        )
+
     def test_help_plugin_declares_aliases_and_command_help(self):
         plugins_dir = Path(__file__).resolve().parents[1] / "plugins"
         previous_config = sys.modules.get("config")
