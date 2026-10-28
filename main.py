@@ -26,6 +26,7 @@ loaded_plugins = {}
 public_plugin_status: dict[str, dict[str, str | None]] = {}
 loaded_plugin_handlers = {}  # Track legacy public plugin handlers by module.
 plugin_manager = None
+private_plugin_manager = None
 running_tasks = {}  # Track running exec/eval tasks for .kill command
 
 
@@ -241,16 +242,40 @@ def load_all_plugins(*, skip_paths: set[Path] | None = None):
     logger.info("Loaded %s/%s public plugins", public_loaded, public_total)
 
 
+def load_private_plugins() -> dict[str, str]:
+    """Load managed plugins from the gitignored private plugin directory."""
+    global private_plugin_manager
+    private_dir = Path(__file__).parent / "private_plugins"
+    if not private_dir.exists():
+        logger.info("Private plugin directory not found; skipping private plugins")
+        return {}
+    private_plugin_manager = PluginManager(
+        app,
+        private_dir,
+        prefix=config.CMD_PREFIX,
+        config={
+            key: value
+            for key, value in vars(config).items()
+            if key.isupper() and key != "BOT_TOKEN"
+        },
+        user_client=app,
+        bot_client=bot,
+        module_prefix="private_plugins",
+    )
+    return private_plugin_manager.load_all()
+
+
 def reload_plugins():
-    """Reload managed and legacy public plugins without clearing unrelated handlers."""
+    """Reload managed and legacy public and private plugins."""
     managed_paths: set[Path] = set()
-    if plugin_manager is not None:
-        for plugin_id in list(plugin_manager.active):
-            active = plugin_manager.active[plugin_id]
+    managers = [manager for manager in (plugin_manager, private_plugin_manager) if manager]
+    for manager in managers:
+        for plugin_id in list(manager.active):
+            active = manager.active[plugin_id]
             if active.source_path is not None:
                 managed_paths.add(active.source_path.resolve())
             try:
-                plugin_manager.reload(plugin_id)
+                manager.reload(plugin_id)
             except Exception as e:
                 logger.error(
                     "Failed to reload managed plugin %s: %s",
@@ -270,21 +295,28 @@ def reload_plugins():
 
     for module in loaded_plugins.values():
         module_name = getattr(module, "__name__", "")
-        if module_name.startswith("plugins."):
+        if module_name.startswith(("plugins.", "private_plugins.")):
             sys.modules.pop(module_name, None)
     loaded_plugins.clear()
     loaded_plugin_handlers.clear()
-    if plugin_manager is not None:
+    for manager in managers:
         loaded_plugins.update(
             {
                 active.source_path.stem: active.module
-                for active in plugin_manager.active.values()
+                for active in manager.active.values()
                 if active.source_path is not None and active.module is not None
             }
         )
 
     try:
         load_all_plugins(skip_paths=managed_paths)
+        if private_plugin_manager is not None:
+            private_paths = {
+                active.source_path.resolve()
+                for active in private_plugin_manager.active.values()
+                if active.source_path is not None
+            }
+            private_plugin_manager.load_all(skip_paths=private_paths)
         logger.info("Plugins reloaded successfully")
     except Exception as e:
         logger.error("Error loading plugins: %s", e, exc_info=True)
@@ -376,8 +408,9 @@ def main():
     except Exception as exc:
         logger.error(f"Could not install Telegram log forwarder: {exc}")
 
-    # Load public plugins only. Existing private plugins are intentionally excluded.
+    # Load public and gitignored private plugins through their managed APIs.
     load_all_plugins()
+    load_private_plugins()
 
     # Start clients together when assistant-bot support is configured.
     async def start_clients() -> None:

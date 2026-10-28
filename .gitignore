@@ -9,6 +9,7 @@
 private_plugins/*
 !private_plugins/__init__.py
 !private_plugins/README.md
+!private_plugins/example.py
 
 # Python
 __pycache__/

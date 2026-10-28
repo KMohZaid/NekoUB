@@ -248,6 +248,118 @@ class PluginManagerTests(unittest.TestCase):
         self.assertEqual(result["prefixes"], (".", "!"))
         self.assertEqual(result["examples"], (".hello",))
 
+    def test_private_plugin_manager_imports_and_reloads_private_namespace(self):
+        private_dir = Path(self.temp_dir.name) / "private_plugins"
+        private_dir.mkdir()
+        plugin_path = private_dir / "example.py"
+        plugin_path.write_text(
+            "from core.plugins import Plugin, handlers as h\n"
+            "class Example(Plugin):\n"
+            "    id = 'private_example'\n"
+            "    @h.command('private')\n"
+            "    async def private(self, client, message, ctx, args):\n"
+            "        await ctx.edit('I am from private plugin')\n",
+            encoding="utf-8",
+        )
+        manager = PluginManager(
+            self.client,
+            private_dir,
+            prefix=".",
+            module_prefix="private_plugins",
+        )
+
+        loaded = manager.load_all()
+
+        self.assertEqual(loaded["private_example"], "active")
+        self.assertEqual(manager.active["private_example"].instance.private.__name__, "private")
+        self.assertEqual(manager.active["private_example"].module_name, "private_plugins.example")
+        self.assertEqual(manager.command_help()[0]["trigger"], "private")
+
+    def test_private_command_edits_invoking_message(self):
+        from pyrogram import ContinuePropagation
+        from unittest.mock import AsyncMock
+
+        private_dir = Path(self.temp_dir.name) / "private_plugins"
+        private_dir.mkdir()
+        plugin_path = private_dir / "example.py"
+        plugin_path.write_text(
+            "from core.plugins import Plugin, handlers as h\n"
+            "class Example(Plugin):\n"
+            "    id = 'private_example'\n"
+            "    @h.command('private')\n"
+            "    async def private(self, client, message, ctx, args):\n"
+            "        await ctx.edit('I am from private plugin', message=message)\n",
+            encoding="utf-8",
+        )
+        manager = PluginManager(
+            self.client,
+            private_dir,
+            prefix=".",
+            module_prefix="private_plugins",
+        )
+        manager.load_all()
+        update = Mock(
+            text=".private",
+            caption=None,
+            chat=Mock(id=123),
+            from_user=Mock(id=1),
+        )
+        update.edit_text = AsyncMock()
+        callback = manager.active["private_example"].handlers[0][1].callback
+
+        with self.assertRaises(ContinuePropagation):
+            asyncio.run(callback(self.client, update))
+
+        update.edit_text.assert_awaited_once_with(
+            "I am from private plugin", parse_mode=manager.active["private_example"].declaration.handlers[0].options.command.parse_mode
+        )
+
+    def test_private_file_without_managed_plugin_is_skipped_without_execution(self):
+        private_dir = Path(self.temp_dir.name) / "private_plugins"
+        private_dir.mkdir()
+        marker = Path(self.temp_dir.name) / "legacy-imported"
+        (private_dir / "legacy.py").write_text(
+            f"from pathlib import Path\nPath({str(marker)!r}).touch()\n",
+            encoding="utf-8",
+        )
+        manager = PluginManager(
+            self.client,
+            private_dir,
+            prefix=".",
+            module_prefix="private_plugins",
+        )
+
+        with self.assertLogs("core.plugins.manager", level="WARNING") as captured:
+            loaded = manager.load_all()
+
+        self.assertEqual(loaded["legacy"], "skipped: no managed Plugin subclass")
+        self.assertFalse(marker.exists())
+        self.assertIn("private_plugins/legacy.py", captured.output[0])
+
+    def test_invalid_private_plugin_logs_filename_and_is_skipped(self):
+        private_dir = Path(self.temp_dir.name) / "private_plugins"
+        private_dir.mkdir()
+        (private_dir / "broken.py").write_text(
+            "from core.plugins import Plugin\n"
+            "class Broken(Plugin):\n"
+            "    id = 'broken'\n"
+            "    this is not valid Python\n",
+            encoding="utf-8",
+        )
+        manager = PluginManager(
+            self.client,
+            private_dir,
+            prefix=".",
+            module_prefix="private_plugins",
+        )
+
+        with self.assertLogs("core.plugins.manager", level="ERROR") as captured:
+            loaded = manager.load_all()
+
+        self.assertIn("broken", loaded)
+        self.assertIn("private_plugins/broken.py", captured.output[0])
+        self.assertIn("Invalid private plugin source", loaded["broken"])
+
     def test_reload_uses_source_filename_not_plugin_id(self):
         plugin_path = Path(self.temp_dir.name) / "demo_plugin.py"
         plugin_path.write_text(
@@ -283,6 +395,20 @@ class PluginManagerTests(unittest.TestCase):
         self.assertIs(sys.modules[second_name], self.manager.active["demo"].module)
         self.manager._deactivate(self.manager.active["demo"])
         self.assertNotIn("plugins.demo_plugin", sys.modules)
+
+    def test_option_may_alias_its_own_long_name(self):
+        class OwnAlias(Plugin):
+            id = "own_alias"
+
+            @h.command(
+                "hello",
+                options=(Option("context", short="-c", aliases=("--context",)),),
+            )
+            async def hello(self, client, message, ctx, args):
+                pass
+
+        self.manager.activate(OwnAlias())
+        self.assertEqual(self.manager.command_help()[0]["trigger"], "hello")
 
     def test_alias_cannot_collide_with_a_later_option_short_name(self):
         class AliasCollision(Plugin):

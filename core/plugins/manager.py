@@ -40,6 +40,7 @@ class PluginManager:
         config: dict[str, Any] | None = None,
         user_client: Client | None = None,
         bot_client: Client | None = None,
+        module_prefix: str = "plugins",
     ) -> None:
         self.client = client
         self.user_client = (
@@ -53,6 +54,12 @@ class PluginManager:
             else client if getattr(client, "is_bot", False) is True else None
         )
         self.plugin_dir = plugin_dir.resolve()
+        self.module_prefix = module_prefix.rstrip(".")
+        if any(
+            not part or not part.replace("_", "a").isalnum()
+            for part in self.module_prefix.split(".")
+        ):
+            raise ValueError("Module prefix must be a dotted identifier")
         self.prefix = prefix
         self.command_prefixes = (
             list(prefix)
@@ -66,16 +73,22 @@ class PluginManager:
         self._module_owners: dict[str, str] = {}
         self._reload_generation = 0
 
-    def load_all(self) -> dict[str, str]:
+    def load_all(self, *, skip_paths: set[Path] | None = None) -> dict[str, str]:
         self.plugin_dir.mkdir(parents=True, exist_ok=True)
+        skip_paths = {path.resolve() for path in (skip_paths or set())}
         for path in sorted(self.plugin_dir.glob("*.py")):
-            if path.name.startswith("_"):
+            if path.name.startswith("_") or path.resolve() in skip_paths:
                 continue
             try:
                 self.load_path(path)
             except Exception as error:
                 self.status[path.stem] = f"failed: {type(error).__name__}: {error}"
-                logger.exception("Could not load public plugin %s", path.stem)
+                logger.exception(
+                    "Could not load %s plugin %s",
+                    self.module_prefix,
+                    path.relative_to(self.plugin_dir.parent),
+                )
+                continue
         return dict(self.status)
 
     def activate_module(self, module: ModuleType, path: Path) -> PluginDeclaration:
@@ -97,8 +110,8 @@ class PluginManager:
         )
         return self.registry.plugins[instances[0].id]
 
-    def load_path(self, path: Path) -> PluginDeclaration:
-        module_name = f"plugins.{path.stem}"
+    def load_path(self, path: Path) -> PluginDeclaration | None:
+        module_name = f"{self.module_prefix}.{path.stem}"
         if path.parent.resolve() != self.plugin_dir.resolve():
             raise ValueError(
                 "Plugin path must be a direct child of the configured public directory"
@@ -109,29 +122,81 @@ class PluginManager:
         if spec is None or spec.loader is None:
             raise ImportError(f"Unable to create module spec for {path}")
         module = importlib.util.module_from_spec(spec)
+        if self.module_prefix != "plugins":
+            import ast
+
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            except (OSError, SyntaxError) as error:
+                raise ValueError(f"Invalid private plugin source: {error}") from error
+            except UnicodeError as error:
+                raise ValueError(f"Invalid private plugin encoding: {error}") from error
+            declares_plugin = any(
+                isinstance(node, ast.ClassDef)
+                and any(
+                    (isinstance(base, ast.Name) and base.id == "Plugin")
+                    or (
+                        isinstance(base, ast.Attribute)
+                        and base.attr == "Plugin"
+                    )
+                    for base in node.bases
+                )
+                for node in tree.body
+            )
+            if not declares_plugin:
+                self.status[path.stem] = "skipped: no managed Plugin subclass"
+                logger.warning(
+                    "Skipped %s plugin %s: no managed Plugin subclass",
+                    self.module_prefix,
+                    path.relative_to(self.plugin_dir.parent),
+                )
+                return None
         previous_module = sys.modules.get(module_name)
         sys.modules[module_name] = module
         try:
             spec.loader.exec_module(module)
             instances = [
-                value()
+                value
                 for value in vars(module).values()
                 if isinstance(value, type)
                 and issubclass(value, Plugin)
                 and value is not Plugin
                 and value.__module__ == module_name
             ]
+            if not instances:
+                sys.modules.pop(module_name, None)
+                self.status[path.stem] = "skipped: no managed Plugin subclass"
+                logger.warning(
+                    "Skipped %s plugin %s: no managed Plugin subclass",
+                    self.module_prefix,
+                    path.relative_to(self.plugin_dir.parent),
+                )
+                return None
             if len(instances) != 1:
                 raise ValueError(
                     f"Expected exactly one Plugin subclass, found {len(instances)}"
                 )
+            plugin = instances[0]()
+            disabled_reason = plugin.disabled_reason()
+            if disabled_reason:
+                sys.modules.pop(module_name, None)
+                self.status[path.stem] = f"skipped: {disabled_reason}"
+                logger.info(
+                    "Skipped %s plugin %s: %s",
+                    self.module_prefix,
+                    path.relative_to(self.plugin_dir.parent),
+                    disabled_reason,
+                )
+                return None
             self.activate(
-                instances[0],
+                plugin,
                 module_name=module_name,
                 module=module,
                 source_path=path,
             )
-            return self.registry.plugins[instances[0].id]
+            self.status[path.stem] = "active"
+            logger.info("Loaded %s plugin %s", self.module_prefix, path.stem)
+            return self.registry.plugins[plugin.id]
         except Exception:
             if previous_module is None:
                 sys.modules.pop(module_name, None)
@@ -251,8 +316,10 @@ class PluginManager:
             raise FileNotFoundError(path or f"source path for plugin {plugin_id!r}")
         # Load into an isolated module name; only swap after staging succeeds.
         self._reload_generation += 1
-        candidate_name = f"plugins._candidate_{plugin_id}_{self._reload_generation}"
-        canonical_name = f"plugins.{path.stem}"
+        candidate_name = (
+            f"{self.module_prefix}._candidate_{plugin_id}_{self._reload_generation}"
+        )
+        canonical_name = f"{self.module_prefix}.{path.stem}"
         previous_canonical = sys.modules.get(canonical_name)
         spec = importlib.util.spec_from_file_location(candidate_name, path)
         if spec is None or spec.loader is None:
@@ -284,6 +351,7 @@ class PluginManager:
         if current.module_name != "<memory>" and current.module_name != canonical_name:
             sys.modules.pop(current.module_name, None)
         self._module_owners.pop(current.module_name, None)
+        self._module_owners[canonical_name] = plugin_id
 
     def command_help(self) -> list[dict[str, Any]]:
         """Return command metadata rendered with the configured prefixes."""
@@ -452,23 +520,28 @@ class PluginManager:
 
 
 def _validate_options(options: tuple[Any, ...]) -> None:
-    long_names: set[str] = set()
-    short_names: set[str] = set()
-    for option in options:
+    long_names: dict[str, int] = {}
+    short_names: dict[str, int] = {}
+    for index, option in enumerate(options):
         long_name = f"--{option.name.replace('_', '-').casefold()}"
         if long_name in long_names:
             raise ValueError(f"Duplicate option {long_name}")
-        long_names.add(long_name)
+        long_names[long_name] = index
         if option.short:
             if option.short in short_names:
                 raise ValueError(f"Duplicate option {option.short}")
-            short_names.add(option.short)
+            short_names[option.short] = index
 
-    aliases: set[tuple[str, str]] = set()
-    for option in options:
+    aliases: dict[tuple[str, str], int] = {}
+    for index, option in enumerate(options):
         for alias in option.aliases:
-            names = long_names if alias.startswith("--") else short_names
-            key = ("long" if alias.startswith("--") else "short", alias.casefold())
-            if alias in names or key in aliases:
+            is_long = alias.startswith("--")
+            names = long_names if is_long else short_names
+            key = ("long" if is_long else "short", alias.casefold())
+            owner = names.get(alias)
+            alias_owner = aliases.get(key)
+            if owner is not None and owner != index or (
+                alias_owner is not None and alias_owner != index
+            ):
                 raise ValueError(f"Duplicate option {alias}")
-            aliases.add(key)
+            aliases[key] = index
