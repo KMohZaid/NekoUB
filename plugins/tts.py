@@ -525,7 +525,8 @@ class TTSPlugin(Plugin):
         help_options=TTS_OPTIONS,
         examples=(Example("{cmd} Hello, how are you?"), Example("{cmd} -v heart Hello there!")),
         prefixes=config.CMD_PREFIX,
-        filters=filters.me,
+        share=True,
+        grantable=False,
     )
     async def tts_command(
         self,
@@ -543,17 +544,18 @@ class TTSPlugin(Plugin):
         reply = message.reply_to_message
         chat_id = message.chat.id
         command_id = message.id
-        original_reply_id = reply.id if reply else None
+        original_reply_id = reply.id if reply else (None if ctx.actor_is_owner else command_id)
         reply_text = (reply.text or reply.caption or "") if reply else ""
         try:
             multi, voice, speed, info, transcript, text = _parse_command(raw_args)
         except ValueError as exc:
             await _show_error(client, chat_id, original_reply_id or command_id, str(exc))
             return
-        try:
-            await message.delete()
-        except Exception as exc:
-            logger.warning(f"[TTS] Could not delete command message: {exc}")
+        if ctx.actor_is_owner:
+            try:
+                await message.delete()
+            except Exception as exc:
+                logger.warning(f"[TTS] Could not delete command message: {exc}")
 
         try:
             if not text and reply_text:

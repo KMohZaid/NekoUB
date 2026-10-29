@@ -540,8 +540,8 @@ class PluginManagerTests(unittest.TestCase):
                 handler for handler in declaration.handlers
                 if handler.event == "bot_inline_query"
             )
-            self.assertFalse(callback_declaration.options.public)
-            self.assertFalse(inline_declaration.options.public)
+            self.assertTrue(callback_declaration.options.public)
+            self.assertTrue(inline_declaration.options.public)
             bot_help_command = next(
                 handler for handler in declaration.handlers
                 if handler.options.command is not None

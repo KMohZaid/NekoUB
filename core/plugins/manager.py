@@ -40,6 +40,7 @@ class PluginManager:
         config: dict[str, Any] | None = None,
         user_client: Client | None = None,
         bot_client: Client | None = None,
+        access_store: Any = None,
         module_prefix: str = "plugins",
     ) -> None:
         self.client = client
@@ -67,6 +68,7 @@ class PluginManager:
             else [prefix]
         )
         self.config = config if config is not None else {}
+        self.access_store = access_store
         self.registry = PluginRegistry()
         self.active: dict[str, ActivePlugin] = {}
         self.status: dict[str, str] = {}
@@ -385,6 +387,9 @@ class PluginManager:
                             ),
                             "prefix": prefix,
                             "prefixes": tuple(prefixes),
+                            "sudo": command.sudo,
+                            "share": command.share,
+                            "grantable": command.grantable,
                             "category": command.category or declaration.category,
                             "trigger": command.trigger,
                             "aliases": command.aliases,
@@ -477,12 +482,22 @@ class PluginManager:
                 if isinstance(command_meta.prefixes, str)
                 else list(command_meta.prefixes)
             )
-            command_filters = filters.command(
-                [command_meta.trigger, *command_meta.aliases],
-                prefixes=command_prefixes,
-            )
+            names = [command_meta.trigger, *command_meta.aliases]
+            command_filters = filters.command(names, prefixes=command_prefixes)
             if not (options.bot or declaration.event.startswith("bot_")):
                 command_filters = filters.me & command_filters
+                delegated_prefixes = tuple(
+                    prefix
+                    for enabled, prefix in (
+                        (command_meta.sudo, "#"),
+                        (command_meta.share or command_meta.grantable, "?"),
+                    )
+                    if enabled
+                )
+                if delegated_prefixes:
+                    command_filters = command_filters | filters.command(
+                        names, prefixes=delegated_prefixes
+                    )
             filters_value = command_filters if filters_value is None else command_filters & filters_value
         callback = _wrap_handler(
             plugin,
@@ -491,6 +506,8 @@ class PluginManager:
             command_prefixes=self.command_prefixes,
             user_client=self.user_client,
             bot_client=self.bot_client,
+            access_store=self.access_store,
+            owner_id=getattr(getattr(self.user_client, "me", None), "id", None),
         )
         handler_type = HANDLER_TYPES[declaration.event]
         try:

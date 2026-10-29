@@ -242,6 +242,22 @@ def load_all_plugins(*, skip_paths: set[Path] | None = None):
     logger.info("Loaded %s/%s public plugins", public_loaded, public_total)
 
 
+async def _run_clients_with_access_store(access_store, clients, run) -> None:
+    """Initialize delegated access before clients and always close resources."""
+    try:
+        await access_store.initialize()
+        await asyncio.gather(*(client.start() for client in clients))
+        await run()
+    finally:
+        try:
+            await asyncio.gather(
+                *(client.stop() for client in reversed(clients)),
+                return_exceptions=True,
+            )
+        finally:
+            await access_store.close()
+
+
 def load_private_plugins() -> dict[str, str]:
     """Load managed plugins from the gitignored private plugin directory."""
     global private_plugin_manager
@@ -257,9 +273,10 @@ def load_private_plugins() -> dict[str, str]:
             key: value
             for key, value in vars(config).items()
             if key.isupper() and key != "BOT_TOKEN"
-        },
+        } | {"ACCESS_STORE": getattr(plugin_manager, "access_store", None)},
         user_client=app,
         bot_client=bot,
+        access_store=getattr(plugin_manager, "access_store", None),
         module_prefix="private_plugins",
     )
     return private_plugin_manager.load_all()
@@ -378,6 +395,11 @@ def main():
             parse_mode=parse_mode,
         )
 
+    # Initialize persistent delegated-access storage before loading handlers.
+    from core.access import AccessStore
+
+    access_store = AccessStore(config.DATABASE_URL)
+
     # Initialize the managed public plugin manager with both client roles.
     plugin_manager = PluginManager(
         app,
@@ -387,9 +409,10 @@ def main():
             key: value
             for key, value in vars(config).items()
             if key.isupper() and key != "BOT_TOKEN"
-        },
+        } | {"ACCESS_STORE": access_store},
         user_client=app,
         bot_client=bot,
+        access_store=access_store,
     )
 
     # Make app globally accessible for plugins
@@ -415,8 +438,8 @@ def main():
     # Start clients together when assistant-bot support is configured.
     async def start_clients() -> None:
         clients = [app, bot] if bot is not None else [app]
-        await asyncio.gather(*(client.start() for client in clients))
-        try:
+
+        async def run() -> None:
             user = await app.get_me()
             user_name = " ".join(
                 part for part in (user.first_name, user.last_name) if part
@@ -445,8 +468,8 @@ def main():
             logger.info("🐱 NekoUB started successfully! Nya~")
             print("\n✨ NekoUB is now online and ready to serve!\n")
             await idle()
-        finally:
-            await asyncio.gather(*(client.stop() for client in reversed(clients)))
+
+        await _run_clients_with_access_store(access_store, clients, run)
 
     asyncio.get_event_loop().run_until_complete(start_clients())
 

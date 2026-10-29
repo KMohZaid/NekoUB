@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Telegram API credentials
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 SESSION_STRING = os.getenv("SESSION_STRING", "")

@@ -46,6 +46,8 @@ class PluginContext(Generic[PluginT]):
     config: Mapping[str, Any] = field(default_factory=dict)
     command: Any = None
     parse_mode: ParseMode | str = ParseMode.HTML
+    actor_id: int | None = None
+    actor_is_owner: bool = False
 
     def get_config(self, key: str, default: Any = None) -> Any:
         """Return a shared application setting, falling back to ``default``."""

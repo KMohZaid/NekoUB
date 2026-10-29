@@ -165,6 +165,51 @@ class PluginApiTests(unittest.TestCase):
             asyncio.run(callback(object(), update))
         self.assertEqual(plugin.parsed.positional, ("echo hello world",))
 
+    def test_bot_command_owner_check_is_not_shadowed_by_access_dispatch(self):
+        class BotHelpPlugin(Plugin):
+            id = "bot_help_access"
+
+            @h.bot_command("help", public=False)
+            async def help_command(self, bot, message, ctx, args):
+                raise AssertionError("non-owner bot command should not run")
+
+        import asyncio
+
+        plugin = BotHelpPlugin()
+        declaration = plugin.declarations()[0]
+        owner_client = type(
+            "OwnerClient",
+            (),
+            {"me": type("User", (), {"id": 100})()},
+        )()
+        bot_client = type("Bot", (), {"is_bot": True})()
+        store = AsyncMock()
+        callback = _wrap_handler(
+            plugin,
+            declaration,
+            user_client=owner_client,
+            bot_client=bot_client,
+            access_store=store,
+        )
+        update = type(
+            "Message",
+            (),
+            {
+                "text": "/help",
+                "from_user": type("User", (), {"id": 200})(),
+                "answer": AsyncMock(),
+            },
+        )()
+
+        with self.assertRaises(Exception) as raised:
+            asyncio.run(callback(bot_client, update))
+
+        self.assertEqual(type(raised.exception).__name__, "ContinuePropagation")
+        update.answer.assert_awaited_once()
+        store.is_sudoer.assert_not_awaited()
+        store.is_share_user.assert_not_awaited()
+        store.has_grant.assert_not_awaited()
+
     def test_bot_command_rejects_non_owner(self):
         class BotHelpPlugin(Plugin):
             id = "bot_help"

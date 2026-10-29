@@ -10,7 +10,7 @@ from utils import get_logger, format_output, code_format
 logger = get_logger(__name__)
 
 
-async def run_exec_task(command, message):
+async def run_exec_task(command, message, ctx=None):
     """Run the actual exec command (can be cancelled)."""
     try:
         # Execute the command using asyncio
@@ -40,18 +40,26 @@ async def run_exec_task(command, message):
         output += f"**Return Code:** `{process.returncode}`"
 
         # Format and send
-        await message.edit(format_output(output, max_length=4000))
+        if ctx is not None and not ctx.actor_is_owner:
+            await ctx.send(format_output(output, max_length=4000), reply_to=message)
+        else:
+            await message.edit(format_output(output, max_length=4000))
         logger.info(f"Executed command: {command}")
 
     except asyncio.CancelledError:
-        await message.edit(
-            f"❌ **EXEC killed by user**\n\n**Command:**\n```bash\n{command}\n```"
-        )
+        text = f"❌ **EXEC killed by user**\n\n**Command:**\n```bash\n{command}\n```"
+        if ctx is not None and not ctx.actor_is_owner:
+            await ctx.send(text, reply_to=message)
+        else:
+            await message.edit(text)
         logger.info("Exec command was cancelled")
         raise
     except Exception as e:
         error_msg = f"Error executing command:\n{str(e)}"
-        await message.edit(code_format(error_msg))
+        if ctx is not None and not ctx.actor_is_owner:
+            await ctx.send(code_format(error_msg), reply_to=message)
+        else:
+            await message.edit(code_format(error_msg))
         logger.error(f"Error in exec command: {e}")
 
 
@@ -62,6 +70,8 @@ class ExecPlugin(Plugin):
 
     @h.command(
         "exec",
+        sudo=True,
+        grantable=False,
         signature="<shell command>",
         short_description="Run a shell command and return its output.",
         description=description,
@@ -86,17 +96,23 @@ class ExecPlugin(Plugin):
             cmd = message.text.split(maxsplit=1)
 
             if len(cmd) < 2:
-                await message.edit("Usage: `.exec <command>`")
+                if ctx.actor_is_owner:
+                    await message.edit("Usage: `.exec <command>`")
+                else:
+                    await ctx.send("Usage: `#exec <command>`", reply_to=message)
                 return
 
             command = cmd[1]
 
             # Update message to show it's running
-            await message.edit(f"Executing: `{command}`")
+            if ctx.actor_is_owner:
+                await message.edit(f"Executing: `{command}`")
+            else:
+                await ctx.send(f"Executing: `{command}`", reply_to=message)
 
             # Create task and track it
             task_id = f"{message.chat.id}:{message.id}"
-            task = asyncio.create_task(run_exec_task(command, message))
+            task = asyncio.create_task(run_exec_task(command, message, ctx))
 
             main.running_tasks[task_id] = {
                 "task": task,

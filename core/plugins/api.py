@@ -94,6 +94,9 @@ class CommandOptions:
     hidden_from_help: bool = False
     parse_mode: ParseMode | str = ParseMode.HTML
     prefixes: str | tuple[str, ...] = "."
+    sudo: bool = False
+    share: bool = False
+    grantable: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "parse_mode", resolve_parse_mode(self.parse_mode))
@@ -129,6 +132,9 @@ def command(
     prefixes: str | tuple[str, ...] = ".",
     bot: bool = False,
     public: bool = False,
+    sudo: bool = False,
+    share: bool = False,
+    grantable: bool = True,
     **handler_kwargs: Any,
 ) -> Callable[[Callback], Callback]:
     """Declare a command; the plugin manager installs it later."""
@@ -150,6 +156,9 @@ def command(
         hidden_from_help=hidden_from_help,
         parse_mode=parse_mode,
         prefixes=prefixes,
+        sudo=sudo,
+        share=share,
+        grantable=grantable,
     )
     return _declare(
         "command",
@@ -216,6 +225,8 @@ def _wrap_handler(
     command_prefixes: Sequence[str] = (".",),
     user_client: Client | None = None,
     bot_client: Client | None = None,
+    access_store: Any = None,
+    owner_id: int | None = None,
 ) -> Callback:
     original = getattr(plugin, declaration.method_name)
     command_options = declaration.options.command
@@ -236,6 +247,44 @@ def _wrap_handler(
             )
             if not is_configured_bot:
                 raise RuntimeError("Bot handler was attached to a non-bot client")
+        sender = getattr(update, "from_user", None)
+        actor_id = getattr(sender, "id", None)
+        current_owner_id = owner_id
+        if current_owner_id is None:
+            current_owner_id = getattr(getattr(user_client, "me", None), "id", None)
+        if current_owner_id is None:
+            owner_client = user_client or (None if is_bot_handler else client)
+            owner = getattr(owner_client, "me", None) if owner_client else None
+            if owner is None and owner_client is not None:
+                try:
+                    owner = await owner_client.get_me()
+                except Exception:
+                    owner = None
+            current_owner_id = getattr(owner, "id", None)
+        actor_is_owner = bool(actor_id is not None and actor_id == current_owner_id)
+        if (
+            command_options is not None
+            and declaration.event == "command"
+            and (command_options.sudo or command_options.share or command_options.grantable)
+            and (getattr(update, "text", None) or getattr(update, "caption", "") or "")[:1]
+            in {"#", "?"}
+        ):
+            from ..access.policy import authorize_command
+
+            raw_text = getattr(update, "text", None) or getattr(update, "caption", "") or ""
+            message_prefix = raw_text[:1]
+            decision = await authorize_command(
+                store=access_store,
+                user_id=actor_id,
+                owner_id=current_owner_id,
+                prefix=message_prefix,
+                command=command_options.trigger,
+                sudo=command_options.sudo,
+                share=command_options.share,
+                grantable=command_options.grantable,
+            )
+            if not decision.allowed:
+                raise ContinuePropagation
         if declaration.event in {
             "callback_query",
             "inline_query",
@@ -287,6 +336,8 @@ def _wrap_handler(
             ),
             plugin=plugin,
             config=config if config is not None else {},
+            actor_id=actor_id,
+            actor_is_owner=actor_is_owner,
         )
         if command_options is not None:
             context.command = command_options
@@ -296,12 +347,17 @@ def _wrap_handler(
             raw_text = getattr(update, "text", None) or getattr(update, "caption", "") or ""
             if command_options.options:
                 try:
+                    parse_prefixes = (
+                        tuple(dict.fromkeys((*command_prefixes, "#", "?")))
+                        if command_options.sudo or command_options.share or command_options.grantable
+                        else command_prefixes
+                    )
                     parsed = parse_options(
                         getattr(update, "text", None) or getattr(update, "caption", "") or "",
                         command_options.options,
                         (command_options.trigger, *command_options.aliases),
                         prefixes=(
-                            command_prefixes
+                            parse_prefixes
                             if command_options.prefixes == "."
                             else command_options.prefixes
                         ),

@@ -44,7 +44,9 @@ def _html(text: str) -> str:
     """Convert the help renderer's Markdown subset to escaped Telegram HTML."""
     escaped = html.escape(text, quote=False)
     escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
+    escaped = re.sub(r"\|\|(.+?)\|\|", r"<tg-spoiler>\1</tg-spoiler>", escaped)
     escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
+    escaped = re.sub(r"(?m)^&gt; (.+)$", r"<blockquote>\1</blockquote>", escaped)
     escaped = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"<i>\1</i>", escaped)
     return escaped
 
@@ -67,6 +69,88 @@ def _managed_commands() -> list[dict]:
         item for item in manager.command_help()
         if not item.get("hidden_from_help") and item["plugin"] not in unavailable
     ]
+
+
+async def render_access_aware(
+    page: str,
+    *,
+    actor_id: int | None,
+    owner_id: int | None,
+    access: Any,
+) -> str:
+    """Render the existing help page with unavailable commands spoilered."""
+    if page == "root":
+        commands = _managed_commands()
+        content = render_root()
+    elif page.startswith("category:"):
+        key = page.partition(":")[2]
+        commands = [command for plugin in _plugins_for_category(key) for command in plugin["commands"]]
+        content = render_category(key)
+    elif page.startswith("plugin:"):
+        _, key, plugin_id = page.split(":", 2)
+        plugin = next(
+            (item for item in _plugins_for_category(key) if item["id"] == plugin_id),
+            None,
+        )
+        commands = plugin["commands"] if plugin else []
+        category = next((item for item in _categories() if item["key"] == key), None)
+        content = _render_plugin_commands(category, plugin) if plugin and category else render_root()
+    elif page.startswith("command:"):
+        _, key, plugin_id, trigger = page.split(":", 3)
+        commands = _plugin_commands(key, plugin_id)
+        command = next((item for item in commands if item["trigger"] == trigger), None)
+        content = (
+            _render_command_detail(key, commands, commands.index(command))
+            if command is not None
+            else render_root()
+        )
+    elif page.startswith("detail:"):
+        _, key, index = page.split(":", 2)
+        commands = _commands_for_category(key)
+        if not commands:
+            plugins = _plugins_for_category(key)
+            commands = plugins[0]["commands"] if len(plugins) == 1 else []
+        content = _render_command_detail(key, commands, int(index))
+    elif page == "all":
+        commands = _managed_commands()
+        content = render_all()
+    elif page == "managed":
+        commands = _managed_commands()
+        content = render_managed()
+    elif page == "root":
+        commands = []
+        content = render_root()
+    else:
+        commands = _managed_commands()
+        content = render(page)
+
+    hidden: list[dict] = []
+    for command in commands:
+        old_usage = _usage_plain(command)
+        if actor_id is not None and actor_id == owner_id:
+            continue
+        if actor_id is None or access is None:
+            allowed = False
+            route_prefix = command.get("prefix", _prefix())
+        else:
+            try:
+                sudo_access = command.get("sudo", False) and await access.is_sudoer(actor_id)
+                share_access = command.get("share", False) and await access.is_share_user(actor_id)
+                grant_access = command.get("grantable", True) and await access.has_grant(actor_id, command["trigger"])
+                allowed = bool(sudo_access or share_access or grant_access)
+                route_prefix = "#" if sudo_access else "?" if share_access or grant_access else command.get("prefix", _prefix())
+            except Exception:
+                allowed = False
+                route_prefix = command.get("prefix", _prefix())
+        if not allowed:
+            hidden.append(command)
+            new_usage = f"||{old_usage}||"
+        else:
+            new_usage = f"{route_prefix}{command['trigger']}{(' ' + command['signature'].strip()) if command.get('signature') else ''}"
+        content = content.replace(f"`{old_usage}`", f"`{new_usage}`")
+    if hidden:
+        content += "\n\n> **Commands hidden in spoilers are unavailable to you.**"
+    return content
 
 
 def _plugins_for_category(category: str) -> list[dict]:
@@ -113,8 +197,34 @@ def _categories() -> list[dict]:
     return sorted(grouped.values(), key=lambda item: item["title"].casefold())
 
 
-def _help_keyboard(current: str = "root") -> InlineKeyboardMarkup:
+def encode_callback_data(namespace: str, user_id: int, action: str) -> str:
+    """Encode a help callback together with its initiating Telegram user."""
+    payload = f"{namespace}:{user_id}:{action}"
+    if len(payload.encode("utf-8")) > 64:
+        raise ValueError("Help callback data exceeds Telegram's 64-byte limit")
+    return payload
+
+
+def callback_belongs_to_user(data: str | None, user_id: int | None) -> bool:
+    """Return whether a help callback is bound to the clicking user."""
+    if not isinstance(data, str) or user_id is None:
+        return False
+    parts = data.split(":", 2)
+    return (
+        len(parts) == 3
+        and parts[0] == "help"
+        and parts[1].isdigit()
+        and int(parts[1]) == user_id
+        and bool(parts[2])
+    )
+
+
+def _help_keyboard(current: str = "root", *, user_id: int | None = None) -> InlineKeyboardMarkup:
     parts = current.split(":")
+    def callback(action: str) -> str:
+        if user_id is None:
+            return f"help.{action}"
+        return encode_callback_data("help", user_id, action)
     if parts[0] in {"detail", "command"} and len(parts) >= 3:
         category = parts[1]
         plugin_id = parts[2] if parts[0] == "command" and len(parts) >= 4 else None
@@ -124,11 +234,11 @@ def _help_keyboard(current: str = "root") -> InlineKeyboardMarkup:
             return InlineKeyboardMarkup([[
                 InlineKeyboardButton(
                     f"⬅️ Back to {plugin['name']}",
-                    callback_data=f"help.plugin:{category}:{plugin_id}",
+                    callback_data=callback(f"plugin:{category}:{plugin_id}"),
                 )
             ]])
         return InlineKeyboardMarkup([[
-            InlineKeyboardButton("⬅️ Back to categories", callback_data="help.root")
+            InlineKeyboardButton("⬅️ Back to categories", callback_data=callback("root"))
         ]])
     if parts[0] == "category" and len(parts) >= 2:
         key = parts[1]
@@ -136,34 +246,34 @@ def _help_keyboard(current: str = "root") -> InlineKeyboardMarkup:
         if len(plugins) == 1 and len(plugins[0]["commands"]) == 1:
             return InlineKeyboardMarkup([[
                 InlineKeyboardButton(
-                    "⬅️ Back to categories", callback_data="help.root"
+                    "⬅️ Back to categories", callback_data=callback("root")
                 )
             ]])
         buttons = []
         if key == "disabled":
             buttons = []
         elif len(plugins) > 1:
-            buttons = [InlineKeyboardButton(plugin["name"], callback_data=f"help.plugin:{key}:{plugin['id']}") for plugin in plugins]
+            buttons = [InlineKeyboardButton(plugin["name"], callback_data=callback(f"plugin:{key}:{plugin['id']}")) for plugin in plugins]
         elif plugins:
             buttons = [
                 InlineKeyboardButton(
                     f"{index + 1}. {_usage_plain(item)}",
-                    callback_data=f"help.command:{key}:{plugins[0]['id']}:{item['trigger']}",
+                    callback_data=callback(f"command:{key}:{plugins[0]['id']}:{item['trigger']}"),
                 )
                 for index, item in enumerate(plugins[0]["commands"])
             ]
         rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
-        rows.append([InlineKeyboardButton("⬅️ Back to categories", callback_data="help.root")])
+        rows.append([InlineKeyboardButton("⬅️ Back to categories", callback_data=callback("root"))])
         return InlineKeyboardMarkup(rows)
     if parts[0] == "plugin" and len(parts) >= 3:
         plugin = next((item for item in _plugins_for_category(parts[1]) if item["id"] == parts[2]), None)
-        buttons = [] if plugin is None else [InlineKeyboardButton(f"{index + 1}. {item.get('prefix', _prefix())}{item['trigger']}", callback_data=f"help.command:{parts[1]}:{parts[2]}:{item['trigger']}") for index, item in enumerate(plugin["commands"])]
+        buttons = [] if plugin is None else [InlineKeyboardButton(f"{index + 1}. {item.get('prefix', _prefix())}{item['trigger']}", callback_data=callback(f"command:{parts[1]}:{parts[2]}:{item['trigger']}")) for index, item in enumerate(plugin["commands"])]
         rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
         category_plugins = _plugins_for_category(parts[1])
         back_label = "⬅️ Back to plugins" if len(category_plugins) > 1 else "⬅️ Back to categories"
-        rows.append([InlineKeyboardButton(back_label, callback_data=f"help.category:{parts[1]}")])
+        rows.append([InlineKeyboardButton(back_label, callback_data=callback(f"category:{parts[1]}"))])
         return InlineKeyboardMarkup(rows)
-    buttons = [InlineKeyboardButton(f"{category['emoji']} {category['title']}", callback_data=f"help.category:{category['key']}") for category in _categories()]
+    buttons = [InlineKeyboardButton(f"{category['emoji']} {category['title']}", callback_data=callback(f"category:{category['key']}")) for category in _categories()]
     rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
     return InlineKeyboardMarkup(rows)
 
@@ -458,14 +568,17 @@ class HelpPlugin(Plugin):
     category = "Core"
     description = "Show help for public and managed commands."
 
-    @h.bot_callback_query(filters=F.regex(r"^help\."))
+    @h.bot_callback_query(filters=F.regex(r"^help[:.]"), public=True)
     async def help_callback(
         self,
         bot: Client,
         callback: CallbackQuery,
         ctx: PluginContext["HelpPlugin"],
     ) -> None:
-        action = callback.data.removeprefix("help.")
+        if not callback_belongs_to_user(callback.data, getattr(callback.from_user, "id", None)):
+            await callback.answer("This help menu belongs to someone else.", show_alert=True)
+            return
+        action = callback.data.split(":", 2)[2]
         try:
             if action == "root":
                 content = render_root()
@@ -492,24 +605,31 @@ class HelpPlugin(Plugin):
         except (ValueError, KeyError):
             await callback.answer("That help page is no longer available.", show_alert=True)
             return
+        owner = getattr(getattr(ctx.client, "me", None), "id", None)
+        content = await render_access_aware(
+            action,
+            actor_id=getattr(callback.from_user, "id", None),
+            owner_id=owner,
+            access=ctx.get_config("ACCESS_STORE"),
+        )
         await callback.answer()
         if callback.inline_message_id:
             await bot.edit_inline_text(
                 callback.inline_message_id,
                 _html(content),
                 parse_mode=ParseMode.HTML,
-                reply_markup=_help_keyboard(action),
+                reply_markup=_help_keyboard(action, user_id=callback.from_user.id),
             )
         elif callback.message is not None:
             await callback.message.edit_text(
                 _html(content),
                 parse_mode=ParseMode.HTML,
-                reply_markup=_help_keyboard(action),
+                reply_markup=_help_keyboard(action, user_id=callback.from_user.id),
             )
         else:
             await callback.answer("This help message can no longer be updated.", show_alert=True)
 
-    @h.bot_inline_query(filters=F.regex(r"^(?:help(?:\s|$)|help\.)"))
+    @h.bot_inline_query(filters=F.regex(r"^(?:help(?:\s|$)|help\.)"), public=True)
     async def help_inline_query(
         self,
         bot: Client,
@@ -517,7 +637,19 @@ class HelpPlugin(Plugin):
         ctx: PluginContext["HelpPlugin"],
     ) -> None:
         text = query.query.partition(" ")[2].strip()
-        rendered = render(text)
+        owner_client = getattr(main, "app", None)
+        owner = getattr(owner_client, "me", None)
+        if owner is None and owner_client is not None:
+            try:
+                owner = await owner_client.get_me()
+            except Exception:
+                owner = None
+        rendered = await render_access_aware(
+            text or "root",
+            actor_id=getattr(query.from_user, "id", None),
+            owner_id=getattr(owner, "id", None),
+            access=ctx.get_config("ACCESS_STORE"),
+        )
         await query.answer(
             [
                 InlineQueryResultArticle(
@@ -527,7 +659,7 @@ class HelpPlugin(Plugin):
                         rendered if text.lower() == "plugins" else _html(rendered),
                         parse_mode=ParseMode.HTML,
                     ),
-                    reply_markup=_help_keyboard(_help_page_action(text) if text else "root"),
+                    reply_markup=_help_keyboard(_help_page_action(text) if text else "root", user_id=query.from_user.id),
                 )
             ],
             cache_time=0,
@@ -596,25 +728,16 @@ class HelpPlugin(Plugin):
         try:
             parts = (message.text or "").split(maxsplit=1)
             help_args = parts[1] if len(parts) > 1 else ""
-            if ctx.bot is not None and ctx.client is not None:
-                bot_info = await ctx.bot.get_me()
-                results = await ctx.client.get_inline_bot_results(
-                    bot_info.username,
-                    f"help {help_args}".strip(),
-                )
-                if not results.results:
-                    raise RuntimeError("Assistant bot returned no help results")
-                await ctx.client.send_inline_bot_result(
-                    message.chat.id,
-                    results.query_id,
-                    results.results[0].id,
-                    reply_parameters=ReplyParameters(message_id=message.id),
-                )
-                return
+            rendered = await render_access_aware(
+                help_args or "root",
+                actor_id=ctx.actor_id,
+                owner_id=getattr(getattr(ctx.client, "me", None), "id", None),
+                access=ctx.get_config("ACCESS_STORE"),
+            )
             await ctx.edit(
-                _html(render(help_args)),
+                _html(rendered),
                 message=message,
-                reply_markup=_help_keyboard(_help_page_action(help_args.split()[0]) if help_args else "root"),
+                reply_markup=_help_keyboard(_help_page_action(help_args.split()[0]) if help_args else "root", user_id=ctx.actor_id),
             )
         except Exception as exc:
             logger.error(f"[HELP] Failed to render menu: {exc}")
