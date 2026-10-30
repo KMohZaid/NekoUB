@@ -204,6 +204,22 @@ class AccessAwareHelpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("NOTE: You can only see what you have access to use", rendered)
         self.assertNotIn("tg-spoiler", help_plugin._html(rendered))
 
+    async def test_bare_command_lookup_renders_accessible_command_detail(self):
+        access = type(
+            "Access", (),
+            {
+                "is_sudoer": AsyncMock(return_value=False),
+                "is_share_user": AsyncMock(return_value=True),
+                "has_grant": AsyncMock(return_value=False),
+            },
+        )()
+        rendered = await help_plugin.render_access_aware(
+            "safe", actor_id=10, owner_id=1, access=access
+        )
+        self.assertIn("?safe", rendered)
+        self.assertIn("A safe command.", rendered)
+        self.assertNotIn("**Categories**", rendered)
+
     async def test_available_share_command_uses_share_prefix(self):
         access = type("Access", (), {"is_sudoer": AsyncMock(return_value=False), "is_share_user": AsyncMock(return_value=True), "has_grant": AsyncMock(return_value=False)})()
         rendered = await help_plugin.render_access_aware("category:core", actor_id=10, owner_id=1, access=access)

@@ -130,7 +130,25 @@ async def render_access_aware(
     elif page == "managed":
         content = _render_access_managed(visible, route_prefixes)
     else:
-        content = _render_access_root(visible)
+        command = next(
+            (item for item in routed_visible if page.casefold() in {
+                item["trigger"].casefold(),
+                *(alias.casefold() for alias in item.get("aliases", ())),
+            }),
+            None,
+        )
+        if command is None:
+            content = _render_access_root(visible)
+        else:
+            category = _category_key(command.get("plugin_category") or "Other")
+            plugin_commands = [
+                item for item in routed_visible
+                if item["plugin"] == command["plugin"]
+                and _category_key(item.get("plugin_category") or "Other") == category
+            ]
+            content = _render_command_detail(
+                category, plugin_commands, plugin_commands.index(command)
+            )
     if actor_id is None or actor_id != owner_id:
         content += "\n\n> NOTE: You can only see what you have access to use"
     return content
