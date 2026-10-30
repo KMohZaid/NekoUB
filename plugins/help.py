@@ -667,27 +667,6 @@ class HelpPlugin(Plugin):
             is_personal=True,
         )
 
-    @h.bot_command(
-        "help",
-        description="Open the NekoUB inline help menu.",
-        public=False,
-        prefixes="/",
-        filters=F.private,
-    )
-    async def bot_help_command(
-        self,
-        bot: Client,
-        message: Message,
-        ctx: PluginContext["HelpPlugin"],
-        args: ParsedOptions,
-    ) -> None:
-        await message.reply_text(
-            "Choose a help page:",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("Open help", switch_inline_query="help")]]
-            ),
-        )
-
     @h.command(
         "plugins",
         description="Show public plugin load status and available commands.",
@@ -728,22 +707,28 @@ class HelpPlugin(Plugin):
         Usage:
             .help [<category>|all] [<n>]
         """
-        try:
-            parts = (message.text or "").split(maxsplit=1)
-            help_args = parts[1] if len(parts) > 1 else ""
-            rendered = await render_access_aware(
-                help_args or "root",
-                actor_id=ctx.actor_id,
-                owner_id=getattr(getattr(ctx.client, "me", None), "id", None),
-                access=ctx.get_config("ACCESS_STORE"),
+        parts = (message.text or "").split(maxsplit=1)
+        help_args = parts[1] if len(parts) > 1 else ""
+        if ctx.bot is None:
+            await message.reply_text(
+                "❌ Assistant bot is not configured; inline help is unavailable."
             )
-            await ctx.edit(
-                _html(rendered),
-                message=message,
-                reply_markup=_help_keyboard(_help_page_action(help_args.split()[0]) if help_args else "root", user_id=ctx.actor_id),
+            return
+        try:
+            bot_info = await ctx.bot.get_me()
+            results = await client.get_inline_bot_results(
+                bot_info.username, f"help {help_args}".rstrip()
+            )
+            if not results.results:
+                raise RuntimeError("Assistant bot returned no help result")
+            await client.send_inline_bot_result(
+                message.chat.id,
+                results.query_id,
+                results.results[0].id,
+                reply_parameters=ReplyParameters(message_id=message.id),
             )
         except Exception as exc:
-            logger.error(f"[HELP] Failed to render menu: {exc}")
-            await ctx.edit(
-                f"❌ Failed to render help: {type(exc).__name__}", message=message
+            logger.error("[HELP] Inline delivery failed: %s", type(exc).__name__)
+            await message.reply_text(
+                f"❌ Could not open inline help ({type(exc).__name__})."
             )

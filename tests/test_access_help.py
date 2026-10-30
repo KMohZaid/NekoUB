@@ -23,25 +23,41 @@ class AccessAwareHelpTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(command.sudo)
         self.assertTrue(command.share)
 
-    async def test_help_command_renders_help_directly_in_place(self):
+    async def test_help_command_sends_assistant_inline_result(self):
         plugin = help_plugin.HelpPlugin()
-        message = type("Message", (), {"text": ".help"})()
-        context = type(
-            "Context",
+        message = type(
+            "Message",
             (),
             {
-                "actor_id": 10,
-                "client": type("Client", (), {"me": type("User", (), {"id": 1})()})(),
-                "get_config": lambda self, key: None,
-                "edit": AsyncMock(),
+                "text": "?help stickers",
+                "chat": type("Chat", (), {"id": 25})(),
+                "id": 99,
+                "reply_text": AsyncMock(),
             },
         )()
+        inline_results = type(
+            "Results", (), {"query_id": 7, "results": [type("Result", (), {"id": "article-1"})()]}
+        )()
+        client = type(
+            "Client",
+            (),
+            {
+                "get_inline_bot_results": AsyncMock(return_value=inline_results),
+                "send_inline_bot_result": AsyncMock(),
+            },
+        )()
+        assistant = type(
+            "Bot", (), {"get_me": AsyncMock(return_value=type("User", (), {"username": "helperbot"})())}
+        )()
+        context = type("Context", (), {"bot": assistant})()
 
-        await plugin.help_command(object(), message, context, None)
+        await plugin.help_command(client, message, context, None)
 
-        context.edit.assert_awaited_once()
-        self.assertEqual(context.edit.await_args.kwargs["message"], message)
-        self.assertIn("Categories", context.edit.await_args.args[0])
+        client.get_inline_bot_results.assert_awaited_once_with("helperbot", "help stickers")
+        client.send_inline_bot_result.assert_awaited_once()
+        self.assertEqual(client.send_inline_bot_result.await_args.args[:3], (25, 7, "article-1"))
+        self.assertEqual(client.send_inline_bot_result.await_args.kwargs["reply_parameters"].message_id, 99)
+        message.reply_text.assert_not_awaited()
 
     def setUp(self):
         self.original_commands = help_plugin._managed_commands
