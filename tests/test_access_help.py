@@ -156,6 +156,27 @@ class AccessAwareHelpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(".`", rendered)
         self.assertIn("`,#?`", rendered)
 
+    async def test_access_checks_are_loaded_once_for_all_commands(self):
+        commands = [
+            {"trigger": f"cmd{index}", "sudo": True, "share": True, "grantable": True}
+            for index in range(3)
+        ]
+        access = type(
+            "Access", (),
+            {
+                "is_sudoer": AsyncMock(return_value=True),
+                "is_share_user": AsyncMock(return_value=True),
+                "list_grants": AsyncMock(return_value=["cmd1"]),
+            },
+        )()
+
+        visible = await help_plugin._commands_visible_to(commands, 10, 1, access)
+
+        self.assertEqual([item["trigger"] for item in visible], ["cmd0", "cmd1", "cmd2"])
+        access.is_sudoer.assert_awaited_once_with(10)
+        access.is_share_user.assert_awaited_once_with(10)
+        access.list_grants.assert_awaited_once_with(10)
+
     async def test_owner_help_shows_full_configured_prefix_strings(self):
         access = type("Access", (), {})()
         with unittest.mock.patch.object(help_plugin.config, "CMD_PREFIX", ".$"):
@@ -174,7 +195,7 @@ class AccessAwareHelpTests(unittest.IsolatedAsyncioTestCase):
             {
                 "is_sudoer": AsyncMock(return_value=False),
                 "is_share_user": AsyncMock(return_value=True),
-                "has_grant": AsyncMock(return_value=False),
+                "list_grants": AsyncMock(return_value=[]),
             },
         )()
         rendered = await help_plugin.render_access_aware(
@@ -189,7 +210,7 @@ class AccessAwareHelpTests(unittest.IsolatedAsyncioTestCase):
             {
                 "is_sudoer": AsyncMock(return_value=True),
                 "is_share_user": AsyncMock(return_value=False),
-                "has_grant": AsyncMock(return_value=False),
+                "list_grants": AsyncMock(return_value=[]),
             },
         )()
         rendered = await help_plugin.render_access_aware(
@@ -198,7 +219,7 @@ class AccessAwareHelpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Prefix: `#`", rendered)
 
     async def test_unavailable_command_is_removed_from_help(self):
-        access = type("Access", (), {"is_sudoer": AsyncMock(return_value=False), "is_share_user": AsyncMock(return_value=False), "has_grant": AsyncMock(return_value=False)})()
+        access = type("Access", (), {"is_sudoer": AsyncMock(return_value=False), "is_share_user": AsyncMock(return_value=False), "list_grants": AsyncMock(return_value=[])})()
         rendered = await help_plugin.render_access_aware("category:core", actor_id=10, owner_id=1, access=access)
         self.assertNotIn(".danger", rendered)
         self.assertIn("NOTE: You can only see what you have access to use", rendered)
@@ -210,7 +231,7 @@ class AccessAwareHelpTests(unittest.IsolatedAsyncioTestCase):
             {
                 "is_sudoer": AsyncMock(return_value=False),
                 "is_share_user": AsyncMock(return_value=True),
-                "has_grant": AsyncMock(return_value=False),
+                "list_grants": AsyncMock(return_value=[]),
             },
         )()
         rendered = await help_plugin.render_access_aware(
@@ -221,19 +242,19 @@ class AccessAwareHelpTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("**Categories**", rendered)
 
     async def test_available_share_command_uses_share_prefix(self):
-        access = type("Access", (), {"is_sudoer": AsyncMock(return_value=False), "is_share_user": AsyncMock(return_value=True), "has_grant": AsyncMock(return_value=False)})()
+        access = type("Access", (), {"is_sudoer": AsyncMock(return_value=False), "is_share_user": AsyncMock(return_value=True), "list_grants": AsyncMock(return_value=[])})()
         rendered = await help_plugin.render_access_aware("category:core", actor_id=10, owner_id=1, access=access)
         self.assertIn("?safe", rendered)
         self.assertNotIn(".danger", rendered)
 
     async def test_callback_plugin_page_uses_access_aware_routes(self):
-        access = type("Access", (), {"is_sudoer": AsyncMock(return_value=False), "is_share_user": AsyncMock(return_value=True), "has_grant": AsyncMock(return_value=False)})()
+        access = type("Access", (), {"is_sudoer": AsyncMock(return_value=False), "is_share_user": AsyncMock(return_value=True), "list_grants": AsyncMock(return_value=[])})()
         rendered = await help_plugin.render_access_aware("plugin:core:demo", actor_id=10, owner_id=1, access=access)
         self.assertIn("?safe", rendered)
         self.assertNotIn(".danger", rendered)
 
     async def test_callback_root_hides_unavailable_plugins_and_empty_categories(self):
-        access = type("Access", (), {"is_sudoer": AsyncMock(return_value=False), "is_share_user": AsyncMock(return_value=False), "has_grant": AsyncMock(return_value=False)})()
+        access = type("Access", (), {"is_sudoer": AsyncMock(return_value=False), "is_share_user": AsyncMock(return_value=False), "list_grants": AsyncMock(return_value=[])})()
         original_categories = help_plugin.CATEGORIES.copy()
         original_root = help_plugin.render_root
         original_header = help_plugin._header
@@ -249,7 +270,7 @@ class AccessAwareHelpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("NOTE: You can only see what you have access to use", rendered)
 
     async def test_callback_command_page_uses_access_aware_routes(self):
-        access = type("Access", (), {"is_sudoer": AsyncMock(return_value=False), "is_share_user": AsyncMock(return_value=True), "has_grant": AsyncMock(return_value=False)})()
+        access = type("Access", (), {"is_sudoer": AsyncMock(return_value=False), "is_share_user": AsyncMock(return_value=True), "list_grants": AsyncMock(return_value=[])})()
         rendered = await help_plugin.render_access_aware("command:core:demo:danger", actor_id=10, owner_id=1, access=access)
         self.assertNotIn(".danger", rendered)
         self.assertIn("NOTE: You can only see what you have access to use", rendered)

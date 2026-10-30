@@ -159,31 +159,34 @@ async def _commands_visible_to(
 ) -> list[dict]:
     if actor_id is not None and actor_id == owner_id:
         return commands
+    if actor_id is None or access is None:
+        return []
+    try:
+        is_sudoer = await access.is_sudoer(actor_id)
+        is_share_user = await access.is_share_user(actor_id)
+        grants = set(await access.list_grants(actor_id))
+    except Exception:
+        return []
+
     visible = []
     for command in commands:
-        if actor_id is None or access is None:
+        has_grant = command["trigger"].casefold() in grants
+        allowed = (
+            command.get("sudo", False) and is_sudoer
+            or command.get("share", False) and is_share_user
+            or command.get("grantable", True) and has_grant
+        )
+        if not allowed:
             continue
-        try:
-            is_sudoer = await access.is_sudoer(actor_id)
-            is_share_user = await access.is_share_user(actor_id)
-            has_grant = await access.has_grant(actor_id, command["trigger"])
-            allowed = (
-                command.get("sudo", False) and is_sudoer
-                or command.get("share", False) and is_share_user
-                or command.get("grantable", True) and has_grant
-            )
-        except Exception:
-            continue
-        if allowed:
-            if command.get("sudo", False) and is_sudoer:
-                prefix = config.CMD_PREFIX_FOR_SUDO_AND_SHARE[1:2] or command.get("prefix", _prefix())
-            elif command.get("share", False) and is_share_user:
-                prefix = config.CMD_PREFIX_FOR_SUDO_AND_SHARE[2:3] or command.get("prefix", _prefix())
-            elif command.get("grantable", True) and has_grant:
-                prefix = config.CMD_PREFIX_FOR_SUDO_AND_SHARE[2:3] or command.get("prefix", _prefix())
-            else:
-                prefix = command.get("prefix", _prefix())
-            visible.append(dict(command, prefix=prefix))
+        if command.get("sudo", False) and is_sudoer:
+            prefix = config.CMD_PREFIX_FOR_SUDO_AND_SHARE[1:2] or command.get("prefix", _prefix())
+        elif command.get("share", False) and is_share_user:
+            prefix = config.CMD_PREFIX_FOR_SUDO_AND_SHARE[2:3] or command.get("prefix", _prefix())
+        elif command.get("grantable", True) and has_grant:
+            prefix = config.CMD_PREFIX_FOR_SUDO_AND_SHARE[2:3] or command.get("prefix", _prefix())
+        else:
+            prefix = command.get("prefix", _prefix())
+        visible.append(dict(command, prefix=prefix))
     return visible
 
 
