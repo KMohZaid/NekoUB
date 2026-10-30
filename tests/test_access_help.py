@@ -146,7 +146,7 @@ class AccessAwareHelpTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         help_plugin._managed_commands = self.original_commands
 
-    async def test_owner_help_shows_main_and_delegated_prefixes(self):
+    async def test_owner_help_shows_all_configured_prefixes(self):
         access = type("Access", (), {})()
         rendered = await help_plugin.render_access_aware(
             "root", actor_id=1, owner_id=1, access=access
@@ -155,6 +155,18 @@ class AccessAwareHelpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Sudo/Share/Grant Prefixes:", rendered)
         self.assertIn(".`", rendered)
         self.assertIn("`,#?`", rendered)
+
+    async def test_owner_help_shows_full_configured_prefix_strings(self):
+        access = type("Access", (), {})()
+        with unittest.mock.patch.object(help_plugin.config, "CMD_PREFIX", ".$"):
+            with unittest.mock.patch.object(
+                help_plugin.config, "CMD_PREFIX_FOR_SUDO_AND_SHARE", ",#?"
+            ):
+                rendered = await help_plugin.render_access_aware(
+                    "root", actor_id=1, owner_id=1, access=access
+                )
+        self.assertIn("Prefixes: `.$`", rendered)
+        self.assertIn("Sudo/Share/Grant Prefixes: `,#?`", rendered)
 
     async def test_non_owner_help_shows_only_their_access_prefix(self):
         access = type(

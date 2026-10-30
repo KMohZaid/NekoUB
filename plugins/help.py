@@ -96,6 +96,11 @@ async def render_access_aware(
                 if actor_id is not None and actor_id == owner_id
                 else visible[0].get("prefix", _prefix()) if visible else _prefix()
             ),
+            owner_prefixes=(
+                (getattr(config, "CMD_PREFIX", _prefix()),)
+                if actor_id is not None and actor_id == owner_id
+                else ()
+            ),
         )
     elif page.startswith("category:"):
         key = page.partition(":")[2]
@@ -186,13 +191,15 @@ def _render_access_root(
     *,
     show_delegated_prefixes: bool = False,
     prefixes: str | None = None,
+    owner_prefixes: tuple[str, ...] = (),
 ) -> str:
     categories = _categories_for_commands(commands)
     plugin_count = len({command["plugin"] for command in commands})
     prefix_label = "Prefixes" if show_delegated_prefixes else "Prefix"
-    prefix_lines = [f"{prefix_label}: `{prefixes or _prefix()}`"]
+    displayed_prefixes = owner_prefixes[0] if owner_prefixes else prefixes or _prefix()
+    prefix_lines = [f"{prefix_label}: `{displayed_prefixes}`"]
     if show_delegated_prefixes:
-        delegated_prefixes = config.CMD_PREFIX_FOR_SUDO_AND_SHARE
+        delegated_prefixes = getattr(config, "CMD_PREFIX_FOR_SUDO_AND_SHARE", ",#?")
         prefix_lines.append(f"Sudo/Share/Grant Prefixes: `{delegated_prefixes}`")
     header = (
         f"**🐱 NekoUB — Help**\n" + "\n".join(prefix_lines) + "\n"

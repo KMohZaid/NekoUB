@@ -23,6 +23,7 @@ class DelegatedCommandTests(unittest.TestCase):
         command = declaration.options.command
 
         self.assertTrue(command.share)
+        self.assertTrue(command.grantable)
         self.assertIn("tts", command.aliases)
         self.assertIsNone(declaration.options.filters)
 

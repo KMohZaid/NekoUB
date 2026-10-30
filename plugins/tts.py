@@ -526,7 +526,6 @@ class TTSPlugin(Plugin):
         examples=(Example("{cmd} Hello, how are you?"), Example("{cmd} -v heart Hello there!")),
         prefixes=config.CMD_PREFIX,
         share=True,
-        grantable=False,
     )
     async def tts_command(
         self,
