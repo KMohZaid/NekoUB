@@ -1,6 +1,7 @@
 import html
 import re
 from pathlib import Path
+from typing import Any
 
 from pyrogram import Client, filters as F
 from pyrogram.enums import ParseMode

@@ -5,6 +5,11 @@ import plugins.help as help_plugin
 
 
 class AccessAwareHelpTests(unittest.IsolatedAsyncioTestCase):
+    def test_access_aware_renderer_annotations_resolve(self):
+        from typing import Any, get_type_hints
+
+        self.assertIs(get_type_hints(help_plugin.render_access_aware)["access"], Any)
+
     def setUp(self):
         self.original_commands = help_plugin._managed_commands
         help_plugin._managed_commands = lambda: [
