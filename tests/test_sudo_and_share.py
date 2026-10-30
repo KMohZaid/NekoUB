@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 from unittest.mock import AsyncMock
 
 from plugins.sudo_and_share import (
@@ -82,7 +83,7 @@ class SudoAndShareTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 parse_command_names(value)
 
-    def test_grant_and_reset_commands_use_sudo_route_not_standalone_grants(self):
+    def test_grant_and_reset_commands_use_sudo_route(self):
         commands = {
             item.options.command.trigger: item.options.command
             for item in SudoAndSharePlugin().declarations()
@@ -92,7 +93,6 @@ class SudoAndShareTests(unittest.IsolatedAsyncioTestCase):
         for name in ("grant", "revoke", "resetgrant"):
             with self.subTest(name=name):
                 self.assertTrue(commands[name].sudo)
-                self.assertFalse(commands[name].grantable)
 
     async def test_share_list_edits_message_with_linked_names(self):
         plugin = SudoAndSharePlugin()
@@ -163,6 +163,31 @@ class SudoAndShareTests(unittest.IsolatedAsyncioTestCase):
         context.edit.assert_awaited_once()
         self.assertIn("ID: <code>73</code>", context.edit.await_args.args[0])
 
+    def test_only_addsudo_and_rmsudo_are_not_grantable(self):
+        commands = {
+            item.options.command.trigger: item.options.command
+            for item in SudoAndSharePlugin().declarations()
+            if item.options.command is not None
+        }
+
+        self.assertFalse(commands["addsudo"].grantable)
+        self.assertFalse(commands["rmsudo"].grantable)
+        for name in ("sudolist", "addshare", "grant", "rmshare", "revoke", "sharelist"):
+            with self.subTest(name=name):
+                self.assertTrue(commands[name].grantable)
+
+    def test_share_management_commands_are_available_on_sudo_route(self):
+        commands = {
+            item.options.command.trigger: item.options.command
+            for item in SudoAndSharePlugin().declarations()
+            if item.options.command is not None
+        }
+
+        for name in ("addshare", "grant", "rmshare", "revoke", "sharelist", "sudolist"):
+            with self.subTest(name=name):
+                self.assertTrue(commands[name].sudo)
+                self.assertFalse(commands[name].share)
+
     def test_role_management_uses_owner_only_route(self):
         commands = {
             item.options.command.trigger: item.options.command
@@ -170,11 +195,48 @@ class SudoAndShareTests(unittest.IsolatedAsyncioTestCase):
             if item.options.command is not None
         }
 
-        for name in ("addsudo", "rmsudo", "sudolist", "addshare", "rmshare", "sharelist"):
+        for name in ("addsudo", "rmsudo"):
             with self.subTest(name=name):
                 self.assertFalse(commands[name].sudo)
                 self.assertFalse(commands[name].share)
-                self.assertFalse(commands[name].grantable)
+
+    async def test_grant_rejects_addsudo_which_is_not_grantable(self):
+        plugin = SudoAndSharePlugin()
+        client = AsyncMock()
+        store = AsyncMock()
+        context = type(
+            "Context",
+            (),
+            {
+                "get_config": lambda self, key: store if key == "ACCESS_STORE" else None,
+                "send": AsyncMock(),
+            },
+        )()
+        message = type(
+            "Message",
+            (),
+            {"reply_to_message": type("Reply", (), {"from_user": type("User", (), {"id": 42})()})()},
+        )()
+        args = type("Args", (), {"positional": ("addsudo",)})()
+        manager = type(
+            "Manager",
+            (),
+            {
+                "command_help": lambda self: [
+                    {"trigger": "addsudo", "aliases": (), "grantable": False}
+                ]
+            },
+        )()
+
+        with mock.patch.dict(
+            "sys.modules",
+            {"main": type("Main", (), {"plugin_manager": manager, "private_plugin_manager": None})()},
+        ):
+            await plugin._change_grants(client, message, context, args, revoke=False)
+
+        store.grant.assert_not_awaited()
+        context.send.assert_awaited_once()
+        self.assertIn("addsudo", context.send.await_args.args[0])
 
     async def test_grants_accept_command_list_when_target_is_replied_user(self):
         plugin = SudoAndSharePlugin()

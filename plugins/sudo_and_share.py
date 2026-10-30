@@ -142,7 +142,7 @@ class SudoAndSharePlugin(Plugin):
         except Exception as error:
             await ctx.send(f"Could not remove sudo user: {error}", reply_to=message)
 
-    @h.command("sudolist", grantable=False, description="List sudo users.")
+    @h.command("sudolist", sudo=True, description="List sudo users.")
     async def sudo_list(self, client, message, ctx, args):
         store = await self._store(ctx)
         if store is None:
@@ -154,7 +154,7 @@ class SudoAndSharePlugin(Plugin):
         else:
             await ctx.send(text, reply_to=message)
 
-    @h.command("addshare", grantable=False, description="Add a share user.")
+    @h.command("addshare", sudo=True, description="Add a share user.")
     async def add_share(self, client, message, ctx, args):
         try:
             user = await self._target(client, message, args)
@@ -171,7 +171,7 @@ class SudoAndSharePlugin(Plugin):
         except Exception as error:
             await ctx.send(f"Could not add share user: {error}", reply_to=message)
 
-    @h.command("rmshare", grantable=False, description="Remove a share user.")
+    @h.command("rmshare", sudo=True, description="Remove a share user.")
     async def remove_share(self, client, message, ctx, args):
         try:
             user = await self._target(client, message, args)
@@ -184,7 +184,7 @@ class SudoAndSharePlugin(Plugin):
         except Exception as error:
             await ctx.send(f"Could not remove share user: {error}", reply_to=message)
 
-    @h.command("sharelist", grantable=False, description="List share users.")
+    @h.command("sharelist", sudo=True, description="List share users.")
     async def share_list(self, client, message, ctx, args):
         store = await self._store(ctx)
         if store is None:
@@ -196,11 +196,11 @@ class SudoAndSharePlugin(Plugin):
         else:
             await ctx.send(text, reply_to=message)
 
-    @h.command("grant", sudo=True, grantable=False, description="Grant commands to a user.")
+    @h.command("grant", sudo=True, description="Grant commands to a user.")
     async def grant_commands(self, client, message, ctx, args):
         await self._change_grants(client, message, ctx, args, revoke=False)
 
-    @h.command("revoke", sudo=True, grantable=False, description="Revoke command grants.")
+    @h.command("revoke", sudo=True, description="Revoke command grants.")
     async def revoke_commands(self, client, message, ctx, args):
         await self._change_grants(client, message, ctx, args, revoke=True)
 
@@ -226,6 +226,21 @@ class SudoAndSharePlugin(Plugin):
                 for command in manager.command_help()
             ]
             names = canonicalize_command_names(names, commands)
+            if not revoke:
+                command_by_name = {
+                    name.casefold(): command
+                    for command in commands
+                    for name in (command["trigger"], *command.get("aliases", ()))
+                }
+                blocked = [
+                    name for name in names
+                    if name in command_by_name
+                    and not command_by_name[name].get("grantable", True)
+                ]
+                if blocked:
+                    raise ValueError(
+                        "Commands are not grantable: " + ", ".join(blocked)
+                    )
             store = await self._store(ctx)
             if store is None:
                 return
@@ -240,7 +255,7 @@ class SudoAndSharePlugin(Plugin):
         except Exception as error:
             await ctx.send(f"Could not {'revoke' if revoke else 'grant'} commands: {error}", reply_to=message)
 
-    @h.command("resetgrant", sudo=True, grantable=False, description="Remove all explicit command grants for a user.")
+    @h.command("resetgrant", sudo=True, description="Remove all explicit command grants for a user.")
     async def reset_grants(self, client, message, ctx, args):
         try:
             user = await self._target(client, message, args)
