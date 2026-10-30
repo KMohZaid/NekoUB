@@ -23,6 +23,41 @@ class AccessAwareHelpTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(command.sudo)
         self.assertTrue(command.share)
 
+    async def test_help_command_falls_back_to_direct_render_without_assistant(self):
+        plugin = help_plugin.HelpPlugin()
+        message = type(
+            "Message",
+            (),
+            {
+                "text": "?help stickers",
+                "chat": type("Chat", (), {"id": 25})(),
+                "id": 99,
+                "reply_text": AsyncMock(),
+            },
+        )()
+        context = type(
+            "Context",
+            (),
+            {
+                "bot": None,
+                "actor_id": 10,
+                "actor_is_owner": False,
+                "client": type("Client", (), {"me": type("User", (), {"id": 1})()})(),
+                "get_config": lambda self, key: None,
+                "edit": AsyncMock(),
+                "send": AsyncMock(),
+            },
+        )()
+        with unittest.mock.patch.object(
+            help_plugin, "render_access_aware", AsyncMock(return_value="fallback help")
+        ):
+            await plugin.help_command(object(), message, context, None)
+
+        context.send.assert_awaited_once()
+        context.edit.assert_not_awaited()
+        self.assertEqual(context.send.await_args.args[0], "fallback help")
+        self.assertIs(context.send.await_args.kwargs["reply_to"], message)
+
     async def test_help_command_sends_assistant_inline_result(self):
         plugin = help_plugin.HelpPlugin()
         message = type(

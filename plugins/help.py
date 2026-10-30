@@ -709,26 +709,36 @@ class HelpPlugin(Plugin):
         """
         parts = (message.text or "").split(maxsplit=1)
         help_args = parts[1] if len(parts) > 1 else ""
-        if ctx.bot is None:
-            await message.reply_text(
-                "❌ Assistant bot is not configured; inline help is unavailable."
-            )
-            return
-        try:
-            bot_info = await ctx.bot.get_me()
-            results = await client.get_inline_bot_results(
-                bot_info.username, f"help {help_args}".rstrip()
-            )
-            if not results.results:
-                raise RuntimeError("Assistant bot returned no help result")
-            await client.send_inline_bot_result(
-                message.chat.id,
-                results.query_id,
-                results.results[0].id,
-                reply_parameters=ReplyParameters(message_id=message.id),
-            )
-        except Exception as exc:
-            logger.error("[HELP] Inline delivery failed: %s", type(exc).__name__)
-            await message.reply_text(
-                f"❌ Could not open inline help ({type(exc).__name__})."
-            )
+        if ctx.bot is not None:
+            try:
+                bot_info = await ctx.bot.get_me()
+                results = await client.get_inline_bot_results(
+                    bot_info.username, f"help {help_args}".rstrip()
+                )
+                if not results.results:
+                    raise RuntimeError("Assistant bot returned no help result")
+                await client.send_inline_bot_result(
+                    message.chat.id,
+                    results.query_id,
+                    results.results[0].id,
+                    reply_parameters=ReplyParameters(message_id=message.id),
+                )
+                return
+            except Exception as exc:
+                logger.info("[HELP] Inline delivery unavailable: %s", type(exc).__name__)
+
+        rendered = await render_access_aware(
+            help_args or "root",
+            actor_id=ctx.actor_id,
+            owner_id=getattr(getattr(ctx.client, "me", None), "id", None),
+            access=ctx.get_config("ACCESS_STORE"),
+        )
+        await ctx.send(
+            _html(rendered),
+            reply_to=message,
+            parse_mode=ParseMode.HTML,
+            reply_markup=_help_keyboard(
+                _help_page_action(help_args.split()[0]) if help_args else "root",
+                user_id=ctx.actor_id,
+            ),
+        )
