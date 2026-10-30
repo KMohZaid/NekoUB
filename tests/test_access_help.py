@@ -10,6 +10,39 @@ class AccessAwareHelpTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(get_type_hints(help_plugin.render_access_aware)["access"], Any)
 
+    def test_help_command_supports_sudo_and_share_routes(self):
+        command = next(
+            handler.options.command
+            for handler in help_plugin.HelpPlugin().declarations()
+            if handler.event == "command"
+            and not handler.options.bot
+            and handler.options.command is not None
+            and handler.options.command.trigger == "help"
+        )
+
+        self.assertTrue(command.sudo)
+        self.assertTrue(command.share)
+
+    async def test_help_command_renders_help_directly_in_place(self):
+        plugin = help_plugin.HelpPlugin()
+        message = type("Message", (), {"text": ".help"})()
+        context = type(
+            "Context",
+            (),
+            {
+                "actor_id": 10,
+                "client": type("Client", (), {"me": type("User", (), {"id": 1})()})(),
+                "get_config": lambda self, key: None,
+                "edit": AsyncMock(),
+            },
+        )()
+
+        await plugin.help_command(object(), message, context, None)
+
+        context.edit.assert_awaited_once()
+        self.assertEqual(context.edit.await_args.kwargs["message"], message)
+        self.assertIn("Categories", context.edit.await_args.args[0])
+
     def setUp(self):
         self.original_commands = help_plugin._managed_commands
         help_plugin._managed_commands = lambda: [

@@ -706,6 +706,8 @@ class HelpPlugin(Plugin):
         "help",
         aliases=("commands", "cmds", "menu"),
         description=description,
+        sudo=True,
+        share=True,
         examples=(
             Example("{cmd}"),
             Example("{cmd} stickers"),
