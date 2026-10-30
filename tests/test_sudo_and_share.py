@@ -163,6 +163,27 @@ class SudoAndShareTests(unittest.IsolatedAsyncioTestCase):
         context.edit.assert_awaited_once()
         self.assertIn("ID: <code>73</code>", context.edit.await_args.args[0])
 
+    def test_sudo_is_default_for_commands_except_sudo_role_management(self):
+        from core.plugins import Plugin, handlers as h
+
+        class Defaults(Plugin):
+            id = "defaults"
+
+            @h.command("ordinary")
+            async def ordinary(self, client, message, ctx, args):
+                pass
+
+        self.assertTrue(Defaults().declarations()[0].options.command.sudo)
+        commands = {
+            item.options.command.trigger: item.options.command
+            for item in SudoAndSharePlugin().declarations()
+            if item.options.command is not None
+        }
+        for name in ("addsudo", "rmsudo"):
+            with self.subTest(name=name):
+                self.assertFalse(commands[name].sudo)
+                self.assertFalse(commands[name].grantable)
+
     def test_only_addsudo_and_rmsudo_are_not_grantable(self):
         commands = {
             item.options.command.trigger: item.options.command
@@ -188,7 +209,7 @@ class SudoAndShareTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(commands[name].sudo)
                 self.assertFalse(commands[name].share)
 
-    def test_role_management_uses_owner_only_route(self):
+    def test_role_management_excludes_sudoers_and_share_users(self):
         commands = {
             item.options.command.trigger: item.options.command
             for item in SudoAndSharePlugin().declarations()

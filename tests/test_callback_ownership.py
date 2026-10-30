@@ -6,10 +6,10 @@ from plugins.help import HelpPlugin, _help_keyboard, callback_belongs_to_user, e
 
 
 class CallbackOwnershipTests(unittest.TestCase):
-    def test_command_metadata_defaults_disable_role_routes_and_allow_grants(self):
-        from core.plugins import handlers as h
+    def test_command_metadata_defaults_to_sudo_role_access_and_grants(self):
+        from core.plugins import Plugin, handlers as h
 
-        class DefaultAccessPlugin(HelpPlugin):
+        class DefaultAccessPlugin(Plugin):
             id = "default_access"
 
             @h.command("defaulted")
@@ -21,7 +21,7 @@ class CallbackOwnershipTests(unittest.TestCase):
             for item in DefaultAccessPlugin().declarations()
             if item.options.command is not None
         )
-        self.assertFalse(metadata.sudo)
+        self.assertTrue(metadata.sudo)
         self.assertFalse(metadata.share)
         self.assertTrue(metadata.grantable)
 

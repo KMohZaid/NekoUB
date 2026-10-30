@@ -10,7 +10,7 @@ class GrantableCommandPlugin(Plugin):
     id = "grantable_command"
     called = False
 
-    @h.command("alive")
+    @h.command("alive", sudo=False)
     async def alive(self, client, message, ctx, args):
         self.called = True
         self.context = ctx

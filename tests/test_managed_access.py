@@ -63,6 +63,18 @@ class ManagedAccessPolicyTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertTrue(decision.allowed)
 
+    async def test_sudo_can_use_default_command_route_but_not_explicitly_excluded_commands(self):
+        allowed = await authorize_command(
+            store=self.store, user_id=2, owner_id=1, prefix=",",
+            command="todo", sudo=True,
+        )
+        denied = await authorize_command(
+            store=self.store, user_id=2, owner_id=1, prefix=",",
+            command="addsudo", sudo=False, share=False, grantable=False,
+        )
+        self.assertTrue(allowed.allowed)
+        self.assertFalse(denied.allowed)
+
     async def test_sudo_prefix_requires_declared_sudo_route_and_membership(self):
         decision = await authorize_command(
             store=self.store, user_id=2, owner_id=1, prefix="#",

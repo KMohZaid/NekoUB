@@ -112,7 +112,7 @@ class SudoAndSharePlugin(Plugin):
         tail = " ".join(args.positional).strip()
         return await resolve_target_user(client, message, tail or None)
 
-    @h.command("addsudo", grantable=False, description="Add a sudo user.")
+    @h.command("addsudo", sudo=False, share=False, grantable=False, description="Add a sudo user.")
     async def add_sudo(self, client, message, ctx, args):
         try:
             user = await self._target(client, message, args)
@@ -129,7 +129,7 @@ class SudoAndSharePlugin(Plugin):
         except Exception as error:
             await ctx.send(f"Could not add sudo user: {error}", reply_to=message)
 
-    @h.command("rmsudo", grantable=False, description="Remove a sudo user.")
+    @h.command("rmsudo", sudo=False, share=False, grantable=False, description="Remove a sudo user.")
     async def remove_sudo(self, client, message, ctx, args):
         try:
             user = await self._target(client, message, args)

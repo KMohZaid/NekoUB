@@ -94,7 +94,7 @@ class CommandOptions:
     hidden_from_help: bool = False
     parse_mode: ParseMode | str = ParseMode.HTML
     prefixes: str | tuple[str, ...] = "."
-    sudo: bool = False
+    sudo: bool = True
     share: bool = False
     grantable: bool = True
 
@@ -132,7 +132,7 @@ def command(
     prefixes: str | tuple[str, ...] = ".",
     bot: bool = False,
     public: bool = False,
-    sudo: bool = False,
+    sudo: bool = True,
     share: bool = False,
     grantable: bool = True,
     **handler_kwargs: Any,
