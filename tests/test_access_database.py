@@ -26,6 +26,17 @@ class AccessDatabaseTests(unittest.TestCase):
             "nekoub",
         )
 
+    def test_maintenance_url_preserves_encoded_password(self):
+        from sqlalchemy.engine import make_url
+
+        from core.access.database import _maintenance_url
+
+        url = _maintenance_url("postgresql://user:p%23ss@host:5432/nekoub")
+
+        self.assertEqual(make_url(url).password, "p#ss")
+        self.assertNotIn("***", url)
+        self.assertEqual(make_url(url).database, "postgres")
+
     def test_quotes_database_identifier(self):
         self.assertEqual(quote_database_identifier('name"; DROP DATABASE x'), '"name""; DROP DATABASE x"')
 

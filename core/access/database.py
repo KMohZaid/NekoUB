@@ -34,7 +34,9 @@ def quote_database_identifier(identifier: str) -> str:
 def _maintenance_url(database_url: str) -> str:
     from sqlalchemy.engine import make_url
 
-    return str(make_url(normalize_async_url(database_url)).set(database="postgres"))
+    return make_url(normalize_async_url(database_url)).set(
+        database="postgres"
+    ).render_as_string(hide_password=False)
 
 
 class AccessStore:
