@@ -76,6 +76,7 @@ class InfoPlugin(Plugin):
         examples=(Example("{cmd}"), Example("{cmd} (reply to a message)")),
         prefixes=config.CMD_PREFIX,
         parse_mode="markdown",
+        share=True,
     )
     async def info_command(
         self,

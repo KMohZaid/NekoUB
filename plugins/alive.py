@@ -46,6 +46,7 @@ class AlivePlugin(Plugin):
         description=description,
         examples=(Example("{cmd}"),),
         prefixes=config.CMD_PREFIX,
+        share=True,
     )
     async def alive_command(
         self,

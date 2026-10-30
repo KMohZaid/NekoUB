@@ -114,6 +114,7 @@ class TranslatePlugin(Plugin):
         ),
         prefixes=config.CMD_PREFIX,
         parse_mode="markdown",
+        share=True,
     )
     async def translate_command(
         self,

@@ -3,9 +3,17 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from core.plugins import handlers as h
+from plugins.ai import AIPlugin
+from plugins.alive import AlivePlugin
 from plugins.eval import EvalPlugin
 from plugins.exec import ExecPlugin
+from plugins.id import IdPlugin
+from plugins.info import InfoPlugin
+from plugins.ping import PingPlugin
+from plugins.sangmata import SangmataPlugin
+from plugins.translate import TranslatePlugin
 from plugins.tts import TTSPlugin
+from plugins.voice_note import VoiceNotePlugin
 
 
 class DelegatedCommandTests(unittest.TestCase):
@@ -16,6 +24,31 @@ class DelegatedCommandTests(unittest.TestCase):
                 self.assertTrue(command.sudo)
                 self.assertFalse(command.share)
                 self.assertFalse(command.grantable)
+
+    def test_requested_commands_are_share_routes(self):
+        for plugin_type in (
+            AIPlugin,
+            VoiceNotePlugin,
+            IdPlugin,
+            InfoPlugin,
+            PingPlugin,
+            AlivePlugin,
+            TranslatePlugin,
+        ):
+            declaration = plugin_type().declarations()[0]
+            command = declaration.options.command
+            with self.subTest(command=command.trigger):
+                self.assertTrue(command.share)
+                if plugin_type in (AIPlugin, VoiceNotePlugin):
+                    self.assertIsNone(declaration.options.filters)
+
+    def test_json_and_sangmata_remain_non_share_routes(self):
+        from plugins.json import JsonPlugin
+
+        for plugin_type in (JsonPlugin, SangmataPlugin):
+            command = plugin_type().declarations()[0].options.command
+            with self.subTest(command=command.trigger):
+                self.assertFalse(command.share)
 
     def test_tts_and_alias_are_share_routes_without_owner_filter(self):
         plugin = TTSPlugin()

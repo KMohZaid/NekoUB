@@ -19,6 +19,7 @@ class IdPlugin(Plugin):
         examples=(Example("{cmd}"), Example("{cmd} (reply to media)")),
         prefixes=config.CMD_PREFIX,
         parse_mode="markdown",
+        share=True,
     )
     async def id_command(
         self,

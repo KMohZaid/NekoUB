@@ -1150,7 +1150,7 @@ class AIPlugin(Plugin):
             ),
         ),
         prefixes=config.CMD_PREFIX,
-        filters=filters.me,
+        share=True,
     )
     async def ai_command(
         self,

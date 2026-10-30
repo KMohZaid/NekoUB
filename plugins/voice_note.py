@@ -4,7 +4,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from pyrogram import Client, filters
+from pyrogram import Client
 from pyrogram.enums import ChatAction
 from pyrogram.types import Message
 
@@ -141,7 +141,7 @@ class VoiceNotePlugin(Plugin):
         description="Convert audio or video media to a voice note.",
         examples=(Example("{cmd}"), Example("{cmd} -d")),
         prefixes=config.CMD_PREFIX,
-        filters=filters.me,
+        share=True,
     )
     async def voice_note_command(
         self,

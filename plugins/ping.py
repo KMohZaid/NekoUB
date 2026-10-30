@@ -20,6 +20,7 @@ class PingPlugin(Plugin):
         examples=(Example("{cmd}"),),
         prefixes=config.CMD_PREFIX,
         parse_mode="markdown",
+        share=True,
     )
     async def ping_command(
         self,
