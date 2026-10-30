@@ -79,85 +79,160 @@ async def render_access_aware(
     owner_id: int | None,
     access: Any,
 ) -> str:
-    """Render the existing help page with unavailable commands spoilered."""
+    """Render only commands the current user can access."""
+    commands = _managed_commands()
+    visible = await _commands_visible_to(commands, actor_id, owner_id, access)
+    route_prefixes = {
+        id(command): command.get("prefix", _prefix())
+        if actor_id == owner_id
+        else config.CMD_PREFIX_FOR_SUDO_AND_SHARE[:1] or command.get("prefix", _prefix())
+        for command in visible
+    }
+
+    routed_visible = _with_route_prefixes(visible, route_prefixes)
     if page == "root":
-        commands = _managed_commands()
-        content = render_root()
+        content = _render_access_root(visible)
     elif page.startswith("category:"):
         key = page.partition(":")[2]
-        commands = [command for plugin in _plugins_for_category(key) for command in plugin["commands"]]
-        content = render_category(key)
+        content = _render_access_category(key, routed_visible)
     elif page.startswith("plugin:"):
         _, key, plugin_id = page.split(":", 2)
         plugin = next(
-            (item for item in _plugins_for_category(key) if item["id"] == plugin_id),
+            (item for item in _plugins_for_category(key, routed_visible) if item["id"] == plugin_id),
             None,
         )
-        commands = plugin["commands"] if plugin else []
-        category = next((item for item in _categories() if item["key"] == key), None)
-        content = _render_plugin_commands(category, plugin) if plugin and category else render_root()
+        if plugin is None:
+            content = _render_access_root(visible)
+        else:
+            category = next((item for item in _categories_for_commands(routed_visible) if item["key"] == key), None)
+            content = _render_plugin_commands(category, plugin) if category else _render_access_root(visible)
     elif page.startswith("command:"):
         _, key, plugin_id, trigger = page.split(":", 3)
-        commands = _plugin_commands(key, plugin_id)
-        command = next((item for item in commands if item["trigger"] == trigger), None)
-        content = (
-            _render_command_detail(key, commands, commands.index(command))
-            if command is not None
-            else render_root()
-        )
+        plugin_commands = [item for item in routed_visible if item["plugin"] == plugin_id and _category_key(item.get("plugin_category") or "Other") == key]
+        command = next((item for item in plugin_commands if item["trigger"] == trigger), None)
+        content = _render_command_detail(key, plugin_commands, plugin_commands.index(command)) if command is not None else _render_access_root(visible)
     elif page.startswith("detail:"):
         _, key, index = page.split(":", 2)
-        commands = _commands_for_category(key)
-        if not commands:
-            plugins = _plugins_for_category(key)
-            commands = plugins[0]["commands"] if len(plugins) == 1 else []
-        content = _render_command_detail(key, commands, int(index))
+        category_commands = [item for item in routed_visible if _category_key(item.get("plugin_category") or "Other") == key]
+        content = _render_command_detail(key, category_commands, int(index)) if category_commands else _render_access_root(visible)
     elif page == "all":
-        commands = _managed_commands()
-        content = render_all()
+        content = _render_access_all(visible, route_prefixes)
     elif page == "managed":
-        commands = _managed_commands()
-        content = render_managed()
-    elif page == "root":
-        commands = []
-        content = render_root()
+        content = _render_access_managed(visible, route_prefixes)
     else:
-        commands = _managed_commands()
-        content = render(page)
-
-    hidden: list[dict] = []
-    for command in commands:
-        old_usage = _usage_plain(command)
-        if actor_id is not None and actor_id == owner_id:
-            continue
-        if actor_id is None or access is None:
-            allowed = False
-            route_prefix = command.get("prefix", _prefix())
-        else:
-            try:
-                sudo_access = command.get("sudo", False) and await access.is_sudoer(actor_id)
-                share_access = command.get("share", False) and await access.is_share_user(actor_id)
-                grant_access = command.get("grantable", True) and await access.has_grant(actor_id, command["trigger"])
-                allowed = bool(sudo_access or share_access or grant_access)
-                route_prefix = "#" if sudo_access else "?" if share_access or grant_access else command.get("prefix", _prefix())
-            except Exception:
-                allowed = False
-                route_prefix = command.get("prefix", _prefix())
-        if not allowed:
-            hidden.append(command)
-            new_usage = f"||{old_usage}||"
-        else:
-            new_usage = f"{route_prefix}{command['trigger']}{(' ' + command['signature'].strip()) if command.get('signature') else ''}"
-        content = content.replace(f"`{old_usage}`", f"`{new_usage}`")
-    if hidden:
-        content += "\n\n> **Commands hidden in spoilers are unavailable to you.**"
+        content = _render_access_root(visible)
+    if actor_id is None or actor_id != owner_id:
+        content += "\n\n> NOTE: You can only see what you have access to use"
     return content
 
 
-def _plugins_for_category(category: str) -> list[dict]:
+async def _commands_visible_to(
+    commands: list[dict], actor_id: int | None, owner_id: int | None, access: Any
+) -> list[dict]:
+    if actor_id is not None and actor_id == owner_id:
+        return commands
+    visible = []
+    for command in commands:
+        if actor_id is None or access is None:
+            continue
+        try:
+            allowed = (
+                command.get("sudo", False) and await access.is_sudoer(actor_id)
+                or command.get("share", False) and await access.is_share_user(actor_id)
+                or command.get("grantable", True) and await access.has_grant(actor_id, command["trigger"])
+            )
+        except Exception:
+            continue
+        if allowed:
+            visible.append(
+                dict(
+                    command,
+                    prefix=config.CMD_PREFIX_FOR_SUDO_AND_SHARE[:1]
+                    or command.get("prefix", _prefix()),
+                )
+            )
+    return visible
+
+
+def _with_route_prefixes(commands: list[dict], route_prefixes: dict[int, str]) -> list[dict]:
+    return [dict(command, prefix=route_prefixes[id(command)]) for command in commands]
+
+
+def _categories_for_commands(commands: list[dict]) -> list[dict]:
+    grouped: dict[str, dict] = {}
+    for command in commands:
+        title = command.get("plugin_category") or "Other"
+        key = _category_key(title)
+        category = grouped.setdefault(key, {"key": key, "title": title, "emoji": "🧩"})
+        category["count"] = category.get("count", 0) + 1
+    for category in grouped.values():
+        category.update(CATEGORIES.get(category["title"], {}))
+        category["key"] = _category_key(category["title"])
+    return sorted(grouped.values(), key=lambda item: item["title"].casefold())
+
+
+def _render_access_root(commands: list[dict]) -> str:
+    categories = _categories_for_commands(commands)
+    plugin_count = len({command["plugin"] for command in commands})
+    header = (
+        f"**🐱 NekoUB — Help**\nPrefix: `{_prefix()}`  •  "
+        f"Plugins: `{plugin_count}`  •  Commands: `{len(commands)}`"
+    )
+    lines = [header, "", "**Categories**", ""]
+    for index, category in enumerate(categories, start=1):
+        plugins = _plugins_for_category(category["key"], commands)
+        plugin_count = len(plugins)
+        command_count = sum(len(plugin["commands"]) for plugin in plugins)
+        plugin_unit = "plugin" if plugin_count == 1 else "plugins"
+        command_unit = "command" if command_count == 1 else "commands"
+        lines.append(f"{index}. {category['emoji']} **{category['title']}** — {plugin_count} {plugin_unit} ({command_count} {command_unit})")
+    lines += ["", f"Everything: `{_prefix()}help all`", f"Managed commands: `{_prefix()}help managed`"]
+    return "\n".join(lines)
+
+
+def _render_access_category(key: str, commands: list[dict]) -> str:
+    category = next((item for item in _categories_for_commands(commands) if item["key"] == key), None)
+    if category is None:
+        return _render_access_root(commands)
+    plugins = _plugins_for_category(key, commands)
+    if len(plugins) > 1:
+        lines = [f"{category['emoji']} **{category['title']}**", category.get("desc", ""), "", "Choose a plugin:"]
+        lines.extend(f"• **{plugin['name']}** — {plugin['description']}" for plugin in plugins)
+        return "\n".join(lines)
+    if not plugins:
+        return _render_access_root(commands)
+    if len(plugins[0]["commands"]) == 1:
+        return _render_command_detail(key, plugins[0]["commands"], 0)
+    return _render_plugin_commands(category, plugins[0])
+
+
+def _render_access_all(commands: list[dict], route_prefixes: dict[int, str]) -> str:
+    lines = ["**🐱 NekoUB — All commands**", ""]
+    for category in _categories_for_commands(commands):
+        lines.append(f"{category['emoji']} **{category['title']}**")
+        for plugin in _plugins_for_category(category["key"], commands):
+            for command in plugin["commands"]:
+                prefix = route_prefixes[id(command)]
+                lines.append(f"• `{prefix}{command['trigger']}` — {command.get('short_description') or _summarize(command.get('description', ''))}")
+        lines.append("")
+    text = "\n".join(lines).strip()
+    return text[:MAX_TEXT] + "\n… (truncated)" if len(text) > MAX_TEXT else text
+
+
+def _render_access_managed(commands: list[dict], route_prefixes: dict[int, str]) -> str:
+    lines = ["**Managed plugin commands**", ""]
+    for command in commands:
+        prefix = route_prefixes[id(command)]
+        lines.append(f"• `{prefix}{command['trigger']}` — {command.get('description') or command['plugin']}")
+        for example in command["examples"]:
+            lines.append(f"  Example: `{example}`")
+    return "\n".join(lines)
+
+
+def _plugins_for_category(category: str, commands: list[dict] | None = None) -> list[dict]:
     category = _category_key(category)
     plugins: dict[str, dict] = {}
-    for command in _managed_commands():
+    for command in _managed_commands() if commands is None else commands:
         if _category_key(command.get("plugin_category") or "Other") != category:
             continue
         plugin_id = command["plugin"]
@@ -228,7 +303,12 @@ def callback_belongs_to_user(data: str | None, user_id: int | None) -> bool:
     )
 
 
-def _help_keyboard(current: str = "root", *, user_id: int | None = None) -> InlineKeyboardMarkup:
+def _help_keyboard(
+    current: str = "root",
+    *,
+    user_id: int | None = None,
+    commands: list[dict] | None = None,
+) -> InlineKeyboardMarkup:
     parts = current.split(":")
     def callback(action: str) -> str:
         if user_id is None:
@@ -237,7 +317,7 @@ def _help_keyboard(current: str = "root", *, user_id: int | None = None) -> Inli
     if parts[0] in {"detail", "command"} and len(parts) >= 3:
         category = parts[1]
         plugin_id = parts[2] if parts[0] == "command" and len(parts) >= 4 else None
-        plugins = _plugins_for_category(category)
+        plugins = _plugins_for_category(category, commands)
         plugin = next((item for item in plugins if item["id"] == plugin_id), None)
         if plugin is not None:
             return InlineKeyboardMarkup([[
@@ -251,7 +331,7 @@ def _help_keyboard(current: str = "root", *, user_id: int | None = None) -> Inli
         ]])
     if parts[0] == "category" and len(parts) >= 2:
         key = parts[1]
-        plugins = _plugins_for_category(key)
+        plugins = _plugins_for_category(key, commands)
         if len(plugins) == 1 and len(plugins[0]["commands"]) == 1:
             return InlineKeyboardMarkup([[
                 InlineKeyboardButton(
@@ -275,14 +355,15 @@ def _help_keyboard(current: str = "root", *, user_id: int | None = None) -> Inli
         rows.append([InlineKeyboardButton("⬅️ Back to categories", callback_data=callback("root"))])
         return InlineKeyboardMarkup(rows)
     if parts[0] == "plugin" and len(parts) >= 3:
-        plugin = next((item for item in _plugins_for_category(parts[1]) if item["id"] == parts[2]), None)
+        category_plugins = _plugins_for_category(parts[1], commands)
+        plugin = next((item for item in category_plugins if item["id"] == parts[2]), None)
         buttons = [] if plugin is None else [InlineKeyboardButton(f"{index + 1}. {item.get('prefix', _prefix())}{item['trigger']}", callback_data=callback(f"command:{parts[1]}:{parts[2]}:{item['trigger']}")) for index, item in enumerate(plugin["commands"])]
         rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
-        category_plugins = _plugins_for_category(parts[1])
         back_label = "⬅️ Back to plugins" if len(category_plugins) > 1 else "⬅️ Back to categories"
         rows.append([InlineKeyboardButton(back_label, callback_data=callback(f"category:{parts[1]}"))])
         return InlineKeyboardMarkup(rows)
-    buttons = [InlineKeyboardButton(f"{category['emoji']} {category['title']}", callback_data=callback(f"category:{category['key']}")) for category in _categories()]
+    categories = _categories() if commands is None else _categories_for_commands(commands)
+    buttons = [InlineKeyboardButton(f"{category['emoji']} {category['title']}", callback_data=callback(f"category:{category['key']}")) for category in categories]
     rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
     return InlineKeyboardMarkup(rows)
 
@@ -627,13 +708,25 @@ class HelpPlugin(Plugin):
                 callback.inline_message_id,
                 _html(content),
                 parse_mode=ParseMode.HTML,
-                reply_markup=_help_keyboard(action, user_id=callback.from_user.id),
+                reply_markup=_help_keyboard(
+                    action,
+                    user_id=callback.from_user.id,
+                    commands=await _commands_visible_to(
+                        _managed_commands(), callback.from_user.id, owner, ctx.get_config("ACCESS_STORE")
+                    ),
+                ),
             )
         elif callback.message is not None:
             await callback.message.edit_text(
                 _html(content),
                 parse_mode=ParseMode.HTML,
-                reply_markup=_help_keyboard(action, user_id=callback.from_user.id),
+                reply_markup=_help_keyboard(
+                    action,
+                    user_id=callback.from_user.id,
+                    commands=await _commands_visible_to(
+                        _managed_commands(), callback.from_user.id, owner, ctx.get_config("ACCESS_STORE")
+                    ),
+                ),
             )
         else:
             await callback.answer("This help message can no longer be updated.", show_alert=True)
@@ -669,7 +762,13 @@ class HelpPlugin(Plugin):
                         rendered if text.lower() == "plugins" else _html(rendered),
                         parse_mode=ParseMode.HTML,
                     ),
-                    reply_markup=_help_keyboard(_help_page_action(text) if text else "root", user_id=actor_id),
+                    reply_markup=_help_keyboard(
+                        _help_page_action(text) if text else "root",
+                        user_id=actor_id,
+                        commands=_managed_commands() if actor_id is None or getattr(owner, "id", None) == actor_id else await _commands_visible_to(
+                            _managed_commands(), actor_id, getattr(owner, "id", None), ctx.get_config("ACCESS_STORE")
+                        ),
+                    ),
                 )
             ],
             cache_time=0,
@@ -750,5 +849,11 @@ class HelpPlugin(Plugin):
             reply_markup=_help_keyboard(
                 _help_page_action(help_args.split()[0]) if help_args else "root",
                 user_id=ctx.actor_id,
+                commands=await _commands_visible_to(
+                    _managed_commands(),
+                    ctx.actor_id,
+                    getattr(getattr(ctx.client, "me", None), "id", None),
+                    ctx.get_config("ACCESS_STORE"),
+                ),
             ),
         )

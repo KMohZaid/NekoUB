@@ -37,6 +37,7 @@ class PluginManager:
         plugin_dir: Path,
         *,
         prefix: str | list[str] = ".",
+        delegated_prefix: str | list[str] = ",#?",
         config: dict[str, Any] | None = None,
         user_client: Client | None = None,
         bot_client: Client | None = None,
@@ -65,7 +66,12 @@ class PluginManager:
         self.command_prefixes = (
             list(prefix)
             if isinstance(prefix, (list, tuple))
-            else [prefix]
+            else list(prefix)
+        )
+        self.delegated_prefixes = (
+            list(delegated_prefix)
+            if isinstance(delegated_prefix, (list, tuple))
+            else list(delegated_prefix)
         )
         self.config = config if config is not None else {}
         self.access_store = access_store
@@ -486,24 +492,18 @@ class PluginManager:
             command_filters = filters.command(names, prefixes=command_prefixes)
             if not (options.bot or declaration.event.startswith("bot_")):
                 command_filters = filters.me & command_filters
-                delegated_prefixes = tuple(
-                    prefix
-                    for enabled, prefix in (
-                        (command_meta.sudo, "#"),
-                        (command_meta.share or command_meta.grantable, "?"),
+                if command_meta.sudo or command_meta.share or command_meta.grantable:
+                    delegated_filter = filters.command(
+                        names, prefixes=self.delegated_prefixes
                     )
-                    if enabled
-                )
-                if delegated_prefixes:
-                    command_filters = command_filters | filters.command(
-                        names, prefixes=list(delegated_prefixes)
-                    )
+                    command_filters = command_filters | delegated_filter
             filters_value = command_filters if filters_value is None else command_filters & filters_value
         callback = _wrap_handler(
             plugin,
             declaration,
             config=self.config,
             command_prefixes=self.command_prefixes,
+            delegated_prefixes=self.delegated_prefixes,
             user_client=self.user_client,
             bot_client=self.bot_client,
             access_store=self.access_store,

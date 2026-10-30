@@ -122,11 +122,7 @@ class AccessAwareHelpTests(unittest.IsolatedAsyncioTestCase):
             "stickers", actor_id=42, owner_id=None, access=None
         )
         result = query.answer.await_args.args[0][0]
-        self.assertTrue(
-            help_plugin.callback_belongs_to_user(
-                result.reply_markup.inline_keyboard[0][0].callback_data, 42
-            )
-        )
+        self.assertEqual(result.reply_markup.inline_keyboard, [])
 
     def setUp(self):
         self.original_commands = help_plugin._managed_commands
@@ -150,37 +146,46 @@ class AccessAwareHelpTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         help_plugin._managed_commands = self.original_commands
 
-    async def test_unavailable_command_is_spoilered_with_footer(self):
+    async def test_unavailable_command_is_removed_from_help(self):
         access = type("Access", (), {"is_sudoer": AsyncMock(return_value=False), "is_share_user": AsyncMock(return_value=False), "has_grant": AsyncMock(return_value=False)})()
         rendered = await help_plugin.render_access_aware("category:core", actor_id=10, owner_id=1, access=access)
-        self.assertIn("||.danger||", rendered)
-        self.assertIn("> **Commands hidden in spoilers are unavailable to you.**", rendered)
-        markup = help_plugin._html(rendered)
-        self.assertIn("<tg-spoiler>.danger</tg-spoiler>", markup)
-        self.assertIn("<blockquote><b>Commands hidden in spoilers are unavailable to you.</b></blockquote>", markup)
+        self.assertNotIn(".danger", rendered)
+        self.assertIn("NOTE: You can only see what you have access to use", rendered)
+        self.assertNotIn("tg-spoiler", help_plugin._html(rendered))
 
     async def test_available_share_command_uses_share_prefix(self):
         access = type("Access", (), {"is_sudoer": AsyncMock(return_value=False), "is_share_user": AsyncMock(return_value=True), "has_grant": AsyncMock(return_value=False)})()
         rendered = await help_plugin.render_access_aware("category:core", actor_id=10, owner_id=1, access=access)
-        self.assertIn("?safe", rendered)
-        self.assertIn("||.danger||", rendered)
+        self.assertIn(",safe", rendered)
+        self.assertNotIn(".danger", rendered)
 
     async def test_callback_plugin_page_uses_access_aware_routes(self):
         access = type("Access", (), {"is_sudoer": AsyncMock(return_value=False), "is_share_user": AsyncMock(return_value=True), "has_grant": AsyncMock(return_value=False)})()
         rendered = await help_plugin.render_access_aware("plugin:core:demo", actor_id=10, owner_id=1, access=access)
-        self.assertIn("?safe", rendered)
-        self.assertIn("||.danger||", rendered)
+        self.assertIn(",safe", rendered)
+        self.assertNotIn(".danger", rendered)
 
-    async def test_callback_root_page_spoilers_unavailable_commands(self):
+    async def test_callback_root_hides_unavailable_plugins_and_empty_categories(self):
         access = type("Access", (), {"is_sudoer": AsyncMock(return_value=False), "is_share_user": AsyncMock(return_value=False), "has_grant": AsyncMock(return_value=False)})()
-        rendered = await help_plugin.render_access_aware("root", actor_id=10, owner_id=1, access=access)
-        self.assertIn("Commands hidden in spoilers", rendered)
+        original_categories = help_plugin.CATEGORIES.copy()
+        original_root = help_plugin.render_root
+        original_header = help_plugin._header
+        help_plugin.CATEGORIES = {"Core": {"emoji": "🧭", "title": "Core", "desc": "Basic bot commands."}}
+        help_plugin._header = lambda: "Help"
+        try:
+            rendered = await help_plugin.render_access_aware("root", actor_id=10, owner_id=1, access=access)
+        finally:
+            help_plugin.CATEGORIES = original_categories
+            help_plugin._header = original_header
+        self.assertNotIn("Demo", rendered)
+        self.assertNotIn("Core", rendered)
+        self.assertIn("NOTE: You can only see what you have access to use", rendered)
 
     async def test_callback_command_page_uses_access_aware_routes(self):
         access = type("Access", (), {"is_sudoer": AsyncMock(return_value=False), "is_share_user": AsyncMock(return_value=True), "has_grant": AsyncMock(return_value=False)})()
         rendered = await help_plugin.render_access_aware("command:core:demo:danger", actor_id=10, owner_id=1, access=access)
-        self.assertIn("||.danger||", rendered)
-        self.assertIn("Commands hidden in spoilers", rendered)
+        self.assertNotIn(".danger", rendered)
+        self.assertIn("NOTE: You can only see what you have access to use", rendered)
 
 
 if __name__ == "__main__":

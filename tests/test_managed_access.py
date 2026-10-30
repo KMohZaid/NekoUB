@@ -25,6 +25,44 @@ class ManagedAccessPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(allowed.is_owner)
         self.assertFalse(denied.allowed)
 
+    async def test_all_delegated_prefixes_apply_the_same_role_policy(self):
+        for prefix in (",", "#", "?"):
+            with self.subTest(prefix=prefix):
+                decision = await authorize_command(
+                    store=self.store, user_id=2, owner_id=1, prefix=prefix,
+                    command="admin", sudo=True,
+                )
+                self.assertTrue(decision.allowed)
+
+        self.store.is_sudoer.return_value = False
+        self.store.is_share_user.return_value = False
+        self.store.has_grant.return_value = False
+        for prefix in (",", "#", "?"):
+            with self.subTest(prefix=prefix):
+                decision = await authorize_command(
+                    store=self.store, user_id=2, owner_id=1, prefix=prefix,
+                    command="admin", sudo=True,
+                )
+                self.assertFalse(decision.allowed)
+
+    async def test_share_role_can_use_any_delegated_prefix(self):
+        for prefix in (",", "#", "?"):
+            with self.subTest(prefix=prefix):
+                decision = await authorize_command(
+                    store=self.store, user_id=2, owner_id=1, prefix=prefix,
+                    command="shared", share=True,
+                )
+                self.assertTrue(decision.allowed)
+
+    async def test_owner_can_use_each_configured_normal_prefix(self):
+        for prefix in (".", "$"):
+            with self.subTest(prefix=prefix):
+                decision = await authorize_command(
+                    store=self.store, user_id=1, owner_id=1, prefix=prefix,
+                    command="alive",
+                )
+                self.assertTrue(decision.allowed)
+
     async def test_sudo_prefix_requires_declared_sudo_route_and_membership(self):
         decision = await authorize_command(
             store=self.store, user_id=2, owner_id=1, prefix="#",

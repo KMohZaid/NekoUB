@@ -238,7 +238,7 @@ class PluginManagerTests(unittest.TestCase):
             async def help(self, client, message, ctx, args):
                 pass
 
-        self.client.me = type("User", (), {"username": "owner"})()
+        self.client.me = type("User", (), {"id": 1, "username": "owner"})()
         plugin = DelegatedPlugin()
         declaration = plugin.declarations()[0]
         handler = self.manager._build_handler(plugin, declaration)
@@ -249,6 +249,43 @@ class PluginManagerTests(unittest.TestCase):
                 matched = asyncio.run(handler.filters(self.client, update))
                 self.assertTrue(matched)
                 self.assertEqual(update.command, ["help"])
+
+    def test_sudo_and_share_command_filters_accept_all_delegated_prefixes(self):
+        class DelegatedPlugin(Plugin):
+            id = "delegated_prefixes"
+
+            @h.command("manage", sudo=True, share=True)
+            async def manage(self, client, message, ctx, args):
+                pass
+
+        plugin = DelegatedPlugin()
+        declaration = plugin.declarations()[0]
+        manager = PluginManager(
+            self.client,
+            Path(self.temp_dir.name),
+            prefix=".$",
+            delegated_prefix=",#?",
+        )
+        handler = manager._build_handler(plugin, declaration)
+        self.client.me = type("User", (), {"id": 1, "username": "owner"})()
+
+        for text, actor_id, expected in (
+            (",manage", 2, True),
+            ("#manage", 2, True),
+            ("?manage", 2, True),
+            (".manage", 2, False),
+            ("$manage", 2, False),
+        ):
+            with self.subTest(text=text):
+                update = Mock(
+                    text=text,
+                    caption=None,
+                    out=actor_id == 1,
+                    from_user=type("User", (), {"id": actor_id, "is_self": actor_id == 1})(),
+                    sender_chat=None,
+                    chat=type("Chat", (), {"id": 1})(),
+                )
+                self.assertEqual(asyncio.run(handler.filters(self.client, update)), expected)
 
     def test_command_help_includes_all_prefixes_and_renders_examples(self):
         class PrefixPlugin(Plugin):

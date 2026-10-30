@@ -269,6 +269,7 @@ def load_private_plugins() -> dict[str, str]:
         app,
         private_dir,
         prefix=config.CMD_PREFIX,
+        delegated_prefix=config.CMD_PREFIX_FOR_SUDO_AND_SHARE,
         config={
             key: value
             for key, value in vars(config).items()
@@ -405,6 +406,7 @@ def main():
         app,
         Path(__file__).parent / "plugins",
         prefix=config.CMD_PREFIX,
+        delegated_prefix=config.CMD_PREFIX_FOR_SUDO_AND_SHARE,
         config={
             key: value
             for key, value in vars(config).items()

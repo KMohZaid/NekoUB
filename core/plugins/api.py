@@ -223,6 +223,7 @@ def _wrap_handler(
     *,
     config: Mapping[str, Any] | None = None,
     command_prefixes: Sequence[str] = (".",),
+    delegated_prefixes: Sequence[str] = (",", "#", "?"),
     user_client: Client | None = None,
     bot_client: Client | None = None,
     access_store: Any = None,
@@ -267,7 +268,7 @@ def _wrap_handler(
             and declaration.event == "command"
             and (command_options.sudo or command_options.share or command_options.grantable)
             and (getattr(update, "text", None) or getattr(update, "caption", "") or "")[:1]
-            in {"#", "?"}
+            in delegated_prefixes
         ):
             from ..access.policy import authorize_command
 
@@ -282,6 +283,8 @@ def _wrap_handler(
                 sudo=command_options.sudo,
                 share=command_options.share,
                 grantable=command_options.grantable,
+                owner_prefixes=command_prefixes,
+                delegated_prefixes=delegated_prefixes,
             )
             if not decision.allowed:
                 raise ContinuePropagation
@@ -348,7 +351,7 @@ def _wrap_handler(
             if command_options.options:
                 try:
                     parse_prefixes = (
-                        tuple(dict.fromkeys((*command_prefixes, "#", "?")))
+                        tuple(dict.fromkeys((*command_prefixes, *delegated_prefixes)))
                         if command_options.sudo or command_options.share or command_options.grantable
                         else command_prefixes
                     )

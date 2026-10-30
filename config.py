@@ -13,7 +13,8 @@ SESSION_STRING = os.getenv("SESSION_STRING", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
 # Bot settings
-CMD_PREFIX = os.getenv("CMD_PREFIX", ".")
+CMD_PREFIX = os.getenv("CMD_PREFIX", ".$")
+CMD_PREFIX_FOR_SUDO_AND_SHARE = os.getenv("CMD_PREFIX_FOR_SUDO_AND_SHARE", ",#?")
 TODOIST_API_TOKEN = os.getenv("TODOIST_API_TOKEN", "")
 
 # Web search / page reader (.web, .open, .read)
