@@ -84,15 +84,49 @@ class AccessAwareHelpTests(unittest.IsolatedAsyncioTestCase):
         assistant = type(
             "Bot", (), {"get_me": AsyncMock(return_value=type("User", (), {"username": "helperbot"})())}
         )()
-        context = type("Context", (), {"bot": assistant})()
+        context = type("Context", (), {"bot": assistant, "actor_id": 42})()
 
         await plugin.help_command(client, message, context, None)
 
-        client.get_inline_bot_results.assert_awaited_once_with("helperbot", "help stickers")
+        client.get_inline_bot_results.assert_awaited_once_with("helperbot", "help actor:42 stickers")
         client.send_inline_bot_result.assert_awaited_once()
         self.assertEqual(client.send_inline_bot_result.await_args.args[:3], (25, 7, "article-1"))
         self.assertEqual(client.send_inline_bot_result.await_args.kwargs["reply_parameters"].message_id, 99)
         message.reply_text.assert_not_awaited()
+
+    async def test_assistant_inline_help_uses_delegated_actor_id(self):
+        plugin = help_plugin.HelpPlugin()
+        query = type(
+            "Query",
+            (),
+            {
+                "query": "help actor:42 stickers",
+                "from_user": type("User", (), {"id": 1})(),
+                "answer": AsyncMock(),
+            },
+        )()
+        bot = type("Bot", (), {})()
+        context = type(
+            "Context",
+            (),
+            {"get_config": lambda self, key: None},
+        )()
+        with unittest.mock.patch.object(
+            help_plugin,
+            "render_access_aware",
+            AsyncMock(return_value="help"),
+        ) as render:
+            await plugin.help_inline_query(bot, query, context)
+
+        render.assert_awaited_once_with(
+            "stickers", actor_id=42, owner_id=None, access=None
+        )
+        result = query.answer.await_args.args[0][0]
+        self.assertTrue(
+            help_plugin.callback_belongs_to_user(
+                result.reply_markup.inline_keyboard[0][0].callback_data, 42
+            )
+        )
 
     def setUp(self):
         self.original_commands = help_plugin._managed_commands

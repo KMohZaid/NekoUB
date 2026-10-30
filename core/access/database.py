@@ -116,35 +116,52 @@ class AccessStore:
             )
             return result.scalar_one_or_none() is not None
 
-    async def list_sudoers(self) -> list[int]:
+    async def list_sudoers(self) -> list[Sudoer]:
         async with self._session() as session:
-            return list((await session.scalars(select(Sudoer.user_id))).all())
+            return list((await session.scalars(select(Sudoer))).all())
 
-    async def list_share_users(self) -> list[int]:
+    async def list_share_users(self) -> list[ShareUser]:
         async with self._session() as session:
-            return list((await session.scalars(select(ShareUser.user_id))).all())
+            return list((await session.scalars(select(ShareUser))).all())
 
     async def list_grants(self, user_id: int) -> list[str]:
         async with self._session() as session:
             return list((await session.scalars(select(AllowedCommand.command).where(AllowedCommand.user_id == user_id))).all())
 
-    async def add_sudoer(self, user_id: int) -> bool:
-        return await self._add_role(Sudoer, user_id)
+    async def add_sudoer(
+        self, user_id: int, first_name: str | None = None, last_name: str | None = None
+    ) -> bool:
+        return await self._add_role(Sudoer, user_id, first_name, last_name)
 
     async def remove_sudoer(self, user_id: int) -> bool:
         return await self._remove_role(Sudoer, user_id)
 
-    async def add_share_user(self, user_id: int) -> bool:
-        return await self._add_role(ShareUser, user_id)
+    async def add_share_user(
+        self, user_id: int, first_name: str | None = None, last_name: str | None = None
+    ) -> bool:
+        return await self._add_role(ShareUser, user_id, first_name, last_name)
 
     async def remove_share_user(self, user_id: int) -> bool:
         return await self._remove_role(ShareUser, user_id)
 
-    async def _add_role(self, model, user_id: int) -> bool:
+    async def _add_role(
+        self,
+        model,
+        user_id: int,
+        first_name: str | None,
+        last_name: str | None,
+    ) -> bool:
         async with self._session() as session, session.begin():
-            if await session.get(model, user_id) is not None:
+            existing = await session.get(model, user_id)
+            if existing is not None:
+                if first_name:
+                    existing.first_name = first_name
+                if last_name:
+                    existing.last_name = last_name
                 return False
-            session.add(model(user_id=user_id))
+            session.add(
+                model(user_id=user_id, first_name=first_name, last_name=last_name)
+            )
             return True
 
     async def _remove_role(self, model, user_id: int) -> bool:

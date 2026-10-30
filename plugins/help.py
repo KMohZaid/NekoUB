@@ -206,6 +206,14 @@ def encode_callback_data(namespace: str, user_id: int, action: str) -> str:
     return payload
 
 
+def _parse_inline_help_query(query: str) -> tuple[str, int | None]:
+    """Extract a delegated actor ID from assistant inline-help query data."""
+    match = re.match(r"^actor:(\d+)(?:\s+(.*))?$", query.strip())
+    if match is None:
+        return query.strip(), None
+    return (match.group(2) or "").strip(), int(match.group(1))
+
+
 def callback_belongs_to_user(data: str | None, user_id: int | None) -> bool:
     """Return whether a help callback is bound to the clicking user."""
     if not isinstance(data, str) or user_id is None:
@@ -637,7 +645,8 @@ class HelpPlugin(Plugin):
         query: InlineQuery,
         ctx: PluginContext["HelpPlugin"],
     ) -> None:
-        text = query.query.partition(" ")[2].strip()
+        text, actor_id = _parse_inline_help_query(query.query.partition(" ")[2])
+        actor_id = actor_id or getattr(query.from_user, "id", None)
         owner_client = getattr(main, "app", None)
         owner = getattr(owner_client, "me", None)
         if owner is None and owner_client is not None:
@@ -647,7 +656,7 @@ class HelpPlugin(Plugin):
                 owner = None
         rendered = await render_access_aware(
             text or "root",
-            actor_id=getattr(query.from_user, "id", None),
+            actor_id=actor_id,
             owner_id=getattr(owner, "id", None),
             access=ctx.get_config("ACCESS_STORE"),
         )
@@ -660,7 +669,7 @@ class HelpPlugin(Plugin):
                         rendered if text.lower() == "plugins" else _html(rendered),
                         parse_mode=ParseMode.HTML,
                     ),
-                    reply_markup=_help_keyboard(_help_page_action(text) if text else "root", user_id=query.from_user.id),
+                    reply_markup=_help_keyboard(_help_page_action(text) if text else "root", user_id=actor_id),
                 )
             ],
             cache_time=0,
@@ -713,7 +722,8 @@ class HelpPlugin(Plugin):
             try:
                 bot_info = await ctx.bot.get_me()
                 results = await client.get_inline_bot_results(
-                    bot_info.username, f"help {help_args}".rstrip()
+                    bot_info.username,
+                    f"help actor:{ctx.actor_id} {help_args}".rstrip(),
                 )
                 if not results.results:
                     raise RuntimeError("Assistant bot returned no help result")

@@ -12,12 +12,16 @@ class Sudoer(Base):
     __tablename__ = "sudoers"
 
     user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    first_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_name: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class ShareUser(Base):
     __tablename__ = "share_users"
 
     user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    first_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_name: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class AllowedCommand(Base):

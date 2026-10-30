@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 from plugins.sudo_and_share import (
     SudoAndSharePlugin,
     parse_command_names,
+    resolve_target_user,
     resolve_target_user_id,
 )
 
@@ -29,14 +30,30 @@ class SudoAndShareTests(unittest.IsolatedAsyncioTestCase):
         client = AsyncMock()
         client.get_users.return_value = type("User", (), {"id": 73})()
 
-        self.assertEqual(await resolve_target_user_id(client, None, "@friend"), 73)
+        user = await resolve_target_user(client, None, "@friend")
+        self.assertEqual(user.id, 73)
         client.get_users.assert_awaited_once_with("friend")
 
-    async def test_resolves_numeric_id_without_lookup(self):
+    async def test_resolves_numeric_id_and_returns_user_name(self):
         client = AsyncMock()
+        client.get_users.return_value = type(
+            "User", (), {"id": 100123, "first_name": "Abcd", "last_name": "Zyx"}
+        )()
 
-        self.assertEqual(await resolve_target_user_id(client, None, "-100123"), -100123)
-        client.get_users.assert_not_awaited()
+        user = await resolve_target_user(client, None, "100123")
+
+        self.assertEqual((user.id, user.first_name, user.last_name), (100123, "Abcd", "Zyx"))
+        client.get_users.assert_awaited_once_with(100123)
+
+    async def test_keeps_numeric_id_when_user_lookup_fails(self):
+        client = AsyncMock()
+        client.get_users.side_effect = ValueError("not found")
+
+        user = await resolve_target_user(client, None, "-100123")
+
+        self.assertEqual(user.id, -100123)
+        self.assertIsNone(user.first_name)
+        client.get_users.assert_awaited_once_with(-100123)
 
     async def test_rejects_unresolvable_target_without_fabricating_id(self):
         client = AsyncMock()
@@ -76,6 +93,75 @@ class SudoAndShareTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(name=name):
                 self.assertTrue(commands[name].sudo)
                 self.assertFalse(commands[name].grantable)
+
+    async def test_share_list_edits_message_with_linked_names(self):
+        plugin = SudoAndSharePlugin()
+        store = AsyncMock()
+        store.list_share_users.return_value = [
+            type("ShareUser", (), {"user_id": 42, "first_name": "Abcd", "last_name": "Zyx"})()
+        ]
+        message = type("Message", (), {"text": ".sharelist"})()
+        context = type(
+            "Context",
+            (),
+            {
+                "actor_is_owner": True,
+                "get_config": lambda self, key: store if key == "ACCESS_STORE" else None,
+                "edit": AsyncMock(),
+                "send": AsyncMock(),
+            },
+        )()
+
+        await plugin.share_list(object(), message, context, None)
+
+        context.edit.assert_awaited_once()
+        context.send.assert_not_awaited()
+        output = context.edit.await_args.args[0]
+        self.assertIn('<a href="tg://user?id=42">Abcd Zyx</a> (ID: <code>42</code>)', output)
+
+    async def test_share_list_replies_when_delegated_user_invokes_it(self):
+        plugin = SudoAndSharePlugin()
+        store = AsyncMock()
+        store.list_share_users.return_value = []
+        message = type("Message", (), {"text": ".sharelist"})()
+        context = type(
+            "Context",
+            (),
+            {
+                "actor_is_owner": False,
+                "get_config": lambda self, key: store if key == "ACCESS_STORE" else None,
+                "edit": AsyncMock(),
+                "send": AsyncMock(),
+            },
+        )()
+
+        await plugin.share_list(object(), message, context, None)
+
+        context.edit.assert_not_awaited()
+        context.send.assert_awaited_once_with("Share users: none", reply_to=message)
+
+    async def test_sudo_list_uses_id_when_name_is_unavailable(self):
+        plugin = SudoAndSharePlugin()
+        store = AsyncMock()
+        store.list_sudoers.return_value = [
+            type("Sudoer", (), {"user_id": 73, "first_name": None, "last_name": None})()
+        ]
+        message = type("Message", (), {"text": ".sudolist"})()
+        context = type(
+            "Context",
+            (),
+            {
+                "actor_is_owner": True,
+                "get_config": lambda self, key: store if key == "ACCESS_STORE" else None,
+                "edit": AsyncMock(),
+                "send": AsyncMock(),
+            },
+        )()
+
+        await plugin.sudo_list(object(), message, context, None)
+
+        context.edit.assert_awaited_once()
+        self.assertIn("ID: <code>73</code>", context.edit.await_args.args[0])
 
     def test_role_management_uses_owner_only_route(self):
         commands = {

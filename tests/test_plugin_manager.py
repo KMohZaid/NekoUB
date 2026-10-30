@@ -230,6 +230,26 @@ class PluginManagerTests(unittest.TestCase):
                 else:
                     sys.modules[name] = previous
 
+    def test_command_with_sudo_and_share_matches_both_delegated_prefixes(self):
+        class DelegatedPlugin(Plugin):
+            id = "delegated_prefixes"
+
+            @h.command("help", sudo=True, share=True)
+            async def help(self, client, message, ctx, args):
+                pass
+
+        self.client.me = type("User", (), {"username": "owner"})()
+        plugin = DelegatedPlugin()
+        declaration = plugin.declarations()[0]
+        handler = self.manager._build_handler(plugin, declaration)
+
+        for text in ("?help", "#help"):
+            with self.subTest(text=text):
+                update = Mock(text=text, caption=None)
+                matched = asyncio.run(handler.filters(self.client, update))
+                self.assertTrue(matched)
+                self.assertEqual(update.command, ["help"])
+
     def test_command_help_includes_all_prefixes_and_renders_examples(self):
         class PrefixPlugin(Plugin):
             id = "prefixes"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import re
 from typing import Any
 
@@ -33,18 +34,31 @@ def canonicalize_command_names(names: list[str], commands: list[dict]) -> list[s
     return list(dict.fromkeys(aliases.get(name, name) if name not in triggers else name for name in names))
 
 
-async def resolve_target_user_id(client: Any, message: Any, target: str | None) -> int:
+async def resolve_target_user(client: Any, message: Any, target: str | None) -> Any:
     """Resolve a replied-to user, numeric ID, or Telegram username."""
     reply = getattr(message, "reply_to_message", None) if message is not None else None
     replied_user = getattr(reply, "from_user", None)
     if replied_user is not None and getattr(replied_user, "id", None) is not None:
-        return int(replied_user.id)
+        return replied_user
     if target is None or not target.strip():
         raise ValueError("Reply to a user's message or provide their username/user ID")
 
     target = target.strip()
     if target.lstrip("-").isdigit():
-        return int(target)
+        user_id = int(target)
+        try:
+            users = await client.get_users(user_id)
+        except Exception:
+            users = None
+        if isinstance(users, (list, tuple)):
+            users = users[0] if users else None
+        if users is not None and getattr(users, "id", None) is not None:
+            return users
+        return type(
+            "ResolvedUser",
+            (),
+            {"id": user_id, "first_name": None, "last_name": None},
+        )()
     username = target.removeprefix("@").strip()
     if not username or not _COMMAND_NAME.fullmatch(username):
         raise ValueError("Invalid username or user ID")
@@ -56,7 +70,31 @@ async def resolve_target_user_id(client: Any, message: Any, target: str | None) 
     user_id = getattr(users, "id", None)
     if user_id is None:
         raise ValueError("Could not resolve that username")
-    return int(user_id)
+    return users
+
+
+async def resolve_target_user_id(client: Any, message: Any, target: str | None) -> int:
+    """Resolve a target using the shared User-returning resolver."""
+    user = await resolve_target_user(client, message, target)
+    return int(user.id)
+
+
+def _user_list_text(title: str, users: list[Any]) -> str:
+    if not users:
+        return f"{title}: none"
+
+    lines = [f"{title}:"]
+    for user in users:
+        user_id = user.user_id
+        name = " ".join(
+            part for part in (user.first_name, user.last_name) if part
+        ).strip()
+        label = html.escape(name or str(user_id))
+        lines.append(
+            f'<a href="tg://user?id={user_id}">{label}</a> '
+            f"(ID: <code>{user_id}</code>)"
+        )
+    return "\n".join(lines)
 
 
 class SudoAndSharePlugin(Plugin):
@@ -70,18 +108,23 @@ class SudoAndSharePlugin(Plugin):
             await ctx.send("Access database is unavailable.", reply_to=ctx.update)
         return store
 
-    async def _target(self, client: Any, message: Any, args: Any) -> int:
+    async def _target(self, client: Any, message: Any, args: Any) -> Any:
         tail = " ".join(args.positional).strip()
-        return await resolve_target_user_id(client, message, tail or None)
+        return await resolve_target_user(client, message, tail or None)
 
     @h.command("addsudo", grantable=False, description="Add a sudo user.")
     async def add_sudo(self, client, message, ctx, args):
         try:
-            user_id = await self._target(client, message, args)
+            user = await self._target(client, message, args)
+            user_id = int(user.id)
             store = await self._store(ctx)
             if store is None:
                 return
-            added = await store.add_sudoer(user_id)
+            added = await store.add_sudoer(
+                user_id,
+                getattr(user, "first_name", None),
+                getattr(user, "last_name", None),
+            )
             await ctx.send(f"{'Added' if added else 'Already a sudo user'}: <code>{user_id}</code>", reply_to=message)
         except Exception as error:
             await ctx.send(f"Could not add sudo user: {error}", reply_to=message)
@@ -89,7 +132,8 @@ class SudoAndSharePlugin(Plugin):
     @h.command("rmsudo", grantable=False, description="Remove a sudo user.")
     async def remove_sudo(self, client, message, ctx, args):
         try:
-            user_id = await self._target(client, message, args)
+            user = await self._target(client, message, args)
+            user_id = int(user.id)
             store = await self._store(ctx)
             if store is None:
                 return
@@ -104,16 +148,25 @@ class SudoAndSharePlugin(Plugin):
         if store is None:
             return
         users = await store.list_sudoers()
-        await ctx.send("Sudo users: " + (", ".join(map(str, users)) if users else "none"), reply_to=message)
+        text = _user_list_text("Sudo users", users)
+        if ctx.actor_is_owner:
+            await ctx.edit(text, message=message)
+        else:
+            await ctx.send(text, reply_to=message)
 
     @h.command("addshare", grantable=False, description="Add a share user.")
     async def add_share(self, client, message, ctx, args):
         try:
-            user_id = await self._target(client, message, args)
+            user = await self._target(client, message, args)
+            user_id = int(user.id)
             store = await self._store(ctx)
             if store is None:
                 return
-            added = await store.add_share_user(user_id)
+            added = await store.add_share_user(
+                user_id,
+                getattr(user, "first_name", None),
+                getattr(user, "last_name", None),
+            )
             await ctx.send(f"{'Added' if added else 'Already a share user'}: <code>{user_id}</code>", reply_to=message)
         except Exception as error:
             await ctx.send(f"Could not add share user: {error}", reply_to=message)
@@ -121,7 +174,8 @@ class SudoAndSharePlugin(Plugin):
     @h.command("rmshare", grantable=False, description="Remove a share user.")
     async def remove_share(self, client, message, ctx, args):
         try:
-            user_id = await self._target(client, message, args)
+            user = await self._target(client, message, args)
+            user_id = int(user.id)
             store = await self._store(ctx)
             if store is None:
                 return
@@ -136,7 +190,11 @@ class SudoAndSharePlugin(Plugin):
         if store is None:
             return
         users = await store.list_share_users()
-        await ctx.send("Share users: " + (", ".join(map(str, users)) if users else "none"), reply_to=message)
+        text = _user_list_text("Share users", users)
+        if ctx.actor_is_owner:
+            await ctx.edit(text, message=message)
+        else:
+            await ctx.send(text, reply_to=message)
 
     @h.command("grant", sudo=True, grantable=False, description="Grant commands to a user.")
     async def grant_commands(self, client, message, ctx, args):
@@ -185,7 +243,8 @@ class SudoAndSharePlugin(Plugin):
     @h.command("resetgrant", sudo=True, grantable=False, description="Remove all explicit command grants for a user.")
     async def reset_grants(self, client, message, ctx, args):
         try:
-            user_id = await self._target(client, message, args)
+            user = await self._target(client, message, args)
+            user_id = int(user.id)
             store = await self._store(ctx)
             if store is None:
                 return

@@ -63,6 +63,10 @@ class AccessDatabaseTests(unittest.TestCase):
         self.assertEqual(Sudoer.__tablename__, "sudoers")
         self.assertEqual(ShareUser.__tablename__, "share_users")
         self.assertEqual(AllowedCommand.__tablename__, "allowed_cmds")
+        self.assertIn("first_name", ShareUser.__table__.columns)
+        self.assertIn("last_name", ShareUser.__table__.columns)
+        self.assertIn("first_name", Sudoer.__table__.columns)
+        self.assertIn("last_name", Sudoer.__table__.columns)
         self.assertEqual(
             {column.name for column in AllowedCommand.__table__.primary_key.columns},
             {"user_id", "command"},

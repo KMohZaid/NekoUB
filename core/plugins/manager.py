@@ -496,7 +496,7 @@ class PluginManager:
                 )
                 if delegated_prefixes:
                     command_filters = command_filters | filters.command(
-                        names, prefixes=delegated_prefixes
+                        names, prefixes=list(delegated_prefixes)
                     )
             filters_value = command_filters if filters_value is None else command_filters & filters_value
         callback = _wrap_handler(
