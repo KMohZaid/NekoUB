@@ -117,6 +117,26 @@ async def _ignored_chat_list_text(ctx: Any) -> str:
     return "\n".join(lines)
 
 
+async def _grant_list_text(ctx: Any) -> str:
+    store = ctx.get_config("ACCESS_STORE")
+    if store is None:
+        return "Granted commands: none"
+    grants = await store.list_grants_by_user()
+    if not grants:
+        return "Granted commands: none"
+
+    lines = []
+    for user_id, first_name, last_name, commands in grants:
+        name = " ".join(part for part in (first_name, last_name) if part).strip()
+        label = html.escape(name or str(user_id))
+        lines.append(
+            f'<a href="tg://user?id={user_id}">{label}</a> '
+            f"(ID: <code>{user_id}</code>)"
+        )
+        lines.append("- " + ", ".join(html.escape(command) for command in commands))
+    return "\n".join(lines)
+
+
 class SudoAndSharePlugin(Plugin):
     id = "sudo_and_share"
     category = "Core"
@@ -165,6 +185,17 @@ class SudoAndSharePlugin(Plugin):
         if store is None:
             return
         text = await _ignored_chat_list_text(ctx)
+        if ctx.actor_is_owner:
+            await ctx.edit(text, message=message)
+        else:
+            await ctx.send(text, reply_to=message)
+
+    @h.command("grantlist", sudo=True, description="List users and their granted commands.")
+    async def grant_list(self, client, message, ctx, args):
+        store = await self._store(ctx)
+        if store is None:
+            return
+        text = await _grant_list_text(ctx)
         if ctx.actor_is_owner:
             await ctx.edit(text, message=message)
         else:

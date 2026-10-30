@@ -1,4 +1,6 @@
+import asyncio
 import unittest
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
 from core.access.database import (
@@ -56,6 +58,29 @@ class AccessDatabaseTests(unittest.TestCase):
                 import asyncio
                 asyncio.run(store.initialize())
         create_engine.assert_not_called()
+
+    def test_access_store_lists_grants_grouped_by_user(self):
+        store = AccessStore("postgresql://unused")
+        session = AsyncMock()
+        session.execute.return_value = [
+            (42, "Name", None, "alive"),
+            (42, "Name", None, "say"),
+            (73, None, None, "ping"),
+        ]
+
+        @asynccontextmanager
+        async def session_context():
+            yield session
+
+        store._session = session_context
+
+        async def run():
+            return await store.list_grants_by_user()
+
+        self.assertEqual(
+            asyncio.run(run()),
+            [(42, "Name", None, ["alive", "say"]), (73, None, None, ["ping"])],
+        )
 
     def test_access_schema_has_pair_primary_key(self):
         from core.access.models import AllowedCommand, IgnoreChat, ShareUser, Sudoer

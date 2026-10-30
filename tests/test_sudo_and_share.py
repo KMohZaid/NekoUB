@@ -94,6 +94,15 @@ class SudoAndShareTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(name=name):
                 self.assertTrue(commands[name].sudo)
 
+    def test_grant_list_command_is_registered_as_sudo_command(self):
+        commands = {
+            item.options.command.trigger: item.options.command
+            for item in SudoAndSharePlugin().declarations()
+            if item.options.command is not None
+        }
+        self.assertIn("grantlist", commands)
+        self.assertTrue(commands["grantlist"].sudo)
+
     def test_ignore_chat_commands_are_registered_as_sudo_commands(self):
         commands = {
             item.options.command.trigger: item.options.command
@@ -182,6 +191,27 @@ class SudoAndShareTests(unittest.IsolatedAsyncioTestCase):
             await _ignored_chat_list_text(context),
             '<b>42</b> (ID: <code>42</code>) '
             '(<a href="https://t.me/c/42/1">First msg</a>)',
+        )
+
+    async def test_grant_list_formats_users_and_granted_commands(self):
+        from plugins.sudo_and_share import _grant_list_text
+
+        store = AsyncMock()
+        store.list_grants_by_user.return_value = [
+            (42, "Name", None, ["alive", "say"]),
+            (73, "Name 2", "Last", ["ping"]),
+        ]
+        context = type(
+            "Context", (),
+            {"get_config": lambda self, key: store if key == "ACCESS_STORE" else None},
+        )()
+
+        self.assertEqual(
+            await _grant_list_text(context),
+            '<a href="tg://user?id=42">Name</a> (ID: <code>42</code>)\n'
+            '- alive, say\n'
+            '<a href="tg://user?id=73">Name 2 Last</a> (ID: <code>73</code>)\n'
+            '- ping',
         )
 
     async def test_share_list_edits_message_with_linked_names(self):

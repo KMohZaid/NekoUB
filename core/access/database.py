@@ -152,6 +152,28 @@ class AccessStore:
         async with self._session() as session:
             return list((await session.scalars(select(AllowedCommand.command).where(AllowedCommand.user_id == user_id))).all())
 
+    async def list_grants_by_user(self) -> list[tuple[int, str | None, str | None, list[str]]]:
+        async with self._session() as session:
+            result = await session.execute(
+                select(
+                    AllowedCommand.user_id,
+                    ShareUser.first_name,
+                    ShareUser.last_name,
+                    AllowedCommand.command,
+                )
+                .outerjoin(ShareUser, ShareUser.user_id == AllowedCommand.user_id)
+                .order_by(AllowedCommand.user_id, AllowedCommand.command)
+            )
+            grants: dict[int, tuple[str | None, str | None, list[str]]] = {}
+            for user_id, first_name, last_name, command in result:
+                if user_id not in grants:
+                    grants[user_id] = (first_name, last_name, [])
+                grants[user_id][2].append(command)
+            return [
+                (user_id, first_name, last_name, commands)
+                for user_id, (first_name, last_name, commands) in grants.items()
+            ]
+
     async def add_sudoer(
         self, user_id: int, first_name: str | None = None, last_name: str | None = None
     ) -> bool:
