@@ -280,6 +280,7 @@ def _wrap_handler(
                 owner_id=current_owner_id,
                 prefix=message_prefix,
                 command=command_options.trigger,
+                chat_id=getattr(getattr(update, "chat", None), "id", None),
                 sudo=command_options.sudo,
                 share=command_options.share,
                 grantable=command_options.grantable,

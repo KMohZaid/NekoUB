@@ -97,6 +97,26 @@ def _user_list_text(title: str, users: list[Any]) -> str:
     return "\n".join(lines)
 
 
+async def _ignored_chat_list_text(ctx: Any) -> str:
+    store = ctx.get_config("ACCESS_STORE")
+    if store is None:
+        return "Ignored chats: none"
+    chats = await store.list_ignored_chats()
+    if not chats:
+        return "Ignored chats: none"
+
+    lines = []
+    for chat in chats:
+        chat_id = chat.chat_id
+        internal_id = str(chat_id).removeprefix("-100")
+        title = html.escape(chat.title or str(chat_id))
+        lines.append(
+            f"<b>{title}</b> (ID: <code>{chat_id}</code>) "
+            f'(<a href="https://t.me/c/{internal_id}/1">First msg</a>)'
+        )
+    return "\n".join(lines)
+
+
 class SudoAndSharePlugin(Plugin):
     id = "sudo_and_share"
     category = "Core"
@@ -107,6 +127,48 @@ class SudoAndSharePlugin(Plugin):
         if store is None:
             await ctx.send("Access database is unavailable.", reply_to=ctx.update)
         return store
+
+    @h.command("ignorechat", sudo=True, description="Ignore commands in this chat for share users and grants.")
+    async def ignore_chat(self, client, message, ctx, args):
+        chat = getattr(message, "chat", None)
+        chat_id = getattr(chat, "id", None)
+        if chat_id is None:
+            await ctx.send("Could not determine this chat.", reply_to=message)
+            return
+        store = await self._store(ctx)
+        if store is None:
+            return
+        added = await store.add_ignored_chat(chat_id, getattr(chat, "title", None))
+        await ctx.send(
+            f"{'Ignored' if added else 'Already ignored'}: <code>{chat_id}</code>",
+            reply_to=message,
+        )
+
+    @h.command("dontignorechat", sudo=True, description="Allow share users and grants in this chat again.")
+    async def dont_ignore_chat(self, client, message, ctx, args):
+        chat_id = getattr(getattr(message, "chat", None), "id", None)
+        if chat_id is None:
+            await ctx.send("Could not determine this chat.", reply_to=message)
+            return
+        store = await self._store(ctx)
+        if store is None:
+            return
+        removed = await store.remove_ignored_chat(chat_id)
+        await ctx.send(
+            f"{'No longer ignoring' if removed else 'Chat was not ignored'}: <code>{chat_id}</code>",
+            reply_to=message,
+        )
+
+    @h.command("ignorechatlist", sudo=True, description="List ignored chats.")
+    async def ignore_chat_list(self, client, message, ctx, args):
+        store = await self._store(ctx)
+        if store is None:
+            return
+        text = await _ignored_chat_list_text(ctx)
+        if ctx.actor_is_owner:
+            await ctx.edit(text, message=message)
+        else:
+            await ctx.send(text, reply_to=message)
 
     async def _target(self, client: Any, message: Any, args: Any) -> Any:
         tail = " ".join(args.positional).strip()

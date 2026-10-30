@@ -24,6 +24,13 @@ class ShareUser(Base):
     last_name: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class IgnoreChat(Base):
+    __tablename__ = "ignored_chats"
+
+    chat_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class AllowedCommand(Base):
     __tablename__ = "allowed_cmds"
     __table_args__ = (PrimaryKeyConstraint("user_id", "command"),)

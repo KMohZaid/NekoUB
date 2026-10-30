@@ -10,7 +10,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
-from .models import AllowedCommand, Base, ShareUser, Sudoer
+from .models import AllowedCommand, Base, IgnoreChat, ShareUser, Sudoer
 
 
 def normalize_async_url(database_url: str) -> str:
@@ -115,6 +115,30 @@ class AccessStore:
                 )
             )
             return result.scalar_one_or_none() is not None
+
+    async def is_ignored_chat(self, chat_id: int) -> bool:
+        async with self._session() as session:
+            return await session.get(IgnoreChat, chat_id) is not None
+
+    async def add_ignored_chat(self, chat_id: int, title: str | None = None) -> bool:
+        async with self._session() as session, session.begin():
+            existing = await session.get(IgnoreChat, chat_id)
+            if existing is not None:
+                existing.title = title
+                return False
+            session.add(IgnoreChat(chat_id=chat_id, title=title))
+            return True
+
+    async def remove_ignored_chat(self, chat_id: int) -> bool:
+        async with self._session() as session, session.begin():
+            result = await session.execute(
+                delete(IgnoreChat).where(IgnoreChat.chat_id == chat_id)
+            )
+            return bool(result.rowcount)
+
+    async def list_ignored_chats(self) -> list[IgnoreChat]:
+        async with self._session() as session:
+            return list((await session.scalars(select(IgnoreChat))).all())
 
     async def list_sudoers(self) -> list[Sudoer]:
         async with self._session() as session:

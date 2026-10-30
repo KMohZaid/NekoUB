@@ -58,11 +58,13 @@ class AccessDatabaseTests(unittest.TestCase):
         create_engine.assert_not_called()
 
     def test_access_schema_has_pair_primary_key(self):
-        from core.access.models import AllowedCommand, ShareUser, Sudoer
+        from core.access.models import AllowedCommand, IgnoreChat, ShareUser, Sudoer
 
         self.assertEqual(Sudoer.__tablename__, "sudoers")
         self.assertEqual(ShareUser.__tablename__, "share_users")
         self.assertEqual(AllowedCommand.__tablename__, "allowed_cmds")
+        self.assertEqual(IgnoreChat.__tablename__, "ignored_chats")
+        self.assertIn("title", IgnoreChat.__table__.columns)
         self.assertIn("first_name", ShareUser.__table__.columns)
         self.assertIn("last_name", ShareUser.__table__.columns)
         self.assertIn("first_name", Sudoer.__table__.columns)

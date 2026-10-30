@@ -94,6 +94,96 @@ class SudoAndShareTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(name=name):
                 self.assertTrue(commands[name].sudo)
 
+    def test_ignore_chat_commands_are_registered_as_sudo_commands(self):
+        commands = {
+            item.options.command.trigger: item.options.command
+            for item in SudoAndSharePlugin().declarations()
+            if item.options.command is not None
+        }
+        for name in ("ignorechat", "dontignorechat", "ignorechatlist"):
+            with self.subTest(name=name):
+                self.assertIn(name, commands)
+                self.assertTrue(commands[name].sudo)
+
+    async def test_ignore_chat_list_formats_titles_and_first_message_links(self):
+        from plugins.sudo_and_share import _ignored_chat_list_text
+
+        store = AsyncMock()
+        store.list_ignored_chats.return_value = [
+            type("IgnoredChat", (), {"chat_id": -100123456, "title": "A & B"})()
+        ]
+        context = type(
+            "Context",
+            (),
+            {"get_config": lambda self, key: store if key == "ACCESS_STORE" else None},
+        )()
+        text = await _ignored_chat_list_text(context)
+        self.assertEqual(
+            text,
+            '<b>A &amp; B</b> (ID: <code>-100123456</code>) '
+            '(<a href="https://t.me/c/123456/1">First msg</a>)',
+        )
+
+    async def test_ignore_chat_stores_chat_id_and_title(self):
+        plugin = SudoAndSharePlugin()
+        store = AsyncMock()
+        store.add_ignored_chat.return_value = True
+        message = type(
+            "Message", (),
+            {"chat": type("Chat", (), {"id": -10042, "title": "Test chat"})()},
+        )()
+        context = type(
+            "Context", (),
+            {
+                "get_config": lambda self, key: store if key == "ACCESS_STORE" else None,
+                "send": AsyncMock(),
+            },
+        )()
+
+        await plugin.ignore_chat(object(), message, context, None)
+
+        store.add_ignored_chat.assert_awaited_once_with(-10042, "Test chat")
+        context.send.assert_awaited_once()
+
+    async def test_dont_ignore_chat_removes_current_chat(self):
+        plugin = SudoAndSharePlugin()
+        store = AsyncMock()
+        store.remove_ignored_chat.return_value = True
+        message = type(
+            "Message", (),
+            {"chat": type("Chat", (), {"id": -10042, "title": "Test chat"})()},
+        )()
+        context = type(
+            "Context", (),
+            {
+                "get_config": lambda self, key: store if key == "ACCESS_STORE" else None,
+                "send": AsyncMock(),
+            },
+        )()
+
+        await plugin.dont_ignore_chat(object(), message, context, None)
+
+        store.remove_ignored_chat.assert_awaited_once_with(-10042)
+        context.send.assert_awaited_once()
+
+    async def test_ignore_chat_list_formats_non_supergroup_id_and_empty_title(self):
+        from plugins.sudo_and_share import _ignored_chat_list_text
+
+        store = AsyncMock()
+        store.list_ignored_chats.return_value = [
+            type("IgnoredChat", (), {"chat_id": 42, "title": None})()
+        ]
+        context = type(
+            "Context", (),
+            {"get_config": lambda self, key: store if key == "ACCESS_STORE" else None},
+        )()
+
+        self.assertEqual(
+            await _ignored_chat_list_text(context),
+            '<b>42</b> (ID: <code>42</code>) '
+            '(<a href="https://t.me/c/42/1">First msg</a>)',
+        )
+
     async def test_share_list_edits_message_with_linked_names(self):
         plugin = SudoAndSharePlugin()
         store = AsyncMock()

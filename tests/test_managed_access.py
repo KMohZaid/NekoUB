@@ -11,6 +11,7 @@ class ManagedAccessPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.store.is_sudoer.return_value = True
         self.store.is_share_user.return_value = True
         self.store.has_grant.return_value = False
+        self.store.is_ignored_chat.return_value = False
 
     async def test_owner_uses_dot_route_only(self):
         allowed = await authorize_command(
@@ -37,6 +38,7 @@ class ManagedAccessPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.store.is_sudoer.return_value = False
         self.store.is_share_user.return_value = False
         self.store.has_grant.return_value = False
+        self.store.is_ignored_chat.return_value = False
         for prefix in (",", "#", "?"):
             with self.subTest(prefix=prefix):
                 decision = await authorize_command(
@@ -44,6 +46,58 @@ class ManagedAccessPolicyTests(unittest.IsolatedAsyncioTestCase):
                     command="admin", sudo=True,
                 )
                 self.assertFalse(decision.allowed)
+
+    async def test_explicitly_owner_only_commands_can_still_use_share_or_grant_routes(self):
+        self.store.is_sudoer.return_value = False
+        self.store.is_share_user.return_value = True
+        decision = await authorize_command(
+            store=self.store, user_id=2, owner_id=1, prefix=",",
+            command="action", sudo=False, share=True, grantable=True,
+        )
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.route, "share")
+
+        self.store.is_share_user.return_value = False
+        self.store.has_grant.return_value = True
+        decision = await authorize_command(
+            store=self.store, user_id=2, owner_id=1, prefix=",",
+            command="action", sudo=False, share=False, grantable=True,
+        )
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.route, "grant")
+
+        self.store.has_grant.return_value = False
+        decision = await authorize_command(
+            store=self.store, user_id=2, owner_id=1, prefix=",",
+            command="action", sudo=False, share=False, grantable=False,
+        )
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.route, "delegated")
+
+    async def test_ignored_chat_restricts_share_and_grant_to_sudoers(self):
+        self.store.is_ignored_chat.return_value = True
+        self.store.is_sudoer.return_value = False
+        self.store.is_share_user.return_value = True
+        self.store.has_grant.return_value = True
+        self.assertFalse((await authorize_command(
+            store=self.store, user_id=2, owner_id=1, prefix=",", chat_id=-1001,
+            command="todo", sudo=True, share=True,
+        )).allowed)
+        self.store.is_sudoer.return_value = True
+        self.store.is_ignored_chat.return_value = True
+        self.assertTrue((await authorize_command(
+            store=self.store, user_id=2, owner_id=1, prefix=",", chat_id=-1001,
+            command="todo", sudo=False, share=True,
+        )).allowed)
+
+    async def test_owner_can_use_ignored_chat(self):
+        self.store.is_ignored_chat.return_value = True
+        decision = await authorize_command(
+            store=self.store, user_id=1, owner_id=1, prefix=".", chat_id=-1001,
+            command="todo",
+        )
+        self.assertTrue(decision.allowed)
+        self.store.is_ignored_chat.assert_not_awaited()
 
     async def test_share_role_can_use_any_delegated_prefix(self):
         for prefix in (",", "#", "?"):
