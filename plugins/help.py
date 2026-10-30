@@ -83,15 +83,20 @@ async def render_access_aware(
     commands = _managed_commands()
     visible = await _commands_visible_to(commands, actor_id, owner_id, access)
     route_prefixes = {
-        id(command): command.get("prefix", _prefix())
-        if actor_id == owner_id
-        else config.CMD_PREFIX_FOR_SUDO_AND_SHARE[:1] or command.get("prefix", _prefix())
-        for command in visible
+        id(command): command.get("prefix", _prefix()) for command in visible
     }
 
     routed_visible = _with_route_prefixes(visible, route_prefixes)
     if page == "root":
-        content = _render_access_root(visible)
+        content = _render_access_root(
+            visible,
+            show_delegated_prefixes=actor_id is not None and actor_id == owner_id,
+            prefixes=(
+                _prefix()
+                if actor_id is not None and actor_id == owner_id
+                else visible[0].get("prefix", _prefix()) if visible else _prefix()
+            ),
+        )
     elif page.startswith("category:"):
         key = page.partition(":")[2]
         content = _render_access_category(key, routed_visible)
@@ -136,21 +141,26 @@ async def _commands_visible_to(
         if actor_id is None or access is None:
             continue
         try:
+            is_sudoer = await access.is_sudoer(actor_id)
+            is_share_user = await access.is_share_user(actor_id)
+            has_grant = await access.has_grant(actor_id, command["trigger"])
             allowed = (
-                command.get("sudo", False) and await access.is_sudoer(actor_id)
-                or command.get("share", False) and await access.is_share_user(actor_id)
-                or command.get("grantable", True) and await access.has_grant(actor_id, command["trigger"])
+                command.get("sudo", False) and is_sudoer
+                or command.get("share", False) and is_share_user
+                or command.get("grantable", True) and has_grant
             )
         except Exception:
             continue
         if allowed:
-            visible.append(
-                dict(
-                    command,
-                    prefix=config.CMD_PREFIX_FOR_SUDO_AND_SHARE[:1]
-                    or command.get("prefix", _prefix()),
-                )
-            )
+            if command.get("sudo", False) and is_sudoer:
+                prefix = config.CMD_PREFIX_FOR_SUDO_AND_SHARE[1:2] or command.get("prefix", _prefix())
+            elif command.get("share", False) and is_share_user:
+                prefix = config.CMD_PREFIX_FOR_SUDO_AND_SHARE[2:3] or command.get("prefix", _prefix())
+            elif command.get("grantable", True) and has_grant:
+                prefix = config.CMD_PREFIX_FOR_SUDO_AND_SHARE[2:3] or command.get("prefix", _prefix())
+            else:
+                prefix = command.get("prefix", _prefix())
+            visible.append(dict(command, prefix=prefix))
     return visible
 
 
@@ -171,11 +181,21 @@ def _categories_for_commands(commands: list[dict]) -> list[dict]:
     return sorted(grouped.values(), key=lambda item: item["title"].casefold())
 
 
-def _render_access_root(commands: list[dict]) -> str:
+def _render_access_root(
+    commands: list[dict],
+    *,
+    show_delegated_prefixes: bool = False,
+    prefixes: str | None = None,
+) -> str:
     categories = _categories_for_commands(commands)
     plugin_count = len({command["plugin"] for command in commands})
+    prefix_label = "Prefixes" if show_delegated_prefixes else "Prefix"
+    prefix_lines = [f"{prefix_label}: `{prefixes or _prefix()}`"]
+    if show_delegated_prefixes:
+        delegated_prefixes = config.CMD_PREFIX_FOR_SUDO_AND_SHARE
+        prefix_lines.append(f"Sudo/Share/Grant Prefixes: `{delegated_prefixes}`")
     header = (
-        f"**🐱 NekoUB — Help**\nPrefix: `{_prefix()}`  •  "
+        f"**🐱 NekoUB — Help**\n" + "\n".join(prefix_lines) + "\n"
         f"Plugins: `{plugin_count}`  •  Commands: `{len(commands)}`"
     )
     lines = [header, "", "**Categories**", ""]
@@ -418,7 +438,9 @@ def render_plugins() -> str:
 def _header() -> str:
     return (
         "**🐱 NekoUB — Help**\n"
-        f"Prefix: `{_prefix()}`  •  Plugins: `{len(main.loaded_plugins)}`"
+        f"Prefixes: `{_prefix()}`\n"
+        f"Sudo/Share/Grant Prefixes: `{getattr(config, 'CMD_PREFIX_FOR_SUDO_AND_SHARE', ',#?')}`\n"
+        f"Plugins: `{len(main.loaded_plugins)}`"
         f"  •  Commands: `{_total_commands()}`"
     )
 

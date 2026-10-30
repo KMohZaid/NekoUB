@@ -146,6 +146,45 @@ class AccessAwareHelpTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         help_plugin._managed_commands = self.original_commands
 
+    async def test_owner_help_shows_main_and_delegated_prefixes(self):
+        access = type("Access", (), {})()
+        rendered = await help_plugin.render_access_aware(
+            "root", actor_id=1, owner_id=1, access=access
+        )
+        self.assertIn("Prefixes:", rendered)
+        self.assertIn("Sudo/Share/Grant Prefixes:", rendered)
+        self.assertIn(".`", rendered)
+        self.assertIn("`,#?`", rendered)
+
+    async def test_non_owner_help_shows_only_their_access_prefix(self):
+        access = type(
+            "Access", (),
+            {
+                "is_sudoer": AsyncMock(return_value=False),
+                "is_share_user": AsyncMock(return_value=True),
+                "has_grant": AsyncMock(return_value=False),
+            },
+        )()
+        rendered = await help_plugin.render_access_aware(
+            "root", actor_id=10, owner_id=1, access=access
+        )
+        self.assertIn("Prefix: `?`", rendered)
+        self.assertNotIn("Sudo/Share/Grant Prefixes:", rendered)
+
+    async def test_sudo_help_shows_sudo_prefix(self):
+        access = type(
+            "Access", (),
+            {
+                "is_sudoer": AsyncMock(return_value=True),
+                "is_share_user": AsyncMock(return_value=False),
+                "has_grant": AsyncMock(return_value=False),
+            },
+        )()
+        rendered = await help_plugin.render_access_aware(
+            "root", actor_id=10, owner_id=1, access=access
+        )
+        self.assertIn("Prefix: `#`", rendered)
+
     async def test_unavailable_command_is_removed_from_help(self):
         access = type("Access", (), {"is_sudoer": AsyncMock(return_value=False), "is_share_user": AsyncMock(return_value=False), "has_grant": AsyncMock(return_value=False)})()
         rendered = await help_plugin.render_access_aware("category:core", actor_id=10, owner_id=1, access=access)
@@ -156,13 +195,13 @@ class AccessAwareHelpTests(unittest.IsolatedAsyncioTestCase):
     async def test_available_share_command_uses_share_prefix(self):
         access = type("Access", (), {"is_sudoer": AsyncMock(return_value=False), "is_share_user": AsyncMock(return_value=True), "has_grant": AsyncMock(return_value=False)})()
         rendered = await help_plugin.render_access_aware("category:core", actor_id=10, owner_id=1, access=access)
-        self.assertIn(",safe", rendered)
+        self.assertIn("?safe", rendered)
         self.assertNotIn(".danger", rendered)
 
     async def test_callback_plugin_page_uses_access_aware_routes(self):
         access = type("Access", (), {"is_sudoer": AsyncMock(return_value=False), "is_share_user": AsyncMock(return_value=True), "has_grant": AsyncMock(return_value=False)})()
         rendered = await help_plugin.render_access_aware("plugin:core:demo", actor_id=10, owner_id=1, access=access)
-        self.assertIn(",safe", rendered)
+        self.assertIn("?safe", rendered)
         self.assertNotIn(".danger", rendered)
 
     async def test_callback_root_hides_unavailable_plugins_and_empty_categories(self):
