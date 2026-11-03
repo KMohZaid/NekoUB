@@ -11,12 +11,24 @@ Run it with the project virtualenv:
 """
 
 import asyncio
+import os
 from pathlib import Path
 
 from dotenv import dotenv_values
 from pyrogram import Client
 
 ENV_PATH = Path(__file__).resolve().parent / ".env"
+
+
+def check_env_permissions():
+    """Ensure .env is writable before starting login flow."""
+    if not ENV_PATH.exists():
+        return
+    if not os.access(ENV_PATH, os.W_OK):
+        print(f"\n❌ Error: Permission denied: {ENV_PATH}")
+        print("   The .env file is not writable by current user.")
+        print(f"   Run: chown $USER:$USER {ENV_PATH} && chmod 600 {ENV_PATH}")
+        raise SystemExit(1)
 
 
 def print_banner():
@@ -65,6 +77,7 @@ def save_session_string(session_string: str):
 
 async def generate_session():
     """Generate session string."""
+    check_env_permissions()
     print_banner()
 
     default_api_id, default_api_hash = load_env_defaults()
@@ -90,11 +103,19 @@ async def generate_session():
         print("   and your 2FA password (if enabled).\n")
 
         # Create temporary client - this triggers the interactive login flow
-        async with Client(
-            "temp_session", api_id=api_id, api_hash=api_hash, in_memory=True
-        ) as app:
-            # Get session string
-            session_string = await app.export_session_string()
+        try:
+            async with Client(
+                "temp_session", api_id=api_id, api_hash=api_hash, in_memory=True
+            ) as app:
+                # Get session string
+                session_string = await app.export_session_string()
+        except Exception as e:
+            if "bot token" in str(e).lower():
+                print("\n❌ Error: This script is for user sessions only (phone number login).")
+                print("   Do not use a bot token. Set BOT_TOKEN separately in .env.")
+                print("   To get a user session string, use a phone number.")
+                return
+            raise
 
         # Persist it into .env automatically
         save_session_string(session_string)

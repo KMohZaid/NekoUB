@@ -2,22 +2,18 @@ import sys
 import io
 import asyncio
 import traceback
-from pyrogram import filters
+from pyrogram import Client
 from pyrogram.types import Message
 
 import config
 import main
-from utils import (
-    get_logger,
-    format_output,
-    code_format,
-    continue_propagation,
-)
+from core.plugins import Example, ParsedOptions, Plugin, PluginContext, handlers as h
+from utils import get_logger, format_output, code_format
 
 logger = get_logger(__name__)
 
 
-async def run_eval_task(code, client, message):
+async def run_eval_task(code, client, message, ctx=None):
     """Run the actual eval code (can be cancelled)."""
     try:
         # Capture stdout
@@ -85,65 +81,97 @@ async def run_eval_task(code, client, message):
             output += "Code executed successfully (no output)"
 
         # Format and send
-        await message.edit(format_output(output, max_length=4000))
+        if ctx is not None and not ctx.actor_is_owner:
+            await ctx.send(format_output(output, max_length=4000), reply_to=message)
+        else:
+            await message.edit(format_output(output, max_length=4000))
         logger.info(f"Evaluated code: {code[:50]}...")
 
     except asyncio.CancelledError:
-        await message.edit(
-            f"❌ **EVAL killed by user**\n\n**Code:**\n```py\n{code[:500]}\n```"
-        )
+        text = f"❌ **EVAL killed by user**\n\n**Code:**\n```py\n{code[:500]}\n```"
+        if ctx is not None and not ctx.actor_is_owner:
+            await ctx.send(text, reply_to=message)
+        else:
+            await message.edit(text)
         logger.info("Eval command was cancelled")
         raise
     except Exception as e:
         error_msg = f"Error evaluating code:\n{str(e)}"
-        await message.edit(code_format(error_msg))
+        if ctx is not None and not ctx.actor_is_owner:
+            await ctx.send(code_format(error_msg), reply_to=message)
+        else:
+            await message.edit(code_format(error_msg))
         logger.error(f"Error in eval command: {e}")
 
 
-@main.app.on_message(
-    filters.me & filters.command("eval", prefixes=config.CMD_PREFIX)
-)
-@continue_propagation
-async def eval_command(client, message: Message):
-    """Evaluate Python code.
+class EvalPlugin(Plugin):
+    id = "eval"
+    category = "Utility"
+    description = "Evaluate Python code, including asynchronous code."
 
-    Usage: .eval <python code>
-    Example: .eval print("Hello World")
-    """
-    try:
-        # Get the code from the message
-        cmd = message.text.split(maxsplit=1)
+    @h.command(
+        "eval",
+        sudo=True,
+        grantable=False,
+        signature="<python code>",
+        short_description="Evaluate Python code and show the result.",
+        description=description,
+        examples=(Example('{cmd} print("hello")', "Run a short Python statement."),),
+        prefixes=config.CMD_PREFIX,
+        parse_mode="markdown",
+    )
+    async def eval_command(
+        self,
+        client: Client,
+        message: Message,
+        ctx: PluginContext["EvalPlugin"],
+        args: ParsedOptions,
+    ) -> None:
+        """Evaluate Python code.
 
-        if len(cmd) < 2:
-            await message.edit("Usage: `.eval <python code>`")
-            return
-
-        code = cmd[1]
-
-        # Update message to show it's running
-        await message.edit(f"Evaluating:\n{code_format(code, 'python')}")
-
-        # Create task and track it
-        task_id = f"{message.chat.id}:{message.id}"
-        task = asyncio.create_task(run_eval_task(code, client, message))
-
-        main.running_tasks[task_id] = {
-            "task": task,
-            "type": "eval",
-            "message": message,
-        }
-
+        Usage: .eval <python code>
+        Example: .eval print("Hello World")
+        """
         try:
-            await task
-        finally:
-            # Remove from tracking when done
-            if task_id in main.running_tasks:
-                del main.running_tasks[task_id]
+            # Get the code from the message
+            cmd = message.text.split(maxsplit=1)
 
-    except asyncio.CancelledError:
-        # Task was killed, already handled in run_eval_task
-        pass
-    except Exception as e:
-        error_msg = f"Error evaluating code:\n{str(e)}"
-        await message.edit(code_format(error_msg))
-        logger.error(f"Error in eval command: {e}")
+            if len(cmd) < 2:
+                if ctx.actor_is_owner:
+                    await message.edit("Usage: `.eval <python code>`")
+                else:
+                    await ctx.send("Usage: `#eval <python code>`", reply_to=message)
+                return
+
+            code = cmd[1]
+
+            # Update message to show it's running
+            if ctx.actor_is_owner:
+                await message.edit(f"Evaluating:\n{code_format(code, 'python')}")
+            else:
+                await ctx.send(f"Evaluating:\n{code_format(code, 'python')}", reply_to=message)
+
+            # Create task and track it
+            task_id = f"{message.chat.id}:{message.id}"
+            task = asyncio.create_task(run_eval_task(code, client, message, ctx))
+
+            main.running_tasks[task_id] = {
+                "task": task,
+                "type": "eval",
+                "message": message,
+            }
+
+            try:
+                await task
+            finally:
+                # Remove from tracking when done
+                if task_id in main.running_tasks:
+                    del main.running_tasks[task_id]
+
+        except asyncio.CancelledError:
+            # Task was killed, already handled in run_eval_task
+            pass
+        except Exception as e:
+            error_msg = f"Error evaluating code:\n{str(e)}"
+            await message.edit(code_format(error_msg))
+            logger.error(f"Error in eval command: {e}")

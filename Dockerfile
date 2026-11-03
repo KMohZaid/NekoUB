@@ -1,23 +1,24 @@
-# Use Python 3.13 slim image for smaller size
-FROM python:3.13-slim
+# Build Python dependencies separately so requirements changes do not rerun apt.
+FROM python:3.13-slim AS builder
 
-# Set working directory
 WORKDIR /app
 
-# Copy requirements first for better caching
-COPY requirements.txt .
-
-# Install build dependencies, Python packages, then clean up in one layer
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         git \
         gcc \
         build-essential \
-    && pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt && \
-    # Clean up build dependencies to reduce image size
-    apt-get purge -y --auto-remove gcc build-essential && \
-    rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# Keep build tools out of the runtime image.
+FROM python:3.13-slim
+
+WORKDIR /app
+COPY --from=builder /install/ /usr/local/
 
 # Copy application code
 COPY . .
