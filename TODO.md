@@ -17,3 +17,7 @@
 - [ ] Build an assistant-bot mini app
   - [ ] Provide a simpler interface for managing stickers.
   - [ ] Support other assistant-bot task-management workflows.
+
+- [ ] Extra stuff
+  - [ ] Add termux support
+  - [ ] Make a simple android app with gui that start bot in background so normie can use too.
