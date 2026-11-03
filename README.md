@@ -21,6 +21,10 @@ A cute and powerful Telegram Userbot based on pyrotgfork with a modular plugin s
 - ⏰ **Automations** - `.am` keyword, reply, tag and scheduled auto-messages
 - ✅ **Todoist** - `.todo` create tasks from chat
 
+## 🚧 TODO
+
+For TODO, refers to [TODO.md](TODO.md)
+
 ## 📦 Installation
 
 ### Option 1: Docker (Recommended for VPS)
