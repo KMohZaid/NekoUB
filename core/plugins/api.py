@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from functools import wraps
+from functools import partial
 from typing import Any, Callable, Mapping, Sequence, TypeVar
 
 from pyrogram import Client
@@ -217,6 +217,189 @@ def _method_declarations(plugin: Plugin) -> list[HandlerDeclaration]:
     return declarations
 
 
+async def _invoke_handler(
+    plugin: Plugin,
+    original: Callback,
+    declaration: HandlerDeclaration,
+    client: Client,
+    update: Any,
+    *args: Any,
+    config: Mapping[str, Any] | None = None,
+    command_prefixes: Sequence[str] = (".",),
+    delegated_prefixes: Sequence[str] = (",", "#", "?"),
+    user_client: Client | None = None,
+    bot_client: Client | None = None,
+    access_store: Any = None,
+    owner_id: int | None = None,
+    **kwargs: Any,
+) -> Any:
+    command_options = declaration.options.command
+    from pyrogram import ContinuePropagation
+
+    is_bot_handler = declaration.options.bot or declaration.event.startswith("bot_")
+    if is_bot_handler:
+        is_configured_bot = (
+            client is bot_client
+            if bot_client is not None
+            else bool(
+                getattr(client, "is_bot", False)
+                or getattr(client, "bot_token", None)
+            )
+        )
+        if not is_configured_bot:
+            raise RuntimeError("Bot handler was attached to a non-bot client")
+    sender = getattr(update, "from_user", None)
+    actor_id = getattr(sender, "id", None)
+    current_owner_id = owner_id
+    if current_owner_id is None:
+        current_owner_id = getattr(getattr(user_client, "me", None), "id", None)
+    if current_owner_id is None:
+        owner_client = user_client or (None if is_bot_handler else client)
+        owner = getattr(owner_client, "me", None) if owner_client else None
+        if owner is None and owner_client is not None:
+            try:
+                owner = await owner_client.get_me()
+            except Exception:
+                owner = None
+        current_owner_id = getattr(owner, "id", None)
+    actor_is_owner = bool(actor_id is not None and actor_id == current_owner_id)
+    if (
+        command_options is not None
+        and declaration.event == "command"
+        and (command_options.sudo or command_options.share or command_options.grantable)
+        and (getattr(update, "text", None) or getattr(update, "caption", "") or "")[:1]
+        in delegated_prefixes
+    ):
+        from ..access.policy import authorize_command
+
+        raw_text = getattr(update, "text", None) or getattr(update, "caption", "") or ""
+        message_prefix = raw_text[:1]
+        decision = await authorize_command(
+            store=access_store,
+            user_id=actor_id,
+            owner_id=current_owner_id,
+            prefix=message_prefix,
+            command=command_options.trigger,
+            chat_id=getattr(getattr(update, "chat", None), "id", None),
+            sudo=command_options.sudo,
+            share=command_options.share,
+            grantable=command_options.grantable,
+            owner_prefixes=command_prefixes,
+            delegated_prefixes=delegated_prefixes,
+        )
+        if not decision.allowed:
+            raise ContinuePropagation
+    if declaration.event in {
+        "callback_query",
+        "inline_query",
+        "bot_callback_query",
+        "bot_inline_query",
+    } and not declaration.options.public or (
+        is_bot_handler
+        and declaration.event == "command"
+        and not declaration.options.public
+    ):
+        owner_client = user_client or (None if is_bot_handler else client)
+        owner = getattr(owner_client, "me", None) if owner_client else None
+        if owner is None and owner_client is not None:
+            try:
+                owner = await owner_client.get_me()
+            except Exception:
+                owner = None
+        sender = getattr(update, "from_user", None)
+        is_owner = bool(owner and sender and owner.id == sender.id)
+        if not is_owner:
+            if "inline_query" in declaration.event:
+                from pyrogram.types import InlineQueryResultArticle, InputTextMessageContent
+
+                await update.answer(
+                    [InlineQueryResultArticle(
+                        title="Owner only",
+                        input_message_content=InputTextMessageContent(
+                            "You can't perform this action."
+                        ),
+                        description="You can't perform this action.",
+                    )],
+                    cache_time=0,
+                    is_personal=True,
+                )
+            else:
+                await update.answer("You can't perform this action.", show_alert=True)
+            raise ContinuePropagation
+    context = PluginContext(
+        client=(
+            user_client
+            if user_client is not None
+            else None if is_bot_handler else client
+        ),
+        update=update,
+        bot=(
+            bot_client
+            if bot_client is not None
+            else client if is_bot_handler else None
+        ),
+        plugin=plugin,
+        config=config if config is not None else {},
+        actor_id=actor_id,
+        actor_is_owner=actor_is_owner,
+    )
+    if command_options is not None:
+        context.command = command_options
+        context.parse_mode = resolve_parse_mode(command_options.parse_mode)
+    handler_args = args
+    if command_options is not None and declaration.event == "command":
+        raw_text = getattr(update, "text", None) or getattr(update, "caption", "") or ""
+        if command_options.options:
+            try:
+                parse_prefixes = (
+                    tuple(dict.fromkeys((*command_prefixes, *delegated_prefixes)))
+                    if command_options.sudo or command_options.share or command_options.grantable
+                    else command_prefixes
+                )
+                parsed = parse_options(
+                    getattr(update, "text", None) or getattr(update, "caption", "") or "",
+                    command_options.options,
+                    (command_options.trigger, *command_options.aliases),
+                    prefixes=(
+                        parse_prefixes
+                        if command_options.prefixes == "."
+                        else command_options.prefixes
+                    ),
+                )
+            except OptionParseError as error:
+                await context.send(
+                    error.as_html(), reply_to=update, parse_mode=ParseMode.HTML
+                )
+                from pyrogram import ContinuePropagation
+
+                raise ContinuePropagation
+        else:
+            from .errors import ParsedOptions
+
+            parsed = ParsedOptions(
+                values={},
+                positional=tuple(raw_text.split(maxsplit=1)[1:]),
+            )
+        handler_args = (parsed, *args)
+    from pyrogram import ContinuePropagation
+
+    handler_client = (
+        client
+        if is_bot_handler
+        else user_client if user_client is not None else client
+    )
+    try:
+        await original(handler_client, update, context, *handler_args, **kwargs)
+    except Exception as error:
+        logging.getLogger("core.plugins").exception(
+            "Managed plugin handler failed: %s.%s",
+            plugin.id,
+            declaration.method_name,
+        )
+        raise ContinuePropagation from error
+    raise ContinuePropagation
+
+
 def _wrap_handler(
     plugin: Plugin,
     declaration: HandlerDeclaration,
@@ -229,178 +412,21 @@ def _wrap_handler(
     access_store: Any = None,
     owner_id: int | None = None,
 ) -> Callback:
+    """Bind one declaration to the shared managed-handler invocation."""
     original = getattr(plugin, declaration.method_name)
-    command_options = declaration.options.command
-
-    @wraps(original)
-    async def invoke(client: Client, update: Any, *args: Any, **kwargs: Any) -> Any:
-        from pyrogram import ContinuePropagation
-
-        is_bot_handler = declaration.options.bot or declaration.event.startswith("bot_")
-        if is_bot_handler:
-            is_configured_bot = (
-                client is bot_client
-                if bot_client is not None
-                else bool(
-                    getattr(client, "is_bot", False)
-                    or getattr(client, "bot_token", None)
-                )
-            )
-            if not is_configured_bot:
-                raise RuntimeError("Bot handler was attached to a non-bot client")
-        sender = getattr(update, "from_user", None)
-        actor_id = getattr(sender, "id", None)
-        current_owner_id = owner_id
-        if current_owner_id is None:
-            current_owner_id = getattr(getattr(user_client, "me", None), "id", None)
-        if current_owner_id is None:
-            owner_client = user_client or (None if is_bot_handler else client)
-            owner = getattr(owner_client, "me", None) if owner_client else None
-            if owner is None and owner_client is not None:
-                try:
-                    owner = await owner_client.get_me()
-                except Exception:
-                    owner = None
-            current_owner_id = getattr(owner, "id", None)
-        actor_is_owner = bool(actor_id is not None and actor_id == current_owner_id)
-        if (
-            command_options is not None
-            and declaration.event == "command"
-            and (command_options.sudo or command_options.share or command_options.grantable)
-            and (getattr(update, "text", None) or getattr(update, "caption", "") or "")[:1]
-            in delegated_prefixes
-        ):
-            from ..access.policy import authorize_command
-
-            raw_text = getattr(update, "text", None) or getattr(update, "caption", "") or ""
-            message_prefix = raw_text[:1]
-            decision = await authorize_command(
-                store=access_store,
-                user_id=actor_id,
-                owner_id=current_owner_id,
-                prefix=message_prefix,
-                command=command_options.trigger,
-                chat_id=getattr(getattr(update, "chat", None), "id", None),
-                sudo=command_options.sudo,
-                share=command_options.share,
-                grantable=command_options.grantable,
-                owner_prefixes=command_prefixes,
-                delegated_prefixes=delegated_prefixes,
-            )
-            if not decision.allowed:
-                raise ContinuePropagation
-        if declaration.event in {
-            "callback_query",
-            "inline_query",
-            "bot_callback_query",
-            "bot_inline_query",
-        } and not declaration.options.public or (
-            is_bot_handler
-            and declaration.event == "command"
-            and not declaration.options.public
-        ):
-            owner_client = user_client or (None if is_bot_handler else client)
-            owner = getattr(owner_client, "me", None) if owner_client else None
-            if owner is None and owner_client is not None:
-                try:
-                    owner = await owner_client.get_me()
-                except Exception:
-                    owner = None
-            sender = getattr(update, "from_user", None)
-            is_owner = bool(owner and sender and owner.id == sender.id)
-            if not is_owner:
-                if "inline_query" in declaration.event:
-                    from pyrogram.types import InlineQueryResultArticle, InputTextMessageContent
-
-                    await update.answer(
-                        [InlineQueryResultArticle(
-                            title="Owner only",
-                            input_message_content=InputTextMessageContent(
-                                "You can't perform this action."
-                            ),
-                            description="You can't perform this action.",
-                        )],
-                        cache_time=0,
-                        is_personal=True,
-                    )
-                else:
-                    await update.answer("You can't perform this action.", show_alert=True)
-                raise ContinuePropagation
-        context = PluginContext(
-            client=(
-                user_client
-                if user_client is not None
-                else None if is_bot_handler else client
-            ),
-            update=update,
-            bot=(
-                bot_client
-                if bot_client is not None
-                else client if is_bot_handler else None
-            ),
-            plugin=plugin,
-            config=config if config is not None else {},
-            actor_id=actor_id,
-            actor_is_owner=actor_is_owner,
-        )
-        if command_options is not None:
-            context.command = command_options
-            context.parse_mode = resolve_parse_mode(command_options.parse_mode)
-        handler_args = args
-        if command_options is not None and declaration.event == "command":
-            raw_text = getattr(update, "text", None) or getattr(update, "caption", "") or ""
-            if command_options.options:
-                try:
-                    parse_prefixes = (
-                        tuple(dict.fromkeys((*command_prefixes, *delegated_prefixes)))
-                        if command_options.sudo or command_options.share or command_options.grantable
-                        else command_prefixes
-                    )
-                    parsed = parse_options(
-                        getattr(update, "text", None) or getattr(update, "caption", "") or "",
-                        command_options.options,
-                        (command_options.trigger, *command_options.aliases),
-                        prefixes=(
-                            parse_prefixes
-                            if command_options.prefixes == "."
-                            else command_options.prefixes
-                        ),
-                    )
-                except OptionParseError as error:
-                    await context.send(
-                        error.as_html(), reply_to=update, parse_mode=ParseMode.HTML
-                    )
-                    from pyrogram import ContinuePropagation
-
-                    raise ContinuePropagation
-            else:
-                from .errors import ParsedOptions
-
-                parsed = ParsedOptions(
-                    values={},
-                    positional=tuple(raw_text.split(maxsplit=1)[1:]),
-                )
-            handler_args = (parsed, *args)
-        from pyrogram import ContinuePropagation
-
-        handler_client = (
-            client
-            if is_bot_handler
-            else user_client if user_client is not None else client
-        )
-        try:
-            await original(handler_client, update, context, *handler_args, **kwargs)
-        except Exception as error:
-            logging.getLogger("core.plugins").exception(
-                "Managed plugin handler failed: %s.%s",
-                plugin.id,
-                declaration.method_name,
-            )
-            raise ContinuePropagation from error
-        raise ContinuePropagation
-
-    return invoke
-
+    return partial(
+        _invoke_handler,
+        plugin,
+        original,
+        declaration,
+        config=config,
+        command_prefixes=command_prefixes,
+        delegated_prefixes=delegated_prefixes,
+        user_client=user_client,
+        bot_client=bot_client,
+        access_store=access_store,
+        owner_id=owner_id,
+    )
 
 class Plugin:
     """Base class for a managed plugin declaration."""

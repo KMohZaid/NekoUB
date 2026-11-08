@@ -1,4 +1,5 @@
 import asyncio
+from functools import partial
 import sys
 import tempfile
 import unittest
@@ -63,6 +64,41 @@ class PluginManagerTests(unittest.TestCase):
                     sys.modules.pop(name, None)
                 else:
                     sys.modules[name] = previous
+
+    def test_stacked_declarations_use_same_wrapper_and_keep_binding(self):
+        class StackedPlugin(Plugin):
+            id = "stacked"
+            called = []
+
+            @h.edited_message()
+            @h.message()
+            async def observe(self, client, message, ctx, *args, **kwargs):
+                self.called.append((ctx.plugin, ctx.update, ctx.actor_id))
+
+        plugin = StackedPlugin()
+        self.manager.activate(plugin)
+
+        callbacks = [item[1].callback for item in self.manager.active["stacked"].handlers]
+        def shared_wrapper(callback):
+            return callback.func if isinstance(callback, partial) else callback
+
+        self.assertIs(shared_wrapper(callbacks[0]), shared_wrapper(callbacks[1]))
+        self.assertEqual(len(plugin.declarations()), 2)
+
+        async def invoke_all():
+            updates = [object(), object()]
+            for callback, update in zip(callbacks, updates):
+                try:
+                    await callback(self.client, update)
+                except Exception as error:
+                    self.assertEqual(type(error).__name__, "ContinuePropagation")
+            return updates
+
+        updates = asyncio.run(invoke_all())
+        self.assertEqual(
+            plugin.called,
+            [(plugin, updates[0], None), (plugin, updates[1], None)],
+        )
 
     def test_activation_tracks_handler_ownership(self):
         self.manager.activate(ManagedPlugin())
