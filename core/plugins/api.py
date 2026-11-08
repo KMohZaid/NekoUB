@@ -248,16 +248,6 @@ async def _invoke_handler(
     bot_client = binding.bot_client
     access_store = binding.access_store
     owner_id = binding.owner_id
-    for name in (
-        "config",
-        "command_prefixes",
-        "delegated_prefixes",
-        "user_client",
-        "bot_client",
-        "access_store",
-        "owner_id",
-    ):
-        kwargs.pop(name, None)
     command_options = declaration.options.command
     from pyrogram import ContinuePropagation
 

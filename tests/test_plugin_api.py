@@ -438,7 +438,7 @@ class PluginApiTests(unittest.TestCase):
         self.assertIs(actual_client, client)
         self.assertIs(actual_update, update)
         self.assertEqual(args, ("extra",))
-        self.assertEqual(kwargs, {"key": "value"})
+        self.assertEqual(kwargs, {"key": "value", "config": "callback"})
         self.assertEqual(context.config["flag"], "yes")
 
     def test_html_splitter_counts_utf16_and_keeps_entities_whole(self):
