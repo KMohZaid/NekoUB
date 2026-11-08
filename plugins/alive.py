@@ -90,11 +90,17 @@ class AlivePlugin(Plugin):
             alive_msg += f"<b>✨ Prefix:</b> <code>{html.escape(config.CMD_PREFIX)}</code>\n"
             alive_msg += "<b>💝 Made with love by NekoUB</b>"
 
-            await message.edit(alive_msg, parse_mode=ParseMode.HTML)
+            if ctx.actor_is_owner:
+                await message.edit(alive_msg, parse_mode=ParseMode.HTML)
+            else:
+                await ctx.send(alive_msg, reply_to=message, parse_mode=ParseMode.HTML)
 
             logger.info("Alive command executed")
 
         except Exception as e:
             error_msg = f"❌ Error in alive command:\n{str(e)}"
-            await message.edit(error_msg)
+            if ctx.actor_is_owner:
+                await message.edit(error_msg)
+            else:
+                await ctx.send(error_msg, reply_to=message)
             logger.error(f"Error in alive command: {e}")

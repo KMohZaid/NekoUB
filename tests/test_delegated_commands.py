@@ -87,6 +87,29 @@ class DelegatedCommandTests(unittest.TestCase):
         self.assertTrue(all(call.kwargs.get("reply_to") is message for call in context.send.await_args_list))
         message.edit.assert_not_awaited()
 
+    def test_delegated_alive_replies_with_new_message_instead_of_editing_command(self):
+        plugin = AlivePlugin()
+        message = type("Message", (), {"edit": AsyncMock()})()
+        client = type(
+            "Client",
+            (),
+            {"get_me": AsyncMock(return_value=type(
+                "User", (), {"first_name": "Owner", "username": "owner", "id": 1}
+            )())},
+        )()
+        context = type(
+            "Context",
+            (),
+            {"actor_is_owner": False, "send": AsyncMock()},
+        )()
+
+        asyncio.run(plugin.alive_command(client, message, context, None))
+
+        message.edit.assert_not_awaited()
+        context.send.assert_awaited_once()
+        self.assertIs(context.send.await_args.kwargs["reply_to"], message)
+        self.assertIn("I'm alive and ready", context.send.await_args.args[0])
+
     def test_delegated_tts_does_not_delete_command(self):
         declaration = TTSPlugin().declarations()[0]
         self.assertTrue(declaration.options.command.share)
