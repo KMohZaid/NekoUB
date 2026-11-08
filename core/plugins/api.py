@@ -428,6 +428,7 @@ def _wrap_handler(
         owner_id=owner_id,
     )
 
+
 class Plugin:
     """Base class for a managed plugin declaration."""
 

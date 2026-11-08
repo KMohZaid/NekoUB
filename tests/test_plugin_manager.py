@@ -3,9 +3,11 @@ from functools import partial
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from pathlib import Path
 from types import ModuleType
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from core.plugins import Example, Option, Plugin, handlers as h
 from core.plugins.manager import PluginManager
@@ -99,6 +101,48 @@ class PluginManagerTests(unittest.TestCase):
             plugin.called,
             [(plugin, updates[0], None), (plugin, updates[1], None)],
         )
+
+    def test_shared_command_filter_combines_owner_and_delegated_routes_with_custom_filter(self):
+        custom_filter = filters.create(
+            lambda _filter, _client, message: message.text.endswith("allowed")
+        )
+
+        class FilteredPlugin(Plugin):
+            id = "filtered"
+
+            @h.command("run", filters=custom_filter)
+            async def run(self, client, message, ctx, args):
+                pass
+
+        plugin = FilteredPlugin()
+        self.client.me = Mock(id=1, username="ownerbot")
+        self.client.executor = ThreadPoolExecutor(max_workers=1)
+        self.addCleanup(self.client.executor.shutdown)
+        handler = self.manager._build_handler(plugin, plugin.declarations()[0])
+        async_filter = handler.filters
+
+        # Pyrogram's filter expression is exercised via its actual check method.
+        owner_message = SimpleNamespace(
+            text=".run allowed", caption=None, from_user=SimpleNamespace(id=1), outgoing=True
+        )
+        delegated_message = SimpleNamespace(
+            text=",run allowed", caption=None, from_user=SimpleNamespace(id=2), outgoing=False
+        )
+        denied_message = SimpleNamespace(
+            text=".run allowed", caption=None, from_user=SimpleNamespace(id=2), outgoing=False
+        )
+        custom_rejected = SimpleNamespace(
+            text=",run denied", caption=None, from_user=SimpleNamespace(id=2), outgoing=False
+        )
+
+        async def evaluate():
+            with patch("pyrogram.filters._is_outgoing", side_effect=lambda message: message.outgoing):
+                return [
+                    await async_filter(self.client, message)
+                    for message in (owner_message, delegated_message, denied_message, custom_rejected)
+                ]
+
+        self.assertEqual(asyncio.run(evaluate()), [True, True, False, False])
 
     def test_activation_tracks_handler_ownership(self):
         self.manager.activate(ManagedPlugin())

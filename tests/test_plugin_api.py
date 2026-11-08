@@ -165,6 +165,49 @@ class PluginApiTests(unittest.TestCase):
             asyncio.run(callback(object(), update))
         self.assertEqual(plugin.parsed.positional, ("echo hello world",))
 
+    def test_delegated_command_access_is_checked_before_plugin_invocation(self):
+        class DelegatedPlugin(Plugin):
+            id = "delegated_handler"
+            called = False
+
+            @h.command("run", sudo=True, grantable=False)
+            async def run(self, client, update, ctx, args):
+                self.called = True
+
+        import asyncio
+
+        plugin = DelegatedPlugin()
+        declaration = plugin.declarations()[0]
+        store = AsyncMock()
+        store.is_sudoer.return_value = False
+        store.is_share_user.return_value = False
+        store.has_grant.return_value = False
+        store.is_ignored_chat.return_value = False
+        callback = _wrap_handler(
+            plugin,
+            declaration,
+            user_client=type("OwnerClient", (), {"me": type("User", (), {"id": 1})()})(),
+            access_store=store,
+        )
+        update = type(
+            "Message",
+            (),
+            {
+                "text": ",run",
+                "from_user": type("User", (), {"id": 2})(),
+                "chat": type("Chat", (), {"id": 10})(),
+            },
+        )()
+
+        with self.assertRaises(Exception) as raised:
+            asyncio.run(callback(object(), update))
+
+        self.assertEqual(type(raised.exception).__name__, "ContinuePropagation")
+        self.assertFalse(plugin.called)
+        store.is_sudoer.assert_awaited_once_with(2)
+        store.is_share_user.assert_not_awaited()
+        store.has_grant.assert_not_awaited()
+
     def test_bot_command_owner_check_is_not_shadowed_by_access_dispatch(self):
         class BotHelpPlugin(Plugin):
             id = "bot_help_access"
