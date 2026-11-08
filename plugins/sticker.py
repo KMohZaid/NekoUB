@@ -104,13 +104,22 @@ async def ensure_me(client) -> None:
 
 
 async def cache_owned_packs(client) -> list[dict]:
-    """Refresh the cached list of packs owned by the current user."""
+    """Refresh the owned-pack inventory while reusing recent unchanged pack metadata."""
     await ensure_me(client)
-    packs = await fetch_all_owned_packs(client)
     cache = load_cache()
     if cache.get("user_id") != me_user.id:
         cache = {"user_id": me_user.id}
+    previous = cache.get("owned_packs")
+    cached_at = cache.get("owned_packs_updated_at", 0)
+    recent_packs = (
+        previous if isinstance(previous, list)
+        and isinstance(cached_at, (int, float))
+        and 0 <= time.time() - cached_at <= 6 * 3600
+        else None
+    )
+    packs = await fetch_all_owned_packs(client, cached_packs=recent_packs)
     cache["owned_packs"] = packs
+    cache["owned_packs_updated_at"] = time.time()
     save_cache(cache)
     return packs
 
@@ -895,7 +904,7 @@ def _pack_sort_key(pack: dict) -> tuple[int, str]:
     return category, title.casefold()
 
 
-async def _parse_owned_pack(client, covered) -> dict | None:
+async def _parse_owned_pack(client, covered, cached_pack: dict | None = None) -> dict | None:
     sticker_set = getattr(covered, "set", None)
     if sticker_set is None:
         return None
@@ -915,32 +924,53 @@ async def _parse_owned_pack(client, covered) -> dict | None:
         "is_archived": bool(getattr(sticker_set, "archived", False)),
         "creator": bool(getattr(sticker_set, "creator", False)),
     }
-    try:
-        documents = await client.invoke(
-            functions.messages.GetStickerSet(
-                stickerset=types.InputStickerSetShortName(short_name=pack["short_name"]),
-                hash=0,
+    cached_matches = (
+        cached_pack is not None
+        and cached_pack.get("id") == pack["id"]
+        and cached_pack.get("short_name") == pack["short_name"]
+        and cached_pack.get("count") == pack["count"]
+        and cached_pack.get("is_emoji") == pack["is_emoji"]
+        and cached_pack.get("is_archived") == pack["is_archived"]
+        and cached_pack.get("creator") == pack["creator"]
+        and cached_pack.get("type") in PACK_TYPE_ICONS
+    )
+    if cached_matches:
+        pack.update(
+            {key: cached_pack[key] for key in ("type", "limit", "icon") if key in cached_pack}
+        )
+    else:
+        try:
+            documents = await client.invoke(
+                functions.messages.GetStickerSet(
+                    stickerset=types.InputStickerSetShortName(short_name=pack["short_name"]),
+                    hash=0,
+                )
             )
-        )
-        pack["type"] = await _get_pack_type(
-            client,
-            pack["short_name"],
-            pack["is_emoji"],
-            getattr(documents, "documents", None)
-            or ([type_cover] if type_cover else None),
-        )
-    except Exception as exc:
-        logger.warning(
-            f"[STICKER] Could not inspect pack type for {pack['short_name']}: {exc}"
-        )
-        pack["type"] = "emoji" if pack["is_emoji"] else "normal"
+            pack["type"] = await _get_pack_type(
+                client,
+                pack["short_name"],
+                pack["is_emoji"],
+                getattr(documents, "documents", None)
+                or ([type_cover] if type_cover else None),
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[STICKER] Could not inspect pack type for {pack['short_name']}: {exc}"
+            )
+            pack["type"] = "emoji" if pack["is_emoji"] else "normal"
     pack["limit"] = _pack_limit(pack["type"])
     pack["icon"] = PACK_TYPE_ICONS[pack["type"]]
     return pack
 
 
-async def fetch_all_owned_packs(client, include_archived: bool = True) -> list[dict]:
+async def fetch_all_owned_packs(
+    client, include_archived: bool = True, cached_packs: list[dict] | None = None
+) -> list[dict]:
     await ensure_me(client)
+    cached_by_id = {
+        pack["id"]: pack for pack in (cached_packs or [])
+        if isinstance(pack, dict) and "id" in pack
+    }
     packs = []
     offset_id = 0
     page_size = 40
@@ -952,7 +982,14 @@ async def fetch_all_owned_packs(client, include_archived: bool = True) -> list[d
         if not batch:
             break
         parsed = await asyncio.gather(
-            *(_parse_owned_pack(client, covered) for covered in batch)
+            *(
+                _parse_owned_pack(
+                    client,
+                    covered,
+                    cached_by_id.get(getattr(getattr(covered, "set", None), "id", None)),
+                )
+                for covered in batch
+            )
         )
         packs.extend(pack for pack in parsed if pack is not None)
         if len(batch) < page_size:
@@ -1779,11 +1816,22 @@ async def refresh_sticker_index(client, *, force: bool = False) -> bool:
         if not force and sticker_index.snapshot_is_usable(me_user.id, max_age=3600):
             return True
         try:
-            all_owned_packs = await fetch_all_owned_packs(client, include_archived=True)
             cache = load_cache()
+            cached_at = cache.get("owned_packs_updated_at", 0)
+            cached_packs = (
+                cache.get("owned_packs")
+                if cache.get("user_id") == me_user.id
+                and isinstance(cached_at, (int, float))
+                and 0 <= time.time() - cached_at <= 6 * 3600
+                else None
+            )
+            all_owned_packs = await fetch_all_owned_packs(
+                client, include_archived=True, cached_packs=cached_packs
+            )
             if cache.get("user_id") != me_user.id:
                 cache = {"user_id": me_user.id}
             cache["owned_packs"] = all_owned_packs
+            cache["owned_packs_updated_at"] = time.time()
             save_cache(cache)
             packs = [pack for pack in all_owned_packs if pack.get("creator")]
             eligible_packs = [pack for pack in packs if not pack.get("is_archived")]
@@ -1819,11 +1867,6 @@ async def _ensure_sticker_index(client, packs: list[dict], sticker) -> bool:
             and sticker_index.packs_indexed(required_names)
             and sticker_index.packs_match_counts(required_counts)
             and sticker_index.packs_usable(required_names, max_age=7 * 86400)
-            and not sticker_index.has_unverified(
-                required_names, getattr(sticker, "mime_type", None),
-                getattr(sticker, "file_size", None),
-                bool(getattr(sticker, "is_video", False)),
-            )
         )
 
     if not required_names:
@@ -1968,6 +2011,10 @@ async def _queue_worker(client):
         converted_folder = None
         source = None
         kind = None
+        sync_pack = None
+        sync_response = None
+        sync_target = None
+        sync_index = False
         try:
             kind, media = message_media(media_message)
             source = media if kind == "sticker" else None
@@ -2061,12 +2108,10 @@ async def _queue_worker(client):
                     response_holder=add_response,
                     allow_duplicates=True,
                 )
-                if pack_short_name:
-                    await cache_owned_packs(client)
-                    if added:
-                        await _update_index_after_add(
-                            client, pack_short_name, add_response.get("sticker_set")
-                        )
+                if pack_short_name and added:
+                    sync_pack = pack_short_name
+                    sync_response = add_response.get("sticker_set")
+                    sync_index = True
             else:
                 pack_short_name, file_id, added = await add_sticker_to_target(
                     client,
@@ -2078,10 +2123,10 @@ async def _queue_worker(client):
                     allow_duplicates=True,
                 )
                 if pack_short_name and added:
-                    await cache_owned_packs(client)
-                    await _update_index_after_add(
-                        client, pack_short_name, add_response.get("sticker_set"), target
-                    )
+                    sync_pack = pack_short_name
+                    sync_response = add_response.get("sticker_set")
+                    sync_target = target
+                    sync_index = True
             success = pack_short_name is not None
             if success and not added:
                 await _send_reaction(client, message, "🤬", context="duplicate")
@@ -2140,6 +2185,12 @@ async def _queue_worker(client):
                         f"but couldn't send its sticker file: {send_exc}"
                     )
                     logger.exception("[STICKER] Failed to send selected pack sticker")
+            if sync_pack is not None:
+                await cache_owned_packs(client)
+                if sync_index:
+                    await _update_index_after_add(
+                        client, sync_pack, sync_response, sync_target
+                    )
         except Exception as exc:
             logger.exception(
                 f"[STICKER] Queue worker error: {type(exc).__name__}: {exc} "
