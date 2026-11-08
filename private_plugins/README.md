@@ -4,9 +4,9 @@ This folder is for your **private plugins** that you don't want to commit to git
 
 ## Usage
 
-1. Place your custom plugins here (same format as `plugins/` folder)
-2. They will be loaded automatically on bot start
-3. Use `.reload` to reload all plugins (including private ones)
+1. Place managed `Plugin` subclasses here (same API as plugins in `plugins/`)
+2. Valid declarations load automatically on bot start
+3. Use `.reload` to reload public and private plugins
 
 ## Why use this folder?
 
@@ -16,25 +16,29 @@ This folder is for your **private plugins** that you don't want to commit to git
 
 ## Important
 
-- This folder is **ignored by git** (except `__init__.py` and this README)
-- All `.py` files here will be loaded as plugins
-- Same structure as main `plugins/` folder
+- This folder is **ignored by git** except `__init__.py`, this README, and `example.py`
+- Add your own `.py` files here; they stay untracked by git
+- Use the managed `Plugin` structure shown in the example below
 
-## Example
+## Example: Managed `.private` command
+
+Create `private_plugins/example.py` and restart the bot. This command replies
+with `I am from private plugin` when you send `.private`:
 
 ```python
-# private_plugins/my_custom.py
-from pyrogram import filters
-from pyrogram.types import Message
+from core.plugins import Plugin, handlers as h
 
-import config
-import main
-from userbot.utils import get_logger
 
-logger = get_logger(__name__)
+class PrivateExample(Plugin):
+    id = "private_example"
 
-@main.app.on_message(filters.me & filters.command("mycmd", prefixes=config.CMD_PREFIX))
-async def my_custom_command(client, message: Message):
-    """My custom command."""
-    await message.edit("My custom response!")
+    @h.command("private", description="Confirm private plugin loading.")
+    async def private(self, client, message, ctx, args):
+        await ctx.edit("I am from private plugin", message=message)
 ```
+
+Private plugins use the same managed `Plugin` API as public plugins. Their
+modules load under `private_plugins.*`, so private helpers can be imported
+without colliding with public plugin names. Invalid files are skipped and
+logged with their path and exception; loading continues for other private
+plugins.
