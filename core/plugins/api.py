@@ -217,22 +217,47 @@ def _method_declarations(plugin: Plugin) -> list[HandlerDeclaration]:
     return declarations
 
 
+@dataclass(frozen=True, slots=True)
+class _HandlerBinding:
+    plugin: Plugin
+    original: Callback
+    declaration: HandlerDeclaration
+    config: Mapping[str, Any] | None
+    command_prefixes: Sequence[str]
+    delegated_prefixes: Sequence[str]
+    user_client: Client | None
+    bot_client: Client | None
+    access_store: Any
+    owner_id: int | None
+
+
 async def _invoke_handler(
-    plugin: Plugin,
-    original: Callback,
-    declaration: HandlerDeclaration,
+    binding: _HandlerBinding,
     client: Client,
     update: Any,
     *args: Any,
-    config: Mapping[str, Any] | None = None,
-    command_prefixes: Sequence[str] = (".",),
-    delegated_prefixes: Sequence[str] = (",", "#", "?"),
-    user_client: Client | None = None,
-    bot_client: Client | None = None,
-    access_store: Any = None,
-    owner_id: int | None = None,
     **kwargs: Any,
 ) -> Any:
+    plugin = binding.plugin
+    original = binding.original
+    declaration = binding.declaration
+    config = binding.config
+    command_prefixes = binding.command_prefixes
+    delegated_prefixes = binding.delegated_prefixes
+    user_client = binding.user_client
+    bot_client = binding.bot_client
+    access_store = binding.access_store
+    owner_id = binding.owner_id
+    for name in (
+        "config",
+        "command_prefixes",
+        "delegated_prefixes",
+        "user_client",
+        "bot_client",
+        "access_store",
+        "owner_id",
+    ):
+        kwargs.pop(name, None)
     command_options = declaration.options.command
     from pyrogram import ContinuePropagation
 
@@ -414,11 +439,10 @@ def _wrap_handler(
 ) -> Callback:
     """Bind one declaration to the shared managed-handler invocation."""
     original = getattr(plugin, declaration.method_name)
-    return partial(
-        _invoke_handler,
-        plugin,
-        original,
-        declaration,
+    binding = _HandlerBinding(
+        plugin=plugin,
+        original=original,
+        declaration=declaration,
         config=config,
         command_prefixes=command_prefixes,
         delegated_prefixes=delegated_prefixes,
@@ -427,6 +451,7 @@ def _wrap_handler(
         access_store=access_store,
         owner_id=owner_id,
     )
+    return partial(_invoke_handler, binding)
 
 
 class Plugin:

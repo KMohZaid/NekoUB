@@ -432,7 +432,7 @@ class PluginApiTests(unittest.TestCase):
         client, update = object(), object()
         with self.assertRaises(Exception) as raised:
             import asyncio
-            asyncio.run(callback(client, update, "extra", key="value"))
+            asyncio.run(callback(client, update, "extra", key="value", config="callback"))
         self.assertEqual(type(raised.exception).__name__, "ContinuePropagation")
         actual_client, actual_update, context, args, kwargs = plugin.captured
         self.assertIs(actual_client, client)

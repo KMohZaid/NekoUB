@@ -223,6 +223,21 @@ class PluginManagerTests(unittest.TestCase):
         )
         user_client.register_managed_handler.assert_not_called()
 
+    def test_deactivation_removes_each_shared_wrapper_registration(self):
+        plugin = ManagedPlugin()
+        self.manager.activate(plugin)
+        active = self.manager.active[plugin.id]
+        callbacks = [handler.callback for _, handler, _ in active.handlers]
+        shared_functions = [callback.func for callback in callbacks]
+
+        self.manager._deactivate(active)
+
+        self.assertEqual(len(shared_functions), 2)
+        self.assertIs(shared_functions[0], shared_functions[1])
+        self.assertEqual(self.client.remove_managed_handler.call_count, 2)
+        self.assertNotIn(plugin.id, self.manager.active)
+        self.assertNotIn(plugin.id, self.manager.registry.plugins)
+
     def test_failed_staging_removes_only_staged_handlers(self):
         self.client.register_managed_handler.side_effect = [
             (object(), 0),
