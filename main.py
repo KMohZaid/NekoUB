@@ -340,6 +340,21 @@ def reload_plugins():
         logger.error("Error loading plugins: %s", e, exc_info=True)
 
 
+def _build_client_kwargs(parse_mode, **extra) -> dict:
+    """Shared Kurigram client options; disable unused background topic/story fetches."""
+    kwargs = {
+        "api_id": config.API_ID,
+        "api_hash": config.API_HASH,
+        "app_version": config.APP_VERSION,
+        "workers": config.WORKERS,
+        "parse_mode": parse_mode,
+        "fetch_topics": False,
+        "fetch_stories": False,
+    }
+    kwargs.update(extra)
+    return kwargs
+
+
 def main():
     """Main entry point."""
     global app, bot, plugin_manager
@@ -366,21 +381,12 @@ def main():
     if config.SESSION_STRING:
         app = PluginClient(
             config.CLIENT_NAME,
-            api_id=config.API_ID,
-            api_hash=config.API_HASH,
-            session_string=config.SESSION_STRING,
-            app_version=config.APP_VERSION,
-            workers=config.WORKERS,
-            parse_mode=parse_mode,
+            **_build_client_kwargs(parse_mode, session_string=config.SESSION_STRING),
         )
     else:
         app = PluginClient(
             config.CLIENT_NAME,
-            api_id=config.API_ID,
-            api_hash=config.API_HASH,
-            app_version=config.APP_VERSION,
-            workers=config.WORKERS,
-            parse_mode=parse_mode,
+            **_build_client_kwargs(parse_mode),
         )
 
     # Optional assistant bot client. Userbot handlers still receive `client`;
@@ -388,12 +394,7 @@ def main():
     if config.BOT_TOKEN:
         bot = PluginClient(
             f"{config.CLIENT_NAME}_bot",
-            api_id=config.API_ID,
-            api_hash=config.API_HASH,
-            bot_token=config.BOT_TOKEN,
-            app_version=config.APP_VERSION,
-            workers=config.WORKERS,
-            parse_mode=parse_mode,
+            **_build_client_kwargs(parse_mode, bot_token=config.BOT_TOKEN),
         )
 
     # Initialize persistent delegated-access storage before loading handlers.

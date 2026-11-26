@@ -160,6 +160,146 @@ class StickerIndexTests(unittest.TestCase):
         )
         self.assertTrue(sticker_index.packs_usable({"owner_pack_vol1"}, path=self.path))
 
+    def test_animated_tgs_uses_exact_sha256_with_is_video_false(self):
+        tgs = self.record(
+            document_id="9",
+            file_unique_id="unique-tgs",
+            mime_type="application/x-tgsticker",
+            size=4096,
+            is_video=False,
+            fingerprint_kind="sha256",
+            fingerprint="deadbeef" * 8,
+            verified=True,
+        )
+        sticker_index.replace_snapshot(
+            [(self.pack, [tgs])], user_id=42, path=self.path
+        )
+        self.assertIsNotNone(
+            sticker_index.find_match(
+                None, "deadbeef" * 8, False, "application/x-tgsticker", 4096,
+                {"owner_pack_vol1"}, path=self.path,
+            )
+        )
+        self.assertIsNone(
+            sticker_index.find_match(
+                None, "00000000" * 8, False, "application/x-tgsticker", 4096,
+                {"owner_pack_vol1"}, path=self.path,
+            )
+        )
+
+    def test_upsert_packs_snapshot_updates_target_without_wiping_other_packs(self):
+        other_pack = {**self.pack, "id": 999, "short_name": "other_pack"}
+        sticker_index.replace_snapshot(
+            [(other_pack, [self.record(document_id="10", file_unique_id="u10")])],
+            user_id=42,
+            path=self.path,
+        )
+        sticker_index.upsert_packs_snapshot(
+            [(self.pack, [self.record(document_id="1", file_unique_id="u1")])],
+            user_id=42,
+            path=self.path,
+        )
+        self.assertTrue(sticker_index.packs_indexed({"owner_pack_vol1", "other_pack"}, path=self.path))
+        self.assertTrue(sticker_index.snapshot_is_usable(42, max_age=None, path=self.path))
+
+        # Switching to a different user clears the previous user's packs.
+        sticker_index.upsert_packs_snapshot(
+            [(self.pack, [self.record(document_id="2", file_unique_id="u2")])],
+            user_id=99,
+            path=self.path,
+        )
+        self.assertTrue(sticker_index.packs_indexed({"owner_pack_vol1"}, path=self.path))
+        self.assertFalse(sticker_index.packs_indexed({"other_pack"}, path=self.path))
+        self.assertTrue(sticker_index.snapshot_is_usable(99, max_age=None, path=self.path))
+
+    def test_packs_needing_refresh_identifies_only_stale_or_mismatched_packs(self):
+        other_pack = {**self.pack, "id": 999, "short_name": "other_pack"}
+        unverified_pack = {**self.pack, "id": 777, "short_name": "unverified_pack"}
+        sticker_index.replace_snapshot(
+            [
+                (self.pack, [self.record(document_id="1")]),
+                (other_pack, [self.record(document_id="2")]),
+                (unverified_pack, [self.record(document_id="3", verified=False, fingerprint=None, fingerprint_kind=None)]),
+            ],
+            user_id=42,
+            path=self.path,
+        )
+        needing = sticker_index.packs_needing_refresh(
+            {
+                "owner_pack_vol1": 1,
+                "other_pack": 2,
+                "unverified_pack": 1,
+                "missing_pack": 5,
+            },
+            user_id=42,
+            max_age=3600,
+            require_verified=True,
+            path=self.path,
+        )
+        self.assertEqual(needing, {"other_pack", "unverified_pack", "missing_pack"})
+
+    def test_large_pack_set_over_sqlite_param_limit_works_and_reads_fast(self):
+        # Exceed SQLite's classic 999 host-parameter limit to prove chunked queries work.
+        total_packs = 1200
+        batch = [
+            (
+                {"id": i, "short_name": f"pack_{i}", "is_emoji": False, "is_archived": False},
+                [self.record(document_id=str(i), file_unique_id=f"u-{i}")],
+            )
+            for i in range(total_packs)
+        ]
+        sticker_index.replace_snapshot(batch, user_id=42, path=self.path)
+        all_names = {f"pack_{i}" for i in range(total_packs)}
+        all_counts = {f"pack_{i}": 1 for i in range(total_packs)}
+
+        self.assertTrue(sticker_index.packs_indexed(all_names, path=self.path))
+        self.assertTrue(sticker_index.packs_match_counts(all_counts, path=self.path))
+        self.assertTrue(sticker_index.packs_usable(all_names, path=self.path))
+        self.assertEqual(
+            sticker_index.packs_needing_refresh(all_counts, user_id=42, path=self.path),
+            set(),
+        )
+        ready, failed = sticker_index.check_packs_ready(
+            {"pack_0": 1, "pack_1199": 1}, user_id=42, path=self.path
+        )
+        self.assertTrue(ready)
+        self.assertEqual(failed, [])
+        match = sticker_index.find_match(
+            "u-1199", None, False, "image/webp", 100, all_names, path=self.path
+        )
+        self.assertIsNotNone(match)
+        self.assertEqual(match["short_name"], "pack_1199")
+
+    def test_readonly_checks_do_not_write_to_database_file(self):
+        sticker_index.replace_snapshot(
+            [(self.pack, [self.record()])], user_id=42, path=self.path
+        )
+        # Warm initialization, then verify repeated read checks do not issue writes.
+        ready, failed = sticker_index.check_packs_ready(
+            {"owner_pack_vol1": 1}, user_id=42, path=self.path
+        )
+        self.assertTrue(ready)
+        self.assertEqual(failed, [])
+        before_data_version = sticker_index._connect(self.path, read_only=True).execute(
+            "PRAGMA data_version"
+        ).fetchone()[0]
+        for _ in range(5):
+            self.assertTrue(
+                sticker_index.check_packs_ready(
+                    {"owner_pack_vol1": 1}, user_id=42, path=self.path
+                )[0]
+            )
+            self.assertIsNotNone(
+                sticker_index.find_match(
+                    "unique-1", None, False, "image/webp", 100,
+                    {"owner_pack_vol1"}, path=self.path,
+                )
+            )
+        after_data_version = sticker_index._connect(self.path, read_only=True).execute(
+            "PRAGMA data_version"
+        ).fetchone()[0]
+        self.assertEqual(before_data_version, after_data_version)
+
 
 if __name__ == "__main__":
     unittest.main()
